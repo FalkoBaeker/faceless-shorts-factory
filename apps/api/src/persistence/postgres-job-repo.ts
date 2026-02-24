@@ -14,6 +14,7 @@ export const postgresJobRepo = {
     const now = new Date().toISOString();
 
     executor.query<DbJobRow>(sqlTemplates.jobs.upsert, [job.id, job.projectId, job.status, now, now]);
+    executor.query(sqlTemplates.jobEvents.deleteByJob, [job.id]);
 
     for (const event of job.timeline) {
       executor.query(sqlTemplates.jobEvents.insert, [job.id, event.at, event.event, event.detail ?? null]);

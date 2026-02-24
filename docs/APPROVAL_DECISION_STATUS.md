@@ -1,2 +1,2 @@
 # Approval Decision Status
-Pending: Real Postgres driver integration (external dependency + DB credentials).
+Approved: Real Postgres driver integration + DB connection for Chunk 1 parity rollout.

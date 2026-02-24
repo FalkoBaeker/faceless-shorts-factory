@@ -9,6 +9,14 @@ export const postgresProjectRepo = {
     const executor = createSqlExecutor();
     const createdAt = new Date().toISOString();
     const id = randomUUID();
+
+    executor.query(sqlTemplates.organizations.upsert, [
+      input.organizationId,
+      `Organization ${input.organizationId}`,
+      'eu',
+      createdAt
+    ]);
+
     const { rows } = executor.query<DbProjectRow>(sqlTemplates.projects.insert, [
       id,
       input.organizationId,

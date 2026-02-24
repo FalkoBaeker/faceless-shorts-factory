@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { saveJob, getJob, appendTimelineEvent, type JobRecord } from '../job-store.ts';
+import { saveJob, getJob, type JobRecord } from '../job-store.ts';
 import { buildRunPlan } from '../../../../workers/pipeline/src/run-plan.ts';
 
 export type StartJobInput = {
@@ -33,11 +33,12 @@ export const transitionJob = (jobId: string, toStatus: string, detail?: string):
   if (!job) return null;
 
   job.status = toStatus;
-  appendTimelineEvent(jobId, {
+  job.timeline.push({
     at: new Date().toISOString(),
     event: `STATUS_${toStatus}`,
     detail
   });
 
+  saveJob(job);
   return getJob(jobId);
 };

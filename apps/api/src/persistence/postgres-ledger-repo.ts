@@ -1,48 +1,65 @@
+import { randomUUID } from 'node:crypto';
 import type { CreditLedgerEntry } from '../../../../packages/shared/src/credit-ledger.ts';
-import { getPgClient } from './postgres-client.ts';
+import { createSqlExecutor } from './executor-factory.ts';
+import { sqlTemplates } from './sql-templates.ts';
+import { mapLedgerRowToDomain, type DbLedgerRow } from './sql-mappers.ts';
 
-const entries: CreditLedgerEntry[] = [];
-const reservedJobs = new Set<string>();
-const finalizedJobs = new Set<string>();
+const listForJobRows = (jobId: string): DbLedgerRow[] => {
+  const executor = createSqlExecutor();
+  return executor.query<DbLedgerRow>(sqlTemplates.creditLedger.listByJob, [jobId]).rows;
+};
 
-const push = (organizationId: string, amount: number, type: CreditLedgerEntry['type'], jobId: string, note: string) => {
-  const entry: CreditLedgerEntry = {
-    id: `${type}_${entries.length + 1}`,
+const insertLedgerEntry = (
+  organizationId: string,
+  jobId: string,
+  amount: number,
+  type: CreditLedgerEntry['type'],
+  note: string
+): CreditLedgerEntry | null => {
+  const executor = createSqlExecutor();
+  const createdAt = new Date().toISOString();
+
+  const { rows } = executor.query<DbLedgerRow>(sqlTemplates.creditLedger.insert, [
+    randomUUID(),
     organizationId,
     jobId,
     amount,
     type,
     note,
-    createdAt: new Date().toISOString()
-  };
-  entries.push(entry);
-  return entry;
+    createdAt
+  ]);
+
+  const row = rows[0];
+  return row ? mapLedgerRowToDomain(row) : null;
 };
 
 export const postgresLedgerRepo = {
   reserve: (organizationId: string, jobId: string): CreditLedgerEntry | null => {
-    getPgClient();
-    if (reservedJobs.has(jobId)) return null;
-    reservedJobs.add(jobId);
-    return push(organizationId, -1, 'RESERVED', jobId, 'postgres-adapter reserve');
+    const existing = listForJobRows(jobId);
+    if (existing.some((entry) => entry.type === 'RESERVED')) return null;
+    return insertLedgerEntry(organizationId, jobId, -1, 'RESERVED', 'postgres reserve');
   },
 
   commit: (organizationId: string, jobId: string): CreditLedgerEntry | null => {
-    getPgClient();
-    if (!reservedJobs.has(jobId) || finalizedJobs.has(jobId)) return null;
-    finalizedJobs.add(jobId);
-    return push(organizationId, 0, 'COMMITTED', jobId, 'postgres-adapter commit');
+    const existing = listForJobRows(jobId);
+    const hasReserved = existing.some((entry) => entry.type === 'RESERVED');
+    const alreadyFinalized = existing.some((entry) => entry.type === 'COMMITTED' || entry.type === 'RELEASED');
+    if (!hasReserved || alreadyFinalized) return null;
+    return insertLedgerEntry(organizationId, jobId, 0, 'COMMITTED', 'postgres commit');
   },
 
   release: (organizationId: string, jobId: string): CreditLedgerEntry | null => {
-    getPgClient();
-    if (!reservedJobs.has(jobId) || finalizedJobs.has(jobId)) return null;
-    finalizedJobs.add(jobId);
-    return push(organizationId, +1, 'RELEASED', jobId, 'postgres-adapter release');
+    const existing = listForJobRows(jobId);
+    const hasReserved = existing.some((entry) => entry.type === 'RESERVED');
+    const alreadyFinalized = existing.some((entry) => entry.type === 'COMMITTED' || entry.type === 'RELEASED');
+    if (!hasReserved || alreadyFinalized) return null;
+    return insertLedgerEntry(organizationId, jobId, +1, 'RELEASED', 'postgres release');
   },
 
   list: (organizationId?: string): CreditLedgerEntry[] => {
-    getPgClient();
-    return organizationId ? entries.filter((e) => e.organizationId === organizationId) : entries;
+    const executor = createSqlExecutor();
+    const query = organizationId ? sqlTemplates.creditLedger.listByOrg : sqlTemplates.creditLedger.listAll;
+    const params = organizationId ? [organizationId] : [];
+    return executor.query<DbLedgerRow>(query, params).rows.map(mapLedgerRowToDomain);
   }
 };

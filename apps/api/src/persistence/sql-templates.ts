@@ -1,4 +1,8 @@
 export const sqlTemplates = {
+  organizations: {
+    upsert:
+      'INSERT INTO organizations (id, name, region, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING RETURNING *;'
+  },
   projects: {
     insert:
       'INSERT INTO projects (id, organization_id, topic, language, voice, variant_type, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *;',
@@ -15,11 +19,13 @@ export const sqlTemplates = {
   },
   jobEvents: {
     insert: 'INSERT INTO job_events (job_id, at, event, detail) VALUES ($1,$2,$3,$4) RETURNING *;',
-    listByJob: 'SELECT * FROM job_events WHERE job_id = $1 ORDER BY at ASC;'
+    listByJob: 'SELECT * FROM job_events WHERE job_id = $1 ORDER BY at ASC;',
+    deleteByJob: 'DELETE FROM job_events WHERE job_id = $1;'
   },
   creditLedger: {
     insert: 'INSERT INTO credit_ledger (id, organization_id, job_id, amount, type, note, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *;',
     listByOrg: 'SELECT * FROM credit_ledger WHERE organization_id = $1 ORDER BY created_at ASC;',
+    listByJob: 'SELECT * FROM credit_ledger WHERE job_id = $1 ORDER BY created_at ASC;',
     listAll: 'SELECT * FROM credit_ledger ORDER BY created_at ASC;'
   },
   publishPosts: {

@@ -1,28 +1,37 @@
 import type { PublishPost, PublishTarget } from '../services/publish-service.ts';
-import { getPgClient } from './postgres-client.ts';
+import { createSqlExecutor } from './executor-factory.ts';
+import { sqlTemplates } from './sql-templates.ts';
+import { mapPublishPostRowToDomain, type DbPublishPostRow } from './sql-mappers.ts';
 
-const postsByJob = new Map<string, PublishPost[]>();
+type DbPublishJobsCountRow = { count: number };
 
 export const postgresPublishRepo = {
   publishNow: (jobId: string, targets: PublishTarget[]): PublishPost[] => {
-    getPgClient();
-    const existing = postsByJob.get(jobId);
-    if (existing) return existing;
-    const posts = targets.map((target) => ({
-      target,
-      postUrl: `https://social.local/${target}/${jobId}`
-    }));
-    postsByJob.set(jobId, posts);
-    return posts;
+    const executor = createSqlExecutor();
+
+    for (const target of targets) {
+      executor.query(sqlTemplates.publishPosts.insert, [
+        jobId,
+        target,
+        `https://social.local/${target}/${jobId}`,
+        new Date().toISOString()
+      ]);
+    }
+
+    const { rows } = executor.query<DbPublishPostRow>(sqlTemplates.publishPosts.listByJob, [jobId]);
+    return rows.map(mapPublishPostRowToDomain);
   },
 
   listForJob: (jobId: string): PublishPost[] => {
-    getPgClient();
-    return postsByJob.get(jobId) ?? [];
+    const executor = createSqlExecutor();
+    const { rows } = executor.query<DbPublishPostRow>(sqlTemplates.publishPosts.listByJob, [jobId]);
+    return rows.map(mapPublishPostRowToDomain);
   },
 
   publishedJobsCount: (): number => {
-    getPgClient();
-    return postsByJob.size;
+    const executor = createSqlExecutor();
+    const row = executor.query<DbPublishJobsCountRow>(sqlTemplates.publishPosts.countJobs).rows[0];
+    if (!row) return 0;
+    return Number(row.count ?? 0);
   }
 };

@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { getPersistenceBackend, getPersistenceRuntimeMode } from './backend.ts';
 
 export type DriverDecision = {
@@ -9,10 +10,22 @@ export type DriverDecision = {
   reason: string;
 };
 
+const hasPgDriverInstalled = (): boolean => {
+  const require = createRequire(import.meta.url);
+  try {
+    require.resolve('pg');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const getDriverDecision = (): DriverDecision => {
   const backend = getPersistenceBackend();
   const mode = getPersistenceRuntimeMode();
-  const externalDriverInstalled = Boolean(process.env.POSTGRES_DRIVER_AVAILABLE === 'true');
+  const envEnabled = process.env.POSTGRES_DRIVER_AVAILABLE === 'true';
+  const pgInstalled = hasPgDriverInstalled();
+  const externalDriverInstalled = envEnabled && pgInstalled;
 
   if (backend === 'memory') {
     return {
@@ -32,7 +45,9 @@ export const getDriverDecision = (): DriverDecision => {
       externalDriverInstalled,
       approvalRequired: true,
       decision: 'STAY_STUB',
-      reason: 'No pg driver installed/approved in current environment.'
+      reason: envEnabled
+        ? 'POSTGRES_DRIVER_AVAILABLE=true, but pg package is missing in runtime.'
+        : 'No pg driver installed/approved in current environment.'
     };
   }
 

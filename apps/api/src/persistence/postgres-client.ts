@@ -1,15 +1,24 @@
+import { getPersistenceRuntimeMode } from './backend.ts';
+
 export type PostgresClientInfo = {
   backend: 'postgres';
   dsnConfigured: boolean;
-  mode: 'stub-memory';
-  driver: 'none';
+  mode: 'stub-memory' | 'sql';
+  driver: 'none' | 'pg';
   note: string;
 };
 
-export const getPgClient = (): PostgresClientInfo => ({
-  backend: 'postgres',
-  dsnConfigured: Boolean(process.env.DATABASE_URL),
-  mode: 'stub-memory',
-  driver: 'none',
-  note: 'No external pg driver configured in this environment; using in-process adapter state for now.'
-});
+export const getPgClient = (): PostgresClientInfo => {
+  const mode = getPersistenceRuntimeMode() === 'sql' ? 'sql' : 'stub-memory';
+
+  return {
+    backend: 'postgres',
+    dsnConfigured: Boolean(process.env.DATABASE_URL),
+    mode,
+    driver: mode === 'sql' ? 'pg' : 'none',
+    note:
+      mode === 'sql'
+        ? 'External pg driver enabled via SQL executor.'
+        : 'No external pg driver enabled in runtime; using in-process adapter state.'
+  };
+};

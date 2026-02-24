@@ -11,5 +11,8 @@
     "sim:all": "bash scripts/run_all_sims.sh",
     "sim:summary": "python3 scripts/summarize_sims.py > /Users/falkobaeker/.openclaw/workspace/outputs/sim_summary.json",
     "sim:report": "npm run sim:all && npm run sim:summary"
+  },
+  "dependencies": {
+    "pg": "^8.18.0"
   }
 }
