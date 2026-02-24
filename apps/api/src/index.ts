@@ -5,4 +5,6 @@ export const supportedSegmentSeconds = [4, 8, 12] as const;
 
 export * from './contracts';
 export * from './job-store';
+export * from './project-store';
+export * from './handlers';
 export * from './services/job-service';
