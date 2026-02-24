@@ -3,11 +3,13 @@ import type {
   CreateProjectResponse,
   SelectConceptRequest,
   SelectConceptResponse,
-  JobStatusResponse
+  JobStatusResponse,
+  LedgerResponse
 } from './contracts.ts';
 import { createProject, getProject, setProjectStatus } from './project-store.ts';
 import { startJob, transitionJob } from './services/job-service.ts';
 import { getJob } from './job-store.ts';
+import { reserveCredit, commitCredit, releaseCredit, listLedger, getLedgerBalance } from './services/billing-service.ts';
 
 export const createProjectHandler = (payload: CreateProjectRequest): CreateProjectResponse => {
   const project = createProject({
@@ -38,6 +40,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     variantType: payload.variantType
   });
 
+  reserveCredit(project.organizationId, job.id);
+
   const estimatedSeconds = payload.variantType === 'SHORT_15' ? 16 : 32;
 
   return {
@@ -47,12 +51,32 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   };
 };
 
-export const generateHandler = (jobId: string): JobStatusResponse => {
-  transitionJob(jobId, 'VIDEO_PENDING', 'video provider enqueued');
-  transitionJob(jobId, 'AUDIO_PENDING', 'tts provider enqueued');
-  transitionJob(jobId, 'ASSEMBLY_PENDING', 'video+audio ready');
-  transitionJob(jobId, 'RENDERING', 'render pipeline started');
-  transitionJob(jobId, 'READY', 'render complete');
+export const generateHandler = (jobId: string, options?: { forceFail?: boolean }): JobStatusResponse => {
+  const existing = getJob(jobId);
+  if (!existing) throw new Error(`JOB_NOT_FOUND:${jobId}`);
+
+  if (existing.status === 'READY' || existing.status === 'FAILED') {
+    return {
+      jobId: existing.id,
+      status: existing.status as JobStatusResponse['status'],
+      timeline: existing.timeline
+    };
+  }
+
+  const project = getProject(existing.projectId);
+  if (!project) throw new Error(`PROJECT_NOT_FOUND:${existing.projectId}`);
+
+  if (options?.forceFail) {
+    transitionJob(jobId, 'FAILED', 'forced failure for simulation');
+    releaseCredit(project.organizationId, jobId);
+  } else {
+    transitionJob(jobId, 'VIDEO_PENDING', 'video provider enqueued');
+    transitionJob(jobId, 'AUDIO_PENDING', 'tts provider enqueued');
+    transitionJob(jobId, 'ASSEMBLY_PENDING', 'video+audio ready');
+    transitionJob(jobId, 'RENDERING', 'render pipeline started');
+    transitionJob(jobId, 'READY', 'render complete');
+    commitCredit(project.organizationId, jobId);
+  }
 
   const job = getJob(jobId);
   if (!job) throw new Error(`JOB_NOT_FOUND:${jobId}`);
@@ -72,5 +96,21 @@ export const getJobHandler = (jobId: string): JobStatusResponse => {
     jobId: job.id,
     status: job.status as JobStatusResponse['status'],
     timeline: job.timeline
+  };
+};
+
+export const getLedgerHandler = (organizationId: string): LedgerResponse => {
+  const entries = listLedger(organizationId);
+  return {
+    organizationId,
+    balance: getLedgerBalance(organizationId),
+    entries: entries.map((e) => ({
+      id: e.id,
+      type: e.type,
+      amount: e.amount,
+      jobId: e.jobId,
+      createdAt: e.createdAt,
+      note: e.note
+    }))
   };
 };

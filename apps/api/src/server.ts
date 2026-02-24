@@ -4,7 +4,8 @@ import {
   createProjectHandler,
   selectConceptHandler,
   generateHandler,
-  getJobHandler
+  getJobHandler,
+  getLedgerHandler
 } from './handlers.ts';
 
 type Json = Record<string, unknown>;
@@ -70,7 +71,7 @@ export const buildApiServer = () =>
       if (method === 'POST' && /^\/v1\/projects\/[^/]+\/generate$/.test(path)) {
         const body = await readJsonBody(req);
         const jobId = String(body.jobId ?? '');
-        const done = generateHandler(jobId);
+        const done = generateHandler(jobId, { forceFail: Boolean(body.forceFail) });
         return sendJson(res, 200, done);
       }
 
@@ -78,6 +79,12 @@ export const buildApiServer = () =>
         const jobId = path.split('/')[3];
         const current = getJobHandler(jobId);
         return sendJson(res, 200, current);
+      }
+
+      if (method === 'GET' && /^\/v1\/ledger\/[^/]+$/.test(path)) {
+        const organizationId = path.split('/')[3];
+        const ledger = getLedgerHandler(organizationId);
+        return sendJson(res, 200, ledger);
       }
 
       return sendJson(res, 404, { error: 'NOT_FOUND', method, path });

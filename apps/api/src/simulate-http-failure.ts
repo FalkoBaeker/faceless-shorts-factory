@@ -3,7 +3,7 @@ import { startApiServer } from './server.ts';
 const run = async () => {
   const { server, port } = await startApiServer(0);
   const base = `http://127.0.0.1:${port}`;
-  const organizationId = 'org_http_demo_success';
+  const organizationId = 'org_http_demo_failure';
 
   try {
     const projectRes = await fetch(`${base}/v1/projects`, {
@@ -11,10 +11,10 @@ const run = async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         organizationId,
-        topic: 'Abfluss reinigen',
+        topic: 'Leistungsausfall prüfen',
         language: 'de',
-        voice: 'de_female_01',
-        variantType: 'SHORT_15'
+        voice: 'de_male_01',
+        variantType: 'MASTER_30'
       })
     });
     const project = await projectRes.json();
@@ -22,14 +22,14 @@ const run = async () => {
     const selectRes = await fetch(`${base}/v1/projects/${project.projectId}/select`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ conceptId: 'concept_http_1', variantType: 'SHORT_15' })
+      body: JSON.stringify({ conceptId: 'concept_http_fail', variantType: 'MASTER_30' })
     });
     const select = await selectRes.json();
 
     const generateRes = await fetch(`${base}/v1/projects/${project.projectId}/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jobId: select.jobId })
+      body: JSON.stringify({ jobId: select.jobId, forceFail: true })
     });
     const generated = await generateRes.json();
 
@@ -40,8 +40,6 @@ const run = async () => {
       JSON.stringify(
         {
           port,
-          projectStatus: project.status,
-          reservation: select.creditReservationStatus,
           generatedStatus: generated.status,
           timelineLength: generated.timeline?.length ?? 0,
           ledgerBalance: ledger.balance,

@@ -45,3 +45,16 @@ export type JobStatusResponse = {
     | 'FAILED';
   timeline: Array<{ at: string; event: string; detail?: string }>;
 };
+
+export type LedgerResponse = {
+  organizationId: string;
+  balance: number;
+  entries: Array<{
+    id: string;
+    type: 'TOPUP' | 'RESERVED' | 'COMMITTED' | 'RELEASED' | 'MANUAL_ADJUSTMENT';
+    amount: number;
+    jobId?: string;
+    createdAt: string;
+    note?: string;
+  }>;
+};

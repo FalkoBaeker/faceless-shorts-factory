@@ -1,15 +1,24 @@
 # HTTP Demo (Vertical Slice)
 
-Run the local API simulation over real HTTP routes:
-
+## Success path (reserve -> commit)
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
 node --experimental-strip-types apps/api/src/simulate-http.ts
 ```
 
-Expected output highlights:
-- `projectStatus = DRAFT`
-- `reservation = RESERVED`
+Expected highlights:
 - `generatedStatus = READY`
-- `fetchedStatus = READY`
 - `timelineLength >= 6`
+- `ledgerTypes` contains `RESERVED,COMMITTED`
+- `ledgerBalance = -1`
+
+## Failure path (reserve -> release)
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+node --experimental-strip-types apps/api/src/simulate-http-failure.ts
+```
+
+Expected highlights:
+- `generatedStatus = FAILED`
+- `ledgerTypes` contains `RESERVED,RELEASED`
+- `ledgerBalance = 0`

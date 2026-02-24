@@ -8,3 +8,4 @@ export * from './job-store.ts';
 export * from './project-store.ts';
 export * from './handlers.ts';
 export * from './services/job-service.ts';
+export * from './services/billing-service.ts';
