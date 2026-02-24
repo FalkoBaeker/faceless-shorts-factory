@@ -21,3 +21,4 @@ export * from './persistence/postgres-publish-repo.ts';
 export * from './persistence/sql-project-repo.ts';
 export * from './persistence/sql-templates.ts';
 export * from './persistence/sql-mappers.ts';
+export * from './persistence/driver-decision.ts';
