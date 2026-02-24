@@ -1,12 +1,2 @@
-export const wizardSteps = [
-  'onboarding',
-  'input',
-  'ideation',
-  'storyboard',
-  'selection',
-  'generation',
-  'review',
-  'publish'
-] as const;
-
-export type WizardStep = (typeof wizardSteps)[number];
+export * from './wizard-model.ts';
+export * from './review-model.ts';
