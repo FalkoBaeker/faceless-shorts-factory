@@ -1,7 +1,7 @@
 import type { CreditLedgerEntry, CreditLedgerEntryType } from '../../../../packages/shared/src/credit-ledger.ts';
 import { calculateBalance } from '../../../../packages/shared/src/credit-ledger.ts';
 import { getPersistenceBackend } from '../persistence/backend.ts';
-import { postgresSkeleton } from '../persistence/postgres-skeleton.ts';
+import { postgresLedgerRepo } from '../persistence/postgres-ledger-repo.ts';
 
 const ledgerEntries: CreditLedgerEntry[] = [];
 const finalizedJobs = new Set<string>();
@@ -23,7 +23,7 @@ const pushEntry = (organizationId: string, amount: number, type: CreditLedgerEnt
 
 export const reserveCredit = (organizationId: string, jobId: string) => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.reserveCredit() as never;
+    return postgresLedgerRepo.reserve(organizationId, jobId);
   }
   if (reservedJobs.has(jobId)) return null;
   reservedJobs.add(jobId);
@@ -32,7 +32,7 @@ export const reserveCredit = (organizationId: string, jobId: string) => {
 
 export const commitCredit = (organizationId: string, jobId: string) => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.commitCredit() as never;
+    return postgresLedgerRepo.commit(organizationId, jobId);
   }
   if (!reservedJobs.has(jobId) || finalizedJobs.has(jobId)) return null;
   finalizedJobs.add(jobId);
@@ -41,7 +41,7 @@ export const commitCredit = (organizationId: string, jobId: string) => {
 
 export const releaseCredit = (organizationId: string, jobId: string) => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.releaseCredit() as never;
+    return postgresLedgerRepo.release(organizationId, jobId);
   }
   if (!reservedJobs.has(jobId) || finalizedJobs.has(jobId)) return null;
   finalizedJobs.add(jobId);
@@ -50,7 +50,7 @@ export const releaseCredit = (organizationId: string, jobId: string) => {
 
 export const listLedger = (organizationId?: string) => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.listLedger() as never;
+    return postgresLedgerRepo.list(organizationId);
   }
   return organizationId ? ledgerEntries.filter((e) => e.organizationId === organizationId) : ledgerEntries;
 };

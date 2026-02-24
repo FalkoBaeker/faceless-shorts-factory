@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getPersistenceBackend } from './persistence/backend.ts';
-import { postgresSkeleton } from './persistence/postgres-skeleton.ts';
+import { postgresProjectRepo } from './persistence/postgres-project-repo.ts';
 
 export type ProjectRecord = {
   id: string;
@@ -17,7 +17,7 @@ const projects = new Map<string, ProjectRecord>();
 
 export const createProject = (input: Omit<ProjectRecord, 'id' | 'status' | 'createdAt'>): ProjectRecord => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.createProject() as never;
+    return postgresProjectRepo.create(input);
   }
 
   const record: ProjectRecord = {
@@ -33,21 +33,21 @@ export const createProject = (input: Omit<ProjectRecord, 'id' | 'status' | 'crea
 
 export const getProject = (projectId: string): ProjectRecord | null => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.getProject() as never;
+    return postgresProjectRepo.getById(projectId);
   }
   return projects.get(projectId) ?? null;
 };
 
 export const listProjects = (): ProjectRecord[] => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.listProjects() as never;
+    return postgresProjectRepo.list();
   }
   return Array.from(projects.values());
 };
 
 export const setProjectStatus = (projectId: string, status: ProjectRecord['status']): ProjectRecord | null => {
   if (getPersistenceBackend() === 'postgres') {
-    return postgresSkeleton.setProjectStatus() as never;
+    return postgresProjectRepo.setStatus(projectId, status);
   }
 
   const record = projects.get(projectId);
