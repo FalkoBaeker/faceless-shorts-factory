@@ -1,0 +1,12 @@
+{
+  "name": "@faceless/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "build": "echo TODO: build api",
+    "lint": "echo TODO: lint api"
+  }
+}

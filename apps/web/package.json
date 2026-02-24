@@ -1,0 +1,12 @@
+{
+  "name": "@faceless/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "echo TODO: next dev",
+    "build": "echo TODO: next build",
+    "lint": "echo TODO: next lint"
+  }
+}
