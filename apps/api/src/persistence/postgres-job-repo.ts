@@ -1,30 +1,55 @@
 import type { JobRecord, TimelineEvent } from '../job-store.ts';
-import { getPgClient } from './postgres-client.ts';
-
-const jobs = new Map<string, JobRecord>();
+import { createSqlExecutor } from './executor-factory.ts';
+import { sqlTemplates } from './sql-templates.ts';
+import {
+  mapJobRowToDomain,
+  mapJobEventRowToDomain,
+  type DbJobRow,
+  type DbJobEventRow
+} from './sql-mappers.ts';
 
 export const postgresJobRepo = {
   save: (job: JobRecord): void => {
-    getPgClient();
-    jobs.set(job.id, job);
+    const executor = createSqlExecutor();
+    const now = new Date().toISOString();
+
+    executor.query<DbJobRow>(sqlTemplates.jobs.upsert, [job.id, job.projectId, job.status, now, now]);
+
+    for (const event of job.timeline) {
+      executor.query(sqlTemplates.jobEvents.insert, [job.id, event.at, event.event, event.detail ?? null]);
+    }
   },
 
   getById: (jobId: string): JobRecord | null => {
-    getPgClient();
-    return jobs.get(jobId) ?? null;
+    const executor = createSqlExecutor();
+    const { rows } = executor.query<DbJobRow>(sqlTemplates.jobs.getById, [jobId]);
+    const row = rows[0];
+    if (!row) return null;
+
+    const base = mapJobRowToDomain(row);
+    const events = executor
+      .query<DbJobEventRow>(sqlTemplates.jobEvents.listByJob, [jobId])
+      .rows.map(mapJobEventRowToDomain);
+
+    return {
+      ...base,
+      timeline: events
+    };
   },
 
   list: (): JobRecord[] => {
-    getPgClient();
-    return Array.from(jobs.values());
+    const executor = createSqlExecutor();
+    const rows = executor.query<DbJobRow>(sqlTemplates.jobs.list, []).rows;
+    return rows.map(mapJobRowToDomain);
   },
 
   appendEvent: (jobId: string, event: TimelineEvent): JobRecord | null => {
-    getPgClient();
-    const job = jobs.get(jobId);
+    const executor = createSqlExecutor();
+    const job = postgresJobRepo.getById(jobId);
     if (!job) return null;
-    job.timeline.push(event);
-    jobs.set(jobId, job);
-    return job;
+
+    executor.query(sqlTemplates.jobEvents.insert, [jobId, event.at, event.event, event.detail ?? null]);
+
+    return postgresJobRepo.getById(jobId);
   }
 };

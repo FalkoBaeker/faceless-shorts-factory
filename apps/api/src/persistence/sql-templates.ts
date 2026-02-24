@@ -4,6 +4,7 @@ export const sqlTemplates = {
       'INSERT INTO projects (id, organization_id, topic, language, voice, variant_type, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *;',
     getById: 'SELECT * FROM projects WHERE id = $1 LIMIT 1;',
     listByOrg: 'SELECT * FROM projects WHERE organization_id = $1 ORDER BY created_at DESC;',
+    listAll: 'SELECT * FROM projects ORDER BY created_at DESC;',
     setStatus: 'UPDATE projects SET status = $2 WHERE id = $1 RETURNING *;'
   },
   jobs: {

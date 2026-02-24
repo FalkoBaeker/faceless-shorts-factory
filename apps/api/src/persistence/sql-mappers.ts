@@ -70,3 +70,16 @@ export const mapPublishPostRowToDomain = (row: DbPublishPostRow): PublishPost =>
   target: row.target,
   postUrl: row.post_url
 });
+
+export type DbJobEventRow = {
+  job_id: string;
+  at: string;
+  event: string;
+  detail: string | null;
+};
+
+export const mapJobEventRowToDomain = (row: DbJobEventRow) => ({
+  at: row.at,
+  event: row.event,
+  detail: row.detail ?? undefined
+});

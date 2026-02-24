@@ -49,6 +49,12 @@ const runStubQuery: SqlExecutor['query'] = (sql, params = []) => {
     };
   }
 
+  if (sql === sqlTemplates.projects.listAll) {
+    return {
+      rows: Array.from(state.projects.values()).sort((a, b) => b.created_at.localeCompare(a.created_at))
+    };
+  }
+
   if (sql === sqlTemplates.projects.setStatus) {
     const id = String(p[0]);
     const status = p[1] as DbProjectRow['status'];
