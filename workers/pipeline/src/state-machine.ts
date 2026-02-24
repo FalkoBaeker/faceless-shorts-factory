@@ -1,0 +1,36 @@
+export type VideoJobStatus =
+  | 'DRAFT'
+  | 'IDEATION_PENDING'
+  | 'IDEATION_READY'
+  | 'STORYBOARD_PENDING'
+  | 'STORYBOARD_READY'
+  | 'SELECTED'
+  | 'VIDEO_PENDING'
+  | 'AUDIO_PENDING'
+  | 'ASSEMBLY_PENDING'
+  | 'RENDERING'
+  | 'READY'
+  | 'PUBLISH_PENDING'
+  | 'PUBLISHED'
+  | 'FAILED';
+
+export const allowedTransitions: Record<VideoJobStatus, VideoJobStatus[]> = {
+  DRAFT: ['IDEATION_PENDING', 'FAILED'],
+  IDEATION_PENDING: ['IDEATION_READY', 'FAILED'],
+  IDEATION_READY: ['STORYBOARD_PENDING', 'FAILED'],
+  STORYBOARD_PENDING: ['STORYBOARD_READY', 'FAILED'],
+  STORYBOARD_READY: ['SELECTED', 'FAILED'],
+  SELECTED: ['VIDEO_PENDING', 'AUDIO_PENDING', 'FAILED'],
+  VIDEO_PENDING: ['ASSEMBLY_PENDING', 'FAILED'],
+  AUDIO_PENDING: ['ASSEMBLY_PENDING', 'FAILED'],
+  ASSEMBLY_PENDING: ['RENDERING', 'FAILED'],
+  RENDERING: ['READY', 'FAILED'],
+  READY: ['PUBLISH_PENDING', 'FAILED'],
+  PUBLISH_PENDING: ['PUBLISHED', 'FAILED'],
+  PUBLISHED: [],
+  FAILED: []
+};
+
+export function isTransitionAllowed(from: VideoJobStatus, to: VideoJobStatus): boolean {
+  return allowedTransitions[from].includes(to);
+}
