@@ -1,0 +1,12 @@
+{
+  "name": "faceless-shorts-factory",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI video SaaS for local SMBs",
+  "packageManager": "pnpm@10",
+  "scripts": {
+    "build": "echo 'workspace bootstrap - build scripts follow'",
+    "dev": "echo 'workspace bootstrap - dev scripts follow'",
+    "lint": "echo 'workspace bootstrap - lint scripts follow'"
+  }
+}
