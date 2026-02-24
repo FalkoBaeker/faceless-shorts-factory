@@ -22,3 +22,5 @@ export * from './persistence/sql-project-repo.ts';
 export * from './persistence/sql-templates.ts';
 export * from './persistence/sql-mappers.ts';
 export * from './persistence/driver-decision.ts';
+export * from './persistence/driver-contract.ts';
+export * from './persistence/executor-factory.ts';
