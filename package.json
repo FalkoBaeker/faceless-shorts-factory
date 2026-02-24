@@ -10,6 +10,6 @@
     "lint": "echo 'workspace bootstrap - lint scripts follow'",
     "sim:all": "bash scripts/run_all_sims.sh",
     "sim:summary": "python3 scripts/summarize_sims.py > /Users/falkobaeker/.openclaw/workspace/outputs/sim_summary.json",
-    "sim:report": "pnpm run sim:all && pnpm run sim:summary"
+    "sim:report": "npm run sim:all && npm run sim:summary"
   }
 }

@@ -11,3 +11,5 @@ export * from './services/job-service.ts';
 export * from './services/billing-service.ts';
 export * from './services/publish-service.ts';
 export * from './services/admin-service.ts';
+export * from './persistence/backend.ts';
+export * from './persistence/postgres-skeleton.ts';
