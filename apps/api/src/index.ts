@@ -19,3 +19,5 @@ export * from './persistence/postgres-job-repo.ts';
 export * from './persistence/postgres-ledger-repo.ts';
 export * from './persistence/postgres-publish-repo.ts';
 export * from './persistence/sql-project-repo.ts';
+export * from './persistence/sql-templates.ts';
+export * from './persistence/sql-mappers.ts';
