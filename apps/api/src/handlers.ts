@@ -4,12 +4,16 @@ import type {
   SelectConceptRequest,
   SelectConceptResponse,
   JobStatusResponse,
-  LedgerResponse
+  LedgerResponse,
+  PublishResponse,
+  AdminSnapshotResponse
 } from './contracts.ts';
 import { createProject, getProject, setProjectStatus } from './project-store.ts';
 import { startJob, transitionJob } from './services/job-service.ts';
 import { getJob } from './job-store.ts';
 import { reserveCredit, commitCredit, releaseCredit, listLedger, getLedgerBalance } from './services/billing-service.ts';
+import { publishNow, type PublishTarget } from './services/publish-service.ts';
+import { getAdminSnapshot } from './services/admin-service.ts';
 
 export const createProjectHandler = (payload: CreateProjectRequest): CreateProjectResponse => {
   const project = createProject({
@@ -88,6 +92,28 @@ export const generateHandler = (jobId: string, options?: { forceFail?: boolean }
   };
 };
 
+export const publishJobHandler = (
+  jobId: string,
+  targets: Array<'tiktok' | 'instagram' | 'youtube'>
+): PublishResponse => {
+  const job = getJob(jobId);
+  if (!job) throw new Error(`JOB_NOT_FOUND:${jobId}`);
+  if (job.status !== 'READY' && job.status !== 'PUBLISHED') {
+    throw new Error(`JOB_NOT_PUBLISHABLE:${job.status}`);
+  }
+
+  transitionJob(jobId, 'PUBLISH_PENDING', 'publishing to social targets');
+  const posts = publishNow(jobId, targets as PublishTarget[]);
+  transitionJob(jobId, 'PUBLISHED', `published to ${targets.join(',')}`);
+
+  return {
+    jobId,
+    status: 'PUBLISHED',
+    targets,
+    posts
+  };
+};
+
 export const getJobHandler = (jobId: string): JobStatusResponse => {
   const job = getJob(jobId);
   if (!job) throw new Error(`JOB_NOT_FOUND:${jobId}`);
@@ -113,4 +139,8 @@ export const getLedgerHandler = (organizationId: string): LedgerResponse => {
       note: e.note
     }))
   };
+};
+
+export const getAdminSnapshotHandler = (): AdminSnapshotResponse => {
+  return getAdminSnapshot();
 };

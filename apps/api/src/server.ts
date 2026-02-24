@@ -4,8 +4,10 @@ import {
   createProjectHandler,
   selectConceptHandler,
   generateHandler,
+  publishJobHandler,
   getJobHandler,
-  getLedgerHandler
+  getLedgerHandler,
+  getAdminSnapshotHandler
 } from './handlers.ts';
 
 type Json = Record<string, unknown>;
@@ -75,6 +77,17 @@ export const buildApiServer = () =>
         return sendJson(res, 200, done);
       }
 
+      if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/publish$/.test(path)) {
+        const body = await readJsonBody(req);
+        const jobId = path.split('/')[3];
+        const parsedTargets = Array.isArray(body.targets) ? body.targets : ['tiktok', 'instagram'];
+        const targets = parsedTargets
+          .map((x) => String(x))
+          .filter((x): x is 'tiktok' | 'instagram' | 'youtube' => ['tiktok', 'instagram', 'youtube'].includes(x));
+        const published = publishJobHandler(jobId, targets.length ? targets : ['tiktok', 'instagram']);
+        return sendJson(res, 200, published);
+      }
+
       if (method === 'GET' && /^\/v1\/jobs\/[^/]+$/.test(path)) {
         const jobId = path.split('/')[3];
         const current = getJobHandler(jobId);
@@ -85,6 +98,11 @@ export const buildApiServer = () =>
         const organizationId = path.split('/')[3];
         const ledger = getLedgerHandler(organizationId);
         return sendJson(res, 200, ledger);
+      }
+
+      if (method === 'GET' && path === '/v1/admin/snapshot') {
+        const admin = getAdminSnapshotHandler();
+        return sendJson(res, 200, admin);
       }
 
       return sendJson(res, 404, { error: 'NOT_FOUND', method, path });

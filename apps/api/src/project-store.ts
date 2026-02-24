@@ -29,6 +29,10 @@ export const getProject = (projectId: string): ProjectRecord | null => {
   return projects.get(projectId) ?? null;
 };
 
+export const listProjects = (): ProjectRecord[] => {
+  return Array.from(projects.values());
+};
+
 export const setProjectStatus = (projectId: string, status: ProjectRecord['status']): ProjectRecord | null => {
   const record = projects.get(projectId);
   if (!record) return null;

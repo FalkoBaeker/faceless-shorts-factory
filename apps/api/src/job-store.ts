@@ -17,6 +17,10 @@ export const getJob = (jobId: string): JobRecord | null => {
   return jobs.get(jobId) ?? null;
 };
 
+export const listJobs = (): JobRecord[] => {
+  return Array.from(jobs.values());
+};
+
 export const appendTimelineEvent = (jobId: string, event: TimelineEvent): JobRecord | null => {
   const job = jobs.get(jobId);
   if (!job) return null;

@@ -58,3 +58,27 @@ export type LedgerResponse = {
     note?: string;
   }>;
 };
+
+export type PublishResponse = {
+  jobId: string;
+  status: 'PUBLISHED';
+  targets: Array<'tiktok' | 'instagram' | 'youtube'>;
+  posts: Array<{ target: 'tiktok' | 'instagram' | 'youtube'; postUrl: string }>;
+};
+
+export type AdminSnapshotResponse = {
+  totals: {
+    projects: number;
+    jobs: number;
+    jobsReady: number;
+    jobsFailed: number;
+    jobsPublished: number;
+    ledgerEntries: number;
+  };
+  providerHealth: {
+    sora: 'green' | 'yellow' | 'red';
+    tts: 'green' | 'yellow' | 'red';
+    render: 'green' | 'yellow' | 'red';
+    publish: 'green' | 'yellow' | 'red';
+  };
+};
