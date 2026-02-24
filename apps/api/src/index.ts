@@ -13,3 +13,6 @@ export * from './services/publish-service.ts';
 export * from './services/admin-service.ts';
 export * from './persistence/backend.ts';
 export * from './persistence/postgres-skeleton.ts';
+export * from './persistence/postgres-client.ts';
+export * from './persistence/postgres-project-repo.ts';
+export * from './persistence/postgres-job-repo.ts';
