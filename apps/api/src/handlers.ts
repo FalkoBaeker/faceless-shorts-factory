@@ -4,10 +4,10 @@ import type {
   SelectConceptRequest,
   SelectConceptResponse,
   JobStatusResponse
-} from './contracts';
-import { createProject, getProject, setProjectStatus } from './project-store';
-import { startJob, transitionJob } from './services/job-service';
-import { getJob } from './job-store';
+} from './contracts.ts';
+import { createProject, getProject, setProjectStatus } from './project-store.ts';
+import { startJob, transitionJob } from './services/job-service.ts';
+import { getJob } from './job-store.ts';
 
 export const createProjectHandler = (payload: CreateProjectRequest): CreateProjectResponse => {
   const project = createProject({

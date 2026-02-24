@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { saveJob, getJob, appendTimelineEvent, type JobRecord } from '../job-store';
-import { buildRunPlan } from '../../../../workers/pipeline/src/run-plan';
+import { saveJob, getJob, appendTimelineEvent, type JobRecord } from '../job-store.ts';
+import { buildRunPlan } from '../../../../workers/pipeline/src/run-plan.ts';
 
 export type StartJobInput = {
   projectId: string;

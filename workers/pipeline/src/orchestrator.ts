@@ -1,5 +1,5 @@
-import { buildSegmentPlan } from '../../../packages/shared/src/segment-plan';
-import { buildSegmentKey } from '../../../packages/shared/src/segment-key';
+import { buildSegmentPlan } from '../../../packages/shared/src/segment-plan.ts';
+import { buildSegmentKey } from '../../../packages/shared/src/segment-key.ts';
 
 export type SegmentTask = {
   segmentIndex: number;

@@ -1,4 +1,4 @@
-import type { SegmentSeconds, VariantType } from './video-job';
+import type { SegmentSeconds, VariantType } from './video-job.ts';
 
 export type SegmentPlan = {
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
