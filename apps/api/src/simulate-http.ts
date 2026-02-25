@@ -1,4 +1,16 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { startApiServer } from './server.ts';
+
+const waitForTerminal = async (base: string, jobId: string, timeoutMs = 20_000) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const res = await fetch(`${base}/v1/jobs/${jobId}`);
+    const job = await res.json();
+    if (job.status === 'READY' || job.status === 'FAILED') return job;
+    await sleep(200);
+  }
+  throw new Error(`JOB_TIMEOUT:${jobId}`);
+};
 
 const run = async () => {
   const { server, port } = await startApiServer(0);
@@ -33,6 +45,8 @@ const run = async () => {
     });
     const generated = await generateRes.json();
 
+    const final = await waitForTerminal(base, select.jobId);
+
     const ledgerRes = await fetch(`${base}/v1/ledger/${organizationId}`);
     const ledger = await ledgerRes.json();
 
@@ -43,7 +57,8 @@ const run = async () => {
           projectStatus: project.status,
           reservation: select.creditReservationStatus,
           generatedStatus: generated.status,
-          timelineLength: generated.timeline?.length ?? 0,
+          finalStatus: final.status,
+          timelineLength: final.timeline?.length ?? 0,
           ledgerBalance: ledger.balance,
           ledgerTypes: (ledger.entries ?? []).map((e: any) => e.type)
         },

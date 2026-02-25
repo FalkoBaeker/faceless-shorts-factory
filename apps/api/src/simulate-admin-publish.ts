@@ -1,4 +1,21 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { startApiServer } from './server.ts';
+
+const waitForStatus = async (
+  base: string,
+  jobId: string,
+  expected: 'READY' | 'PUBLISHED' | 'FAILED',
+  timeoutMs = 20_000
+) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const res = await fetch(`${base}/v1/jobs/${jobId}`);
+    const job = await res.json();
+    if (job.status === expected) return job;
+    await sleep(200);
+  }
+  throw new Error(`JOB_TIMEOUT:${jobId}:${expected}`);
+};
 
 const run = async () => {
   const { server, port } = await startApiServer(0);
@@ -32,15 +49,16 @@ const run = async () => {
       body: JSON.stringify({ jobId: select.jobId })
     });
 
+    await waitForStatus(base, select.jobId, 'READY');
+
     const publishRes = await fetch(`${base}/v1/jobs/${select.jobId}/publish`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ targets: ['tiktok', 'youtube'] })
     });
-    const published = await publishRes.json();
+    const publishQueued = await publishRes.json();
 
-    const jobRes = await fetch(`${base}/v1/jobs/${select.jobId}`);
-    const job = await jobRes.json();
+    const job = await waitForStatus(base, select.jobId, 'PUBLISHED');
 
     const adminRes = await fetch(`${base}/v1/admin/snapshot`);
     const admin = await adminRes.json();
@@ -49,9 +67,9 @@ const run = async () => {
       JSON.stringify(
         {
           port,
-          publishedStatus: published.status,
-          publishTargets: published.targets,
-          postCount: (published.posts ?? []).length,
+          publishQueuedStatus: publishQueued.status,
+          publishTargets: publishQueued.targets,
+          postCount: (publishQueued.posts ?? []).length,
           jobStatus: job.status,
           adminTotals: admin.totals
         },

@@ -1,4 +1,16 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { startApiServer } from './server.ts';
+
+const waitForStatus = async (base: string, jobId: string, expected: 'FAILED' | 'READY', timeoutMs = 20_000) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const res = await fetch(`${base}/v1/jobs/${jobId}`);
+    const job = await res.json();
+    if (job.status === expected) return job;
+    await sleep(200);
+  }
+  throw new Error(`JOB_TIMEOUT:${jobId}:${expected}`);
+};
 
 const run = async () => {
   const { server, port } = await startApiServer(0);
@@ -26,12 +38,13 @@ const run = async () => {
     });
     const select = await selectRes.json();
 
-    const generateRes = await fetch(`${base}/v1/projects/${project.projectId}/generate`, {
+    await fetch(`${base}/v1/projects/${project.projectId}/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jobId: select.jobId, forceFail: true })
     });
-    const generated = await generateRes.json();
+
+    const generated = await waitForStatus(base, select.jobId, 'FAILED');
 
     const ledgerRes = await fetch(`${base}/v1/ledger/${organizationId}`);
     const ledger = await ledgerRes.json();
