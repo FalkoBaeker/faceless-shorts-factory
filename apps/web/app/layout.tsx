@@ -1,7 +1,15 @@
+import type { Metadata } from 'next';
+import './globals.css';
+
+export const metadata: Metadata = {
+  title: 'Faceless Shorts Factory',
+  description: 'Mobile-first wizard flow for faceless short-form video production.'
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="de">
-      <body style={{ fontFamily: 'Inter, system-ui, sans-serif', margin: 24 }}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }

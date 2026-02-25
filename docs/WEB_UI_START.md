@@ -1,8 +1,31 @@
-# Web UI Start
+# Web UI Start (Clickable Vertical Slice)
 
-This introduces a minimal visible web entry:
-- `apps/web/app/page.tsx` (wizard start)
-- `apps/web/app/review/page.tsx` (review preview)
-- `apps/web/app/layout.tsx`
+`apps/web` ist jetzt als Next.js App lokal startbar und klickbar.
 
-No design system, no complex routing yet — only a functional, inspectable start point.
+## Routes
+- `/` — Wizard Start / Landing (mobile-first Hero + Paketvergleich + Step-Übersicht)
+- `/review` — Review Preview (Caption/Hashtags/Targets + QA-Checks)
+- `/job-status` — Job-Status mit State-Switcher
+  - `?state=loading`
+  - `?state=empty`
+  - `?state=progress`
+  - `?state=ready`
+  - `?state=error`
+
+## Lokal starten
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory/apps/web
+npm install
+npm run dev
+```
+
+## Build/Lint
+```bash
+npm run build
+npm run lint
+```
+
+## Hinweise
+- Keine externe UI-Library im Slice verwendet (nur Next + React + eigenes CSS).
+- Mock-Daten zentral in `apps/web/app/lib/mock-data.ts` vorbereitet für spätere API-Anbindung.
+- Fokus: mobile-friendly Touch-UX, saubere States, klickbarer End-to-End Eindruck.
