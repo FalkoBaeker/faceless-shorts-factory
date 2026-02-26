@@ -7,6 +7,7 @@
 ## 0) Preconditions
 1. `docker` running (`openclaw-pg`, `openclaw-redis` healthy)
 2. `.env` and `.env.providers` present (local only, never commit)
+   - API loader resolves env files from current dir **or parent dirs** (helps when start command runs from subfolders)
 3. `AUTH_REQUIRED=true` for real auth test
 4. `ENABLE_AUTO_PUBLISH=false` for MVP mode
 5. `ENABLE_FREE_PLAN_MVP=true` (default) so free customer can run end-to-end flow

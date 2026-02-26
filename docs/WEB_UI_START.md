@@ -21,10 +21,15 @@ npm run dev
 ```
 
 ## E2E (MVP)
-1. `/` öffnen, Signup ausführen (ggf. Email bestätigen), dann Login
-2. `/review` öffnen, Topic setzen und „Live Flow starten“ klicken
+1. `/` öffnen, Signup ausführen (ggf. Email bestätigen), dann Login (`Signup starten` / `Login starten`)
+2. `/review` öffnen, im Block **`Live MVP Flow (ECHTE API-Daten)`** Topic setzen und `Echten Video-Flow starten` klicken
 3. Weiterleitung zu `/job-status?jobId=...`
-4. Bei `READY` erscheint Export-Download (signed URL)
+4. Im Block **`Real Runtime Status (API, kein Mock)`** auf `READY` warten
+5. `Export herunterladen` klicken (signed URL)
+
+Wichtig:
+- Auf `/review` und `/job-status` gibt es bewusst auch Mock-/Preview-Blöcke für UI-States.
+- Der reale Testpfad ist nur über die oben genannten Blöcke/Buttons.
 
 CLI smoke:
 ```bash

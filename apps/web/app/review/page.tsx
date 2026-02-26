@@ -15,8 +15,8 @@ export default function ReviewPreviewPage() {
         </div>
 
         <p className="hero-text">
-          Mock-Daten sind bewusst strukturiert, damit später ein API-Response 1:1 gemappt werden kann
-          (Project, Job, Caption, Targets, Status).
+          Wichtig: Große Teile dieser Seite sind Preview-/Mock-UI. Der echte API-Flow startet nur im Block
+          <strong> „Live MVP Flow (ECHTE API-Daten)“</strong> weiter unten.
         </p>
 
         <div className="action-row">
@@ -26,10 +26,52 @@ export default function ReviewPreviewPage() {
         </div>
       </section>
 
+      <section className="section-card" aria-labelledby="real-flow-title" style={{ marginBottom: 12 }}>
+        <h2 id="real-flow-title" className="section-title">
+          So testest du den echten Flow
+        </h2>
+        <ol className="list-clean">
+          <li className="step-item">
+            <div>
+              <p className="step-name">1) Auf der Startseite einloggen</p>
+              <p className="step-sub">Buttons: „Login starten“ oder „Signup starten“</p>
+            </div>
+            <span className="chip chip-success">real</span>
+          </li>
+          <li className="step-item">
+            <div>
+              <p className="step-name">2) Topic setzen und „Echten Video-Flow starten“ klicken</p>
+              <p className="step-sub">Block: „Live MVP Flow (ECHTE API-Daten)“</p>
+            </div>
+            <span className="chip chip-success">real</span>
+          </li>
+          <li className="step-item">
+            <div>
+              <p className="step-name">3) Auf /job-status bis READY warten</p>
+              <p className="step-sub">Erwartete Statusfolge: VIDEO_PENDING → AUDIO_PENDING → RENDERING → READY</p>
+            </div>
+            <span className="chip chip-success">real</span>
+          </li>
+          <li className="step-item">
+            <div>
+              <p className="step-name">4) „Export herunterladen“ klicken</p>
+              <p className="step-sub">Signed URL wird direkt geöffnet</p>
+            </div>
+            <span className="chip chip-success">real</span>
+          </li>
+        </ol>
+
+        <div className="action-row" style={{ marginTop: 8 }}>
+          <Link href="#live-mvp-flow" className="button">
+            Zum Live-Flow-Block springen
+          </Link>
+        </div>
+      </section>
+
       <section className="grid-two" style={{ marginBottom: 12 }}>
         <article className="section-card" aria-labelledby="preview-panel-title">
           <h2 id="preview-panel-title" className="section-title">
-            Video Preview
+            Video Preview (Mock)
           </h2>
           <p className="section-copy">Platzhalter für späteren Player mit Frame-Scrubber und Audio-Mute.</p>
           <div
@@ -50,7 +92,7 @@ export default function ReviewPreviewPage() {
 
         <article className="section-card" aria-labelledby="qa-panel-title">
           <h2 id="qa-panel-title" className="section-title">
-            Quick Quality Check
+            Quick Quality Check (Mock)
           </h2>
           <ul className="list-clean">
             <li className="step-item">

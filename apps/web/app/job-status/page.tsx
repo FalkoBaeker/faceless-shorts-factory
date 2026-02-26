@@ -154,8 +154,8 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
           </h1>
         </div>
         <p className="hero-text">
-          Diese Seite zeigt alle relevanten Zustände für den späteren Live-Betrieb: Loading, Empty,
-          Progress, Ready und Error.
+          Hinweis: Der Block „State Preview“ ist Mock-UI für visuelle Checks. Der echte Joblauf steht im
+          Block „Real Runtime Status (API, kein Mock)“ weiter unten.
         </p>
         <div className="action-row">
           <span className={`chip ${stateChipTone[currentState]}`}>
@@ -166,7 +166,7 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
       </section>
 
       <section className="section-card" style={{ marginBottom: 12 }} aria-label="State Switcher">
-        <h2 className="section-title">State Preview</h2>
+        <h2 className="section-title">State Preview (Mock)</h2>
         <p className="section-copy">Zum schnellen UI-Check kannst du jeden Zustand einzeln anzeigen.</p>
         <div className="state-toggle-row" role="tablist" aria-label="Job state toggles">
           {jobStateOrder.map((state) => (

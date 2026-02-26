@@ -48,12 +48,12 @@ export function ReviewLiveActions() {
   };
 
   return (
-    <article className="section-card" aria-labelledby="review-live-title">
+    <article id="live-mvp-flow" className="section-card" aria-labelledby="review-live-title">
       <h2 id="review-live-title" className="section-title">
-        Live MVP Flow (mit echten API-Daten)
+        Live MVP Flow (ECHTE API-Daten)
       </h2>
       <p className="section-copy">
-        Startet den echten Ablauf: Project → Select → Generate. Ergebnis wird auf der Job-Status-Seite verfolgt.
+        Das ist der echte End-to-End Pfad: Project → Select → Generate → Job-Status (`SELECTED → VIDEO_PENDING → AUDIO_PENDING → RENDERING → READY`).
       </p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
@@ -82,7 +82,7 @@ export function ReviewLiveActions() {
 
       <div className="action-row">
         <button className="button" type="button" disabled={busy} onClick={runFlow}>
-          {busy ? 'Flow läuft ...' : 'Live Flow starten'}
+          {busy ? 'Flow läuft ...' : 'Echten Video-Flow starten'}
         </button>
       </div>
 

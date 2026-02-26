@@ -113,9 +113,9 @@ export function JobRuntimePanel({ initialJobId }: Props) {
   return (
     <article className="section-card" aria-labelledby="runtime-title">
       <h2 id="runtime-title" className="section-title">
-        Real Runtime Status (API)
+        Real Runtime Status (API, kein Mock)
       </h2>
-      <p className="section-copy">Mit Job-ID werden echte API-Daten abgefragt und der READY-Export sichtbar gemacht.</p>
+      <p className="section-copy">Mit Job-ID werden echte API-Daten abgefragt. Hier siehst du die echte Statuskette bis READY und den echten Export-Download.</p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
         <label className="auth-field">

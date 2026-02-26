@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 type LoadOptions = {
   cwd?: string;
@@ -36,6 +36,26 @@ const loadEnvFile = (path: string) => {
   }
 };
 
+const ancestorDirs = (start: string) => {
+  const dirs: string[] = [];
+  let current = resolve(start);
+  while (true) {
+    dirs.push(current);
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return dirs;
+};
+
+const findFileInAncestors = (startDir: string, file: string) => {
+  for (const dir of ancestorDirs(startDir)) {
+    const candidate = resolve(dir, file);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+};
+
 const applySafetyDefaults = () => {
   process.env.DAILY_BUDGET_EUR ??= '10';
   process.env.MAX_PARALLEL_JOBS ??= '1';
@@ -67,7 +87,8 @@ export const loadEnvFiles = (options?: LoadOptions) => {
   const files = options?.files ?? ['.env', '.env.providers'];
 
   for (const file of files) {
-    loadEnvFile(resolve(cwd, file));
+    const resolvedPath = findFileInAncestors(cwd, file) ?? resolve(cwd, file);
+    loadEnvFile(resolvedPath);
   }
 
   applySafetyDefaults();

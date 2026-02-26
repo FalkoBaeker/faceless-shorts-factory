@@ -23,8 +23,8 @@ export default function WizardStartPage() {
         </div>
 
         <p className="hero-text">
-          Das ist der erste klickbare Frontend-Slice: strukturierter Einstieg, sichtbare Produktoptionen
-          und ein sauberer Übergang in den Review- und Job-Status-Bereich.
+          Einstieg ins MVP. Der echte End-to-End Lauf startet in /review im Block
+          „Live MVP Flow (ECHTE API-Daten)“, danach geht es automatisch nach /job-status.
         </p>
 
         <div className="metrics-grid" aria-label="Wizard Kennzahlen">
