@@ -10,5 +10,6 @@
    - Credits werden laut Ledger-Logik released (Implementierung folgt im Billing-Service)
 
 ## Technischer Hinweis
-Aktuell in-memory Job-Store für schnelles Vertical Slice.
-Nächster Schritt: Persistenz in Postgres + Queue events via BullMQ.
+- Job-Orchestrierung läuft asynchron via BullMQ (video/audio/assembly/publish).
+- Finale Fehler laufen kontrolliert nach `FAILED` und erzeugen DLQ-Eintrag + Credit-Release.
+- Replay erfolgt über DLQ-Endpoint (`POST /v1/dlq/:id/replay`).

@@ -3,6 +3,9 @@ set -euo pipefail
 
 OUT_BASE="/Users/falkobaeker/.openclaw/workspace/outputs"
 
+export AUTH_REQUIRED="${AUTH_REQUIRED:-false}"
+export ENABLE_AUTO_PUBLISH="${ENABLE_AUTO_PUBLISH:-true}"
+
 node --experimental-strip-types apps/api/src/simulate.ts > "$OUT_BASE/sim_api_flow.json"
 node --experimental-strip-types workers/pipeline/src/simulate-orchestration.ts > "$OUT_BASE/sim_orchestration.json"
 node --experimental-strip-types apps/api/src/simulate-http.ts > "$OUT_BASE/sim_http_flow.json"

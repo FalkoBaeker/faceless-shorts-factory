@@ -3,9 +3,11 @@ import { listProjects } from '../project-store.ts';
 import { listJobs } from '../job-store.ts';
 import { listLedger } from './billing-service.ts';
 import { getPublishedJobsCount } from './publish-service.ts';
+import { getProviderHealthSnapshot } from '../providers/live-provider-runtime.ts';
 
 export const getAdminSnapshot = (): AdminSnapshotResponse => {
   const jobs = listJobs();
+  const providerHealth = getProviderHealthSnapshot();
 
   return {
     totals: {
@@ -16,11 +18,6 @@ export const getAdminSnapshot = (): AdminSnapshotResponse => {
       jobsPublished: getPublishedJobsCount(),
       ledgerEntries: listLedger().length
     },
-    providerHealth: {
-      sora: 'green',
-      tts: 'green',
-      render: 'green',
-      publish: 'green'
-    }
+    providerHealth
   };
 };

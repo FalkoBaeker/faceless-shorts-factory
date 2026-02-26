@@ -7,6 +7,7 @@ import {
   wizardOverviewCards,
   wizardStepList
 } from './lib/mock-data';
+import { AuthPanel } from './components/auth-panel';
 
 const prettyStep = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
@@ -50,6 +51,10 @@ export default function WizardStartPage() {
           </Link>
         </div>
       </section>
+
+      <div style={{ marginBottom: 12 }}>
+        <AuthPanel />
+      </div>
 
       <section className="grid-three" aria-label="Wizard Überblick" style={{ marginBottom: 12 }}>
         {wizardOverviewCards.map((card) => (

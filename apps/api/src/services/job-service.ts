@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { saveJob, getJob, type JobRecord } from '../job-store.ts';
 import { buildRunPlan } from '../../../../workers/pipeline/src/run-plan.ts';
+import { isTransitionAllowed, type VideoJobStatus } from '../../../../workers/pipeline/src/state-machine.ts';
 
 export type StartJobInput = {
   projectId: string;
@@ -31,6 +32,20 @@ export const startJob = (input: StartJobInput): JobRecord => {
 export const transitionJob = (jobId: string, toStatus: string, detail?: string): JobRecord | null => {
   const job = getJob(jobId);
   if (!job) return null;
+
+  if (job.status === toStatus) return job;
+
+  const from = job.status as VideoJobStatus;
+  const to = toStatus as VideoJobStatus;
+  if (!isTransitionAllowed(from, to)) {
+    job.timeline.push({
+      at: new Date().toISOString(),
+      event: 'TRANSITION_REJECTED',
+      detail: `${from}->${to}`
+    });
+    saveJob(job);
+    throw new Error(`INVALID_TRANSITION:${from}->${to}`);
+  }
 
   job.status = toStatus;
   job.timeline.push({

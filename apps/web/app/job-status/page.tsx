@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { ReactElement } from 'react';
+import { JobRuntimePanel } from '../components/job-runtime-panel';
 import { PageFrame } from '../components/page-frame';
 import {
   jobStateLabels,
@@ -91,17 +92,17 @@ function ReadyState() {
   return (
     <article className="section-card">
       <h2 className="section-title">Job abgeschlossen</h2>
-      <p className="section-copy">Asset ist bereit für Download und Freigabe zum Publish.</p>
+      <p className="section-copy">Asset ist bereit für Download/Export (MVP ohne Auto-Publish).</p>
       <div className="action-row">
         <button className="button" type="button" aria-label="Download Demo Asset">
           Download final.mp4
         </button>
-        <button className="button-ghost" type="button" aria-label="Open publish checklist">
-          Publish vorbereiten
+        <button className="button-ghost" type="button" aria-label="Open export checklist">
+          Export prüfen
         </button>
       </div>
       <p className="section-copy" style={{ marginTop: 4 }}>
-        Signed URLs und echte Provider-IDs werden in Block 4 angebunden.
+        Auto-Publish bleibt im MVP deaktiviert, Connector bleibt nachrüstbar.
       </p>
     </article>
   );
@@ -135,11 +136,12 @@ const statePanel: Record<JobUiState, ReactElement> = {
   error: <ErrorState />
 };
 
-type SearchParams = Promise<{ state?: string | string[] }>;
+type SearchParams = Promise<{ state?: string | string[]; jobId?: string | string[] }>;
 
 export default async function JobStatusPage({ searchParams }: { searchParams?: SearchParams }) {
   const resolvedParams = (await searchParams) ?? {};
   const stateParam = Array.isArray(resolvedParams.state) ? resolvedParams.state[0] : resolvedParams.state;
+  const jobIdParam = Array.isArray(resolvedParams.jobId) ? resolvedParams.jobId[0] : resolvedParams.jobId;
   const currentState = resolveState(stateParam ?? null);
 
   return (
@@ -184,6 +186,10 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
 
       <div id="job-state-panel" style={{ marginBottom: 12 }}>
         {statePanel[currentState]}
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <JobRuntimePanel initialJobId={jobIdParam ?? ''} />
       </div>
 
       <section className="section-card" aria-labelledby="metrics-title">

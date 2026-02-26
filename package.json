@@ -8,11 +8,24 @@
     "build": "echo 'workspace bootstrap - build scripts follow'",
     "dev": "echo 'workspace bootstrap - dev scripts follow'",
     "lint": "echo 'workspace bootstrap - lint scripts follow'",
+    "api:start": "node --experimental-strip-types apps/api/src/main.ts",
+    "web:dev": "npm --prefix apps/web run dev",
     "sim:all": "bash scripts/run_all_sims.sh",
     "sim:summary": "python3 scripts/summarize_sims.py > /Users/falkobaeker/.openclaw/workspace/outputs/sim_summary.json",
-    "sim:report": "npm run sim:all && npm run sim:summary"
+    "sim:report": "npm run sim:all && npm run sim:summary",
+    "sim:queue:idempotency": "node --experimental-strip-types apps/api/src/simulate-queue-idempotency.ts",
+    "sim:queue:dlq": "node --experimental-strip-types apps/api/src/simulate-queue-dlq-replay.ts",
+    "sim:queue:restart": "node --experimental-strip-types apps/api/src/simulate-queue-restart.ts",
+    "sim:auth": "node --experimental-strip-types apps/api/src/simulate-auth-flow.ts",
+    "sim:alerts": "node --experimental-strip-types apps/api/src/simulate-alert-routing.ts",
+    "sim:auth-guard": "node --experimental-strip-types apps/api/src/simulate-auth-guard.ts",
+    "sim:alert-endpoint": "node --experimental-strip-types apps/api/src/simulate-alert-endpoint.ts",
+    "render:preflight": "node scripts/render_preflight_check.mjs",
+    "render:plan": "node scripts/render_provision_plan.mjs"
   },
   "dependencies": {
+    "bullmq": "^5.70.1",
+    "ioredis": "^5.9.3",
     "pg": "^8.18.0"
   }
 }

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { PageFrame } from '../components/page-frame';
+import { ReviewLiveActions } from '../components/review-live-actions';
 import { reviewMock, selectedVariant } from '../lib/mock-data';
 
 export default function ReviewPreviewPage() {
@@ -9,7 +10,7 @@ export default function ReviewPreviewPage() {
         <div>
           <p className="kicker">Review Preview</p>
           <h1 id="review-title" className="hero-title">
-            Inhalte prüfen, Feinschliff setzen und dann in den Publish-Flow wechseln.
+            Inhalte prüfen, Feinschliff setzen und dann in den Export-Flow wechseln.
           </h1>
         </div>
 
@@ -98,19 +99,19 @@ export default function ReviewPreviewPage() {
 
         <article className="section-card" aria-labelledby="publish-title">
           <h2 id="publish-title" className="section-title">
-            Publish Targets
+            Export Targets (Auto-Publish später)
           </h2>
-          <p className="section-copy">MVP Targets aus dem Review-Modell.</p>
-          <ul className="list-clean" aria-label="Publish targets list">
+          <p className="section-copy">MVP liefert Assets exportbereit, Social-Posting bleibt deaktiviert.</p>
+          <ul className="list-clean" aria-label="Export targets list">
             {reviewMock.postTargets.map((target) => (
               <li className="step-item" key={target}>
                 <div>
                   <p className="step-name" style={{ textTransform: 'capitalize' }}>
                     {target}
                   </p>
-                  <p className="step-sub">Account mapping folgt in Block 4</p>
+                  <p className="step-sub">Connector vorbereitet, Live-Posting im MVP deaktiviert</p>
                 </div>
-                <span className="chip chip-success">enabled</span>
+                <span className="chip chip-warning">deferred</span>
               </li>
             ))}
           </ul>
@@ -120,6 +121,10 @@ export default function ReviewPreviewPage() {
           </p>
         </article>
       </section>
+
+      <div style={{ marginBottom: 12 }}>
+        <ReviewLiveActions />
+      </div>
 
       <section className="section-card" aria-label="Review actions">
         <div className="action-row">

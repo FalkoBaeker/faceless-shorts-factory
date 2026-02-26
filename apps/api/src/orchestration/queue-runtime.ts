@@ -10,6 +10,14 @@ import { queryPg, txPg, closePgPool } from '../persistence/pg-pool.ts';
 import { getPersistenceBackend } from '../persistence/backend.ts';
 import { transitionJob } from '../services/job-service.ts';
 import { commitCredit, releaseCredit } from '../services/billing-service.ts';
+import {
+  runVideoStage,
+  runAudioStage,
+  runAssemblyStage,
+  isFatalProviderError,
+  type StoredAsset
+} from '../providers/live-provider-runtime.ts';
+import { logEvent } from '../utils/app-logger.ts';
 
 type Stage = 'video' | 'audio' | 'assembly' | 'publish';
 
@@ -86,9 +94,10 @@ const createWorker = <T extends StagePayload>(
 ): Worker<T> => {
   const connection = redis.duplicate({ maxRetriesPerRequest: null });
   workerConnections.push(connection);
+  const concurrency = Math.max(1, Number(process.env.MAX_PARALLEL_JOBS ?? 1));
   return new Worker<T>(queueName, processor, {
     connection,
-    concurrency: 4
+    concurrency
   });
 };
 
@@ -130,6 +139,26 @@ const clearIdempotency = async (jobId: string) => {
   const keys = [idempotencyKey(jobId, 'video'), idempotencyKey(jobId, 'audio'), idempotencyKey(jobId, 'assembly'), idempotencyKey(jobId, 'publish')];
   if (keys.length) await redis.del(keys);
 };
+
+const assetRefKey = (jobId: string) => `assets:${jobId}`;
+
+const setAssetRef = async (jobId: string, field: string, value: string) => {
+  await redis.hset(assetRefKey(jobId), field, value);
+};
+
+const getAssetRef = async (jobId: string, field: string) => {
+  return redis.hget(assetRefKey(jobId), field);
+};
+
+const buildAssetDetail = (kind: string, asset: StoredAsset) =>
+  JSON.stringify({
+    kind,
+    objectPath: asset.objectPath,
+    signedUrl: asset.signedUrl,
+    bytes: asset.bytes,
+    mimeType: asset.mimeType,
+    provider: asset.provider
+  });
 
 const fetchJobContext = async (jobId: string): Promise<JobContext> => {
   if (!isPostgres()) {
@@ -327,12 +356,37 @@ const processVideo = async (job: Job<StagePayload>) => {
     const fail = forceFailToError('video', job.data);
     if (fail) throw fail;
 
+    const context = await fetchJobContext(jobId);
+    const project = getProject(context.project_id);
+    const topic = project?.topic ?? `faceless short for ${context.project_id}`;
+    const variantType = project?.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15';
+
     await transitionStatus(jobId, 'VIDEO_PENDING', 'video worker started');
+
+    const result = await runVideoStage({ jobId, topic, variantType });
+    await setAssetRef(jobId, 'script', result.script);
+    await setAssetRef(jobId, 'videoObjectPath', result.video.objectPath);
+    await setAssetRef(jobId, 'imageObjectPath', result.image.objectPath);
+
+    await insertTimeline(jobId, 'ASSET_SCRIPT_READY', result.script.slice(0, 280));
+    await insertTimeline(jobId, 'ASSET_IMAGE_STORED', buildAssetDetail('image', result.image));
+    await insertTimeline(jobId, 'ASSET_VIDEO_STORED', buildAssetDetail('video', result.video));
+
     await enqueueAudio(job.data);
 
-    return { stage: 'video', enqueued: 'audio' };
+    return { stage: 'video', enqueued: 'audio', videoObjectPath: result.video.objectPath };
   } catch (error) {
     await clearStageIdempotency(jobId, 'video');
+    if (isFatalProviderError(error)) {
+      logEvent({
+        event: 'provider_stage_fatal',
+        level: 'ERROR',
+        stage: 'video',
+        jobId,
+        detail: (error as Error).message
+      });
+      throw new UnrecoverableError(`HARD_FAILURE:video:${(error as Error).message}`);
+    }
     throw error;
   }
 };
@@ -343,11 +397,28 @@ const processAudio = async (job: Job<StagePayload>) => {
 
   try {
     await transitionStatus(jobId, 'AUDIO_PENDING', 'audio worker started');
+
+    const script = (await getAssetRef(jobId, 'script')) ?? 'Kurzer faceless Promo-Clip.';
+    const result = await runAudioStage({ jobId, script });
+    await setAssetRef(jobId, 'audioObjectPath', result.audio.objectPath);
+
+    await insertTimeline(jobId, 'ASSET_AUDIO_STORED', buildAssetDetail('audio', result.audio));
+
     await enqueueAssembly(job.data);
 
-    return { stage: 'audio', enqueued: 'assembly' };
+    return { stage: 'audio', enqueued: 'assembly', audioObjectPath: result.audio.objectPath };
   } catch (error) {
     await clearStageIdempotency(jobId, 'audio');
+    if (isFatalProviderError(error)) {
+      logEvent({
+        event: 'provider_stage_fatal',
+        level: 'ERROR',
+        stage: 'audio',
+        jobId,
+        detail: (error as Error).message
+      });
+      throw new UnrecoverableError(`HARD_FAILURE:audio:${(error as Error).message}`);
+    }
     throw error;
   }
 };
@@ -361,12 +432,38 @@ const processAssembly = async (job: Job<StagePayload>) => {
 
     await transitionStatus(jobId, 'ASSEMBLY_PENDING', 'assembly worker started');
     await transitionStatus(jobId, 'RENDERING', 'rendering started');
+
+    const videoObjectPath = await getAssetRef(jobId, 'videoObjectPath');
+    const audioObjectPath = await getAssetRef(jobId, 'audioObjectPath');
+    if (!videoObjectPath || !audioObjectPath) {
+      throw new UnrecoverableError(`HARD_FAILURE:assembly:ASSET_REF_MISSING:${jobId}`);
+    }
+
+    const final = await runAssemblyStage({
+      jobId,
+      videoObjectPath,
+      audioObjectPath
+    });
+
+    await setAssetRef(jobId, 'finalObjectPath', final.finalVideo.objectPath);
+    await insertTimeline(jobId, 'ASSET_FINAL_VIDEO_STORED', buildAssetDetail('final_video', final.finalVideo));
+
     await transitionStatus(jobId, 'READY', 'render complete');
     await upsertLedgerFinalState(context.organization_id, jobId, 'COMMITTED', 0, 'reserved credit committed on READY');
 
-    return { stage: 'assembly', status: 'READY' };
+    return { stage: 'assembly', status: 'READY', finalObjectPath: final.finalVideo.objectPath };
   } catch (error) {
     await clearStageIdempotency(jobId, 'assembly');
+    if (isFatalProviderError(error)) {
+      logEvent({
+        event: 'provider_stage_fatal',
+        level: 'ERROR',
+        stage: 'assembly',
+        jobId,
+        detail: (error as Error).message
+      });
+      throw new UnrecoverableError(`HARD_FAILURE:assembly:${(error as Error).message}`);
+    }
     throw error;
   }
 };

@@ -61,7 +61,7 @@ export type LedgerResponse = {
 
 export type PublishResponse = {
   jobId: string;
-  status: 'PUBLISHED';
+  status: 'PUBLISH_PENDING' | 'PUBLISHED';
   targets: Array<'tiktok' | 'instagram' | 'youtube'>;
   posts: Array<{ target: 'tiktok' | 'instagram' | 'youtube'; postUrl: string }>;
 };
@@ -81,4 +81,42 @@ export type AdminSnapshotResponse = {
     render: 'green' | 'yellow' | 'red';
     publish: 'green' | 'yellow' | 'red';
   };
+};
+
+export type AuthMeResponse = {
+  authenticated: boolean;
+  authRequired: boolean;
+  canRunJob: boolean;
+  reason: string;
+  user?: {
+    id: string;
+    email: string;
+    plan: 'free' | 'beta' | 'pro';
+    subscriptionStatus: 'inactive' | 'trialing' | 'active' | 'canceled';
+    allowlisted: boolean;
+    creditsRemaining: number | null;
+    monthlyJobLimit: number | null;
+    jobsUsed: number;
+  };
+};
+
+export type AlertTestResponse = {
+  ok: boolean;
+  sent: boolean;
+  target: 'email' | 'logs';
+  detail: string;
+};
+
+export type JobAssetsResponse = {
+  jobId: string;
+  ready: boolean;
+  assets: Array<{
+    event: string;
+    kind: string;
+    objectPath: string;
+    signedUrl: string;
+    bytes: number | null;
+    mimeType: string | null;
+    provider: string | null;
+  }>;
 };

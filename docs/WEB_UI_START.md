@@ -1,31 +1,39 @@
-# Web UI Start (Clickable Vertical Slice)
+# Web UI Start (MVP: Auth + Export-ready Flow)
 
-`apps/web` ist jetzt als Next.js App lokal startbar und klickbar.
+`apps/web` ist als Next.js App lokal startbar und jetzt mit realen API-Pfaden erweiterbar.
 
 ## Routes
-- `/` — Wizard Start / Landing (mobile-first Hero + Paketvergleich + Step-Übersicht)
-- `/review` — Review Preview (Caption/Hashtags/Targets + QA-Checks)
-- `/job-status` — Job-Status mit State-Switcher
-  - `?state=loading`
-  - `?state=empty`
-  - `?state=progress`
-  - `?state=ready`
-  - `?state=error`
+- `/` — Wizard Start / Landing + Supabase Auth Panel (signup/login/status)
+- `/review` — Review Preview + **Live Flow Trigger** (Project → Select → Generate)
+- `/job-status` — Job-Status inkl. Mock State Preview + **Real Runtime Panel**
+  - optional `?jobId=<id>` für direktes Polling
+  - mock state toggles: `?state=loading|empty|progress|ready|error`
 
 ## Lokal starten
 ```bash
+# API
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+node --experimental-strip-types apps/api/src/main.ts
+
+# Web
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory/apps/web
-npm install
 npm run dev
 ```
 
+## E2E (MVP)
+1. `/` öffnen, Signup/Login ausführen
+2. `/review` öffnen, „Live Flow starten“ klicken
+3. Weiterleitung zu `/job-status?jobId=...`
+4. Bei `READY` erscheint Export-Download (signed URL)
+
 ## Build/Lint
 ```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory/apps/web
 npm run build
 npm run lint
 ```
 
 ## Hinweise
-- Keine externe UI-Library im Slice verwendet (nur Next + React + eigenes CSS).
-- Mock-Daten zentral in `apps/web/app/lib/mock-data.ts` vorbereitet für spätere API-Anbindung.
-- Fokus: mobile-friendly Touch-UX, saubere States, klickbarer End-to-End Eindruck.
+- Auto-Publish ist im MVP deaktiviert (`ENABLE_AUTO_PUBLISH=false`), Connector bleibt nachrüstbar.
+- Keine externe UI-Library im Slice verwendet.
+- API Base URL via `NEXT_PUBLIC_API_BASE_URL` konfigurierbar (default `http://localhost:3001`).

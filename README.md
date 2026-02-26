@@ -18,10 +18,21 @@ B2B SaaS zur Erstellung von faceless Kurzvideos (15s/30s) mit async Pipeline:
 
 ## Erste Zielarchitektur (MVP)
 
-- Next.js + Tailwind
-- Node.js/TypeScript API
+- Next.js (mobile-first UI) + Node.js/TypeScript API
 - Postgres + Redis/BullMQ
-- S3/Supabase Storage
-- Stripe Billing + Credits Ledger
+- Supabase Auth + Storage (signed export URLs)
 - Provider-Abstraktionen (LLM, Image, Video, TTS)
+- Entitlement Gate (plan/allowlist) ohne harte Stripe-Abhängigkeit im MVP
+- Alerts via Gmail API (gog) mit logs fallback
+
+## MVP Modus (aktueller Stand)
+- Auto-Publish: **deaktiviert** (`ENABLE_AUTO_PUBLISH=false`)
+- Stripe: **optional/deferred**
+- Ziel-Flow: Start → Review → Job READY → Export
+
+## Wichtige Scripts
+- `npm run sim:auth` — Auth smoke
+- `npm run sim:alerts` — Alert routing smoke (email/log fallback)
+- `npm run render:preflight` — Render owner/service preflight
+- `npm run render:plan` — Render provisioning plan (ohne billable create)
 

@@ -3,10 +3,11 @@
 ## Queues
 - `video.ideation`
 - `video.storyboard`
-- `video.segment.render`
-- `video.audio.tts`
-- `video.assembly`
-- `video.publish`
+- `video.segment.render` (generation step 1)
+- `video.audio.tts` (generation step 2)
+- `video.assembly` (generation step 3)
+- `video.publish` (publish step)
+- `video.dead-letter` (final failures + replay source)
 
 ## Retry & Backoff
 - Default: `attempts=3`, `backoff=exponential`, `delayMs=2000`
