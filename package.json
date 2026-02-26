@@ -17,6 +17,7 @@
     "sim:queue:dlq": "node --experimental-strip-types apps/api/src/simulate-queue-dlq-replay.ts",
     "sim:queue:restart": "node --experimental-strip-types apps/api/src/simulate-queue-restart.ts",
     "sim:auth": "node --experimental-strip-types apps/api/src/simulate-auth-flow.ts",
+    "sim:free-customer": "node --experimental-strip-types apps/api/src/simulate-free-customer-flow.ts",
     "sim:alerts": "node --experimental-strip-types apps/api/src/simulate-alert-routing.ts",
     "sim:auth-guard": "node --experimental-strip-types apps/api/src/simulate-auth-guard.ts",
     "sim:alert-endpoint": "node --experimental-strip-types apps/api/src/simulate-alert-endpoint.ts",

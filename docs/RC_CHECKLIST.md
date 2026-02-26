@@ -9,7 +9,7 @@
 - [ ] Supabase email auth works (`/v1/auth/signup`, `/v1/auth/login`, `/v1/auth/me`)
 - [ ] API routes guarded when `AUTH_REQUIRED=true`
 - [ ] Entitlement policy enforced (`isEntitled`, `canRunJob`)
-- [ ] Allowlist and plan behavior verified (`free` blocked by default, `beta/pro` allowed)
+- [ ] Allowlist and plan behavior verified (`free` allowed for run-job in MVP via `ENABLE_FREE_PLAN_MVP=true` (default), publish still disabled unless explicitly enabled)
 
 ## Runtime
 - [ ] Postgres and Redis healthy

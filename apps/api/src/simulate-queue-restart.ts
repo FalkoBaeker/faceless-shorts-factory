@@ -6,14 +6,31 @@ const waitForStatus = async (
   base: string,
   jobId: string,
   expected: string,
-  timeoutMs = Math.max(180_000, Number(process.env.E2E_JOB_TIMEOUT_MS ?? 180_000))
+  timeoutMs = Math.max(
+    Number(process.env.E2E_JOB_TIMEOUT_MS ?? 0),
+    Number(process.env.VIDEO_STAGE_TIMEOUT_MS ?? 1_800_000) + 120_000,
+    240_000
+  )
 ) => {
+  const pollSleepMs = Math.max(1_000, Number(process.env.RESTART_SIM_POLL_MS ?? 2_000));
   const started = Date.now();
+  let poll = 0;
+
   while (Date.now() - started < timeoutMs) {
+    poll += 1;
     const res = await fetch(`${base}/v1/jobs/${jobId}`);
     const job = await res.json();
-    if (job.status === expected) return job;
-    await sleep(250);
+
+    const status = String(job.status ?? 'unknown');
+    const timelineLength = Array.isArray(job.timeline) ? job.timeline.length : 0;
+    console.log(JSON.stringify({ phase: 'waitForStatus', poll, status, timelineLength }));
+
+    if (status === expected) return job;
+    if (status === 'FAILED') {
+      throw new Error(`JOB_FAILED:${jobId}:${status}`);
+    }
+
+    await sleep(pollSleepMs);
   }
   throw new Error(`JOB_TIMEOUT:${jobId}:${expected}`);
 };
@@ -61,6 +78,8 @@ const run = async () => {
     const select = await selectRes.json();
     jobId = select.jobId;
 
+    console.log(JSON.stringify({ phase: 'phase1_init', projectId: project.projectId, jobId }));
+
     await fetch(`${firstBase}/v1/projects/${project.projectId}/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -68,6 +87,7 @@ const run = async () => {
     });
 
     await waitForStatus(firstBase, jobId, 'READY');
+    console.log(JSON.stringify({ phase: 'phase1_ready', jobId }));
   } catch (error) {
     console.error(`RESTART_SMOKE_PHASE1_FAILED:${String((error as Error)?.message ?? error)}`);
     exitCode = 1;
@@ -81,6 +101,8 @@ const run = async () => {
   const secondBase = `http://127.0.0.1:${second.port}`;
 
   try {
+    console.log(JSON.stringify({ phase: 'phase2_restart_check', jobId }));
+
     const jobRes = await fetch(`${secondBase}/v1/jobs/${jobId}`);
     const job = await jobRes.json();
 

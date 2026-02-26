@@ -30,6 +30,7 @@ export type EntitlementDecision = {
     | 'ALLOWLIST'
     | 'PLAN_ENTITLED'
     | 'SUBSCRIPTION_ACTIVE'
+    | 'FREE_PLAN_MVP_ALLOWED'
     | 'PLAN_FREE_NOT_ALLOWED'
     | 'FEATURE_DISABLED_MVP'
     | 'CREDITS_EXHAUSTED'
@@ -248,6 +249,8 @@ export const syncEntitlementRecord = async (identity: AuthIdentity): Promise<Ent
 
 const mvpAutoPublishEnabled = () => process.env.ENABLE_AUTO_PUBLISH === 'true';
 
+const mvpFreePlanEnabled = () => (process.env.ENABLE_FREE_PLAN_MVP ?? 'true').trim().toLowerCase() === 'true';
+
 const hasPositiveCredits = (record: EntitlementRecord) => record.creditsRemaining === null || record.creditsRemaining > 0;
 
 const hasCapacity = (record: EntitlementRecord) =>
@@ -278,6 +281,10 @@ export const isEntitled = async (identity: AuthIdentity, feature: Feature): Prom
 
   if (record.subscriptionStatus === 'active' || record.subscriptionStatus === 'trialing') {
     return { allow: true, reason: 'SUBSCRIPTION_ACTIVE', record };
+  }
+
+  if (feature === 'run_job' && record.plan === 'free' && mvpFreePlanEnabled()) {
+    return { allow: true, reason: 'FREE_PLAN_MVP_ALLOWED', record };
   }
 
   return { allow: false, reason: 'PLAN_FREE_NOT_ALLOWED', record };

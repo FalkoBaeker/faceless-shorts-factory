@@ -21,6 +21,16 @@ type AuthSessionPayload = {
   refresh_token?: string;
   expires_in?: number;
   user?: RawUser;
+  session?: {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    user?: RawUser;
+  };
+  id?: string;
+  email?: string;
+  app_metadata?: Record<string, unknown>;
+  user_metadata?: Record<string, unknown>;
   error_description?: string;
   msg?: string;
 };
@@ -111,20 +121,45 @@ const normalizeIdentity = (rawUser: RawUser | null | undefined): AuthIdentity =>
   };
 };
 
+const extractRawUser = (raw: AuthSessionPayload): RawUser | null => {
+  if (raw.user?.id) {
+    return raw.user;
+  }
+
+  if (raw.session?.user?.id) {
+    return raw.session.user;
+  }
+
+  if (raw.id) {
+    return {
+      id: raw.id,
+      email: raw.email,
+      app_metadata: raw.app_metadata,
+      user_metadata: raw.user_metadata
+    };
+  }
+
+  return null;
+};
+
 const parseSession = (payload: Record<string, unknown>): AuthSessionResult => {
   const raw = payload as AuthSessionPayload;
+  const session = raw.session;
 
-  if (!raw.user) {
+  const rawUser = extractRawUser(raw);
+  if (!rawUser) {
     throw new Error('AUTH_SESSION_USER_MISSING');
   }
 
-  const user = normalizeIdentity(raw.user);
-  const accessToken = raw.access_token ?? null;
+  const user = normalizeIdentity(rawUser);
+  const accessToken = raw.access_token ?? session?.access_token ?? null;
+  const refreshToken = raw.refresh_token ?? session?.refresh_token ?? null;
+  const expiresInRaw = raw.expires_in ?? session?.expires_in;
 
   return {
     accessToken,
-    refreshToken: raw.refresh_token ?? null,
-    expiresIn: typeof raw.expires_in === 'number' ? raw.expires_in : null,
+    refreshToken,
+    expiresIn: typeof expiresInRaw === 'number' ? expiresInRaw : null,
     user,
     requiresEmailConfirmation: !accessToken
   };

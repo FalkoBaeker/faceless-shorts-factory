@@ -9,6 +9,7 @@
 2. `.env` and `.env.providers` present (local only, never commit)
 3. `AUTH_REQUIRED=true` for real auth test
 4. `ENABLE_AUTO_PUBLISH=false` for MVP mode
+5. `ENABLE_FREE_PLAN_MVP=true` (default) so free customer can run end-to-end flow
 
 ## 1) Local start
 
@@ -40,7 +41,22 @@ Expected:
 - auth/me reachable with token (if email confirmation not required)
 - entitlement response returned (allow/reason)
 
-## 3) Pipeline smoke (real provider runtime)
+## 3) Free-customer E2E smoke (signup/verify/login → READY → download)
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+npm run sim:free-customer
+```
+
+Expected:
+- default smoke (`FREE_FLOW_PUBLIC_SIGNUP=false`) uses admin-created confirmed test user (bounce-safe)
+- optional public signup check with `FREE_FLOW_PUBLIC_SIGNUP=true` (single run, valid inbox only)
+- login works with confirmed user
+- authenticated free user can run job (`reason=FREE_PLAN_MVP_ALLOWED`)
+- pipeline reaches `READY`
+- `/v1/jobs/:jobId/assets` includes `final_video`
+- signed URL probe returns HTTP 200
+
+## 4) Pipeline smoke (real provider runtime)
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
 node --experimental-strip-types apps/api/src/simulate-live-provider-e2e.ts
@@ -51,7 +67,7 @@ Expected:
 - asset timeline events exist (`ASSET_*`)
 - signed URL probes return HTTP 200
 
-## 4) Alert smoke
+## 5) Alert smoke
 Set:
 - `ALERT_TARGET=email`
 - `ALERT_EMAIL_SEVERITIES=critical,warn`
@@ -68,7 +84,7 @@ Expected:
 - `target=email` when gog/Gmail available
 - fallback `target=logs` when connector unavailable (no crash)
 
-## 5) Render checks
+## 6) Render checks
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
 npm run render:preflight
@@ -80,7 +96,7 @@ Expected:
 - missing services clearly listed (api/web/postgres/redis)
 - env vars required per service listed in plan output
 
-## 6) Incident quick actions
+## 7) Incident quick actions
 - **Auth errors (`AUTH_PROVIDER_401/403`)**
   - verify `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
   - verify Supabase Auth URL config (`SITE_URL`, `REDIRECT_URLS`)
@@ -96,7 +112,7 @@ Expected:
   - inspect `logs/app.log`
   - inspect DLQ: `GET /v1/dlq`
 
-## 7) Security hygiene reminders
+## 8) Security hygiene reminders
 - never paste API keys in chat/logs
 - `.env` / `.env.providers` stay local
 - keep `AUTH_REQUIRED=true` outside local dev

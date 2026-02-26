@@ -21,10 +21,16 @@ npm run dev
 ```
 
 ## E2E (MVP)
-1. `/` öffnen, Signup/Login ausführen
-2. `/review` öffnen, „Live Flow starten“ klicken
+1. `/` öffnen, Signup ausführen (ggf. Email bestätigen), dann Login
+2. `/review` öffnen, Topic setzen und „Live Flow starten“ klicken
 3. Weiterleitung zu `/job-status?jobId=...`
 4. Bei `READY` erscheint Export-Download (signed URL)
+
+CLI smoke:
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+npm run sim:free-customer
+```
 
 ## Build/Lint
 ```bash
@@ -35,5 +41,6 @@ npm run lint
 
 ## Hinweise
 - Auto-Publish ist im MVP deaktiviert (`ENABLE_AUTO_PUBLISH=false`), Connector bleibt nachrüstbar.
+- Free-Customer-Flow ist im MVP standardmäßig aktiv (`ENABLE_FREE_PLAN_MVP=true`).
 - Keine externe UI-Library im Slice verwendet.
 - API Base URL via `NEXT_PUBLIC_API_BASE_URL` konfigurierbar (default `http://localhost:3001`).

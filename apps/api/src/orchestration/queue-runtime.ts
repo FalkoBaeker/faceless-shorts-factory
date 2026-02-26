@@ -88,6 +88,51 @@ const queueEvents = [
   new QueueEvents(queueNames.publish, { connection: redis.duplicate({ maxRetriesPerRequest: null }) })
 ];
 
+type StageQueueBinding = {
+  stage: Stage;
+  queue: Queue<StagePayload>;
+};
+
+const stageQueues: StageQueueBinding[] = [
+  { stage: 'video', queue: videoQueue },
+  { stage: 'audio', queue: audioQueue },
+  { stage: 'assembly', queue: assemblyQueue },
+  { stage: 'publish', queue: publishQueue }
+];
+
+const stageTimeoutDefaults: Record<Stage, number> = {
+  video: 1_800_000,
+  audio: 300_000,
+  assembly: 300_000,
+  publish: 120_000
+};
+
+const stageTimeoutMs = (stage: Stage) => {
+  const envKey = `${stage.toUpperCase()}_STAGE_TIMEOUT_MS`;
+  const raw = Number(process.env[envKey] ?? stageTimeoutDefaults[stage]);
+  if (!Number.isFinite(raw)) return stageTimeoutDefaults[stage];
+  return Math.max(30_000, Math.floor(raw));
+};
+
+const withStageTimeout = async <T>(stage: Stage, jobId: string, fn: () => Promise<T>): Promise<T> => {
+  const timeoutMs = stageTimeoutMs(stage);
+  let timer: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new UnrecoverableError(`HARD_FAILURE:${stage}:STAGE_TIMEOUT:${timeoutMs}ms:${jobId}`));
+        }, timeoutMs);
+        timer.unref();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
 const createWorker = <T extends StagePayload>(
   queueName: string,
   processor: (job: Job<T>) => Promise<unknown>
@@ -309,6 +354,63 @@ const markFailedFinal = async (jobId: string, stage: Stage, reason: string) => {
   );
 };
 
+const recoverStaleActiveJobs = async () => {
+  for (const binding of stageQueues) {
+    const activeJobs = await binding.queue.getJobs(['active'], 0, 199, true);
+
+    for (const active of activeJobs) {
+      const queueJobId = String(active.id ?? '');
+      if (!queueJobId) continue;
+
+      const lockKey = binding.queue.toKey(`${queueJobId}:lock`);
+      const lockExists = (await redis.exists(lockKey)) === 1;
+      if (lockExists) continue;
+
+      const data = (active.data ?? {}) as StagePayload;
+      const pipelineJobId = String(data.jobId ?? '').trim();
+
+      logEvent({
+        event: 'queue_stale_active_detected',
+        level: 'WARN',
+        stage: binding.stage,
+        jobId: pipelineJobId || undefined,
+        detail: `queueJobId=${queueJobId} lockKeyMissing=true`
+      });
+
+      if (pipelineJobId) {
+        await clearStageIdempotency(pipelineJobId, binding.stage);
+
+        try {
+          await insertTimeline(
+            pipelineJobId,
+            'QUEUE_STALE_ACTIVE_RECOVERED',
+            `stage=${binding.stage} queueJobId=${queueJobId} lockKeyMissing=true`
+          );
+          await markFailedFinal(pipelineJobId, binding.stage, `STALE_ACTIVE_NO_LOCK:${queueJobId}`);
+        } catch (error) {
+          logEvent({
+            event: 'queue_stale_active_mark_failed_error',
+            level: 'WARN',
+            stage: binding.stage,
+            jobId: pipelineJobId,
+            detail: String((error as Error)?.message ?? error)
+          });
+        }
+      }
+
+      try {
+        await active.remove();
+      } catch {
+        try {
+          await binding.queue.remove(queueJobId);
+        } catch {
+          // noop: keep boot resilient
+        }
+      }
+    }
+  }
+};
+
 const handleFinalFailure = async (stage: Stage, job: Job<StagePayload> | undefined, error: Error) => {
   if (!job?.data?.jobId) return;
 
@@ -363,7 +465,7 @@ const processVideo = async (job: Job<StagePayload>) => {
 
     await transitionStatus(jobId, 'VIDEO_PENDING', 'video worker started');
 
-    const result = await runVideoStage({ jobId, topic, variantType });
+    const result = await withStageTimeout('video', jobId, () => runVideoStage({ jobId, topic, variantType }));
     await setAssetRef(jobId, 'script', result.script);
     await setAssetRef(jobId, 'videoObjectPath', result.video.objectPath);
     await setAssetRef(jobId, 'imageObjectPath', result.image.objectPath);
@@ -399,7 +501,7 @@ const processAudio = async (job: Job<StagePayload>) => {
     await transitionStatus(jobId, 'AUDIO_PENDING', 'audio worker started');
 
     const script = (await getAssetRef(jobId, 'script')) ?? 'Kurzer faceless Promo-Clip.';
-    const result = await runAudioStage({ jobId, script });
+    const result = await withStageTimeout('audio', jobId, () => runAudioStage({ jobId, script }));
     await setAssetRef(jobId, 'audioObjectPath', result.audio.objectPath);
 
     await insertTimeline(jobId, 'ASSET_AUDIO_STORED', buildAssetDetail('audio', result.audio));
@@ -439,11 +541,13 @@ const processAssembly = async (job: Job<StagePayload>) => {
       throw new UnrecoverableError(`HARD_FAILURE:assembly:ASSET_REF_MISSING:${jobId}`);
     }
 
-    const final = await runAssemblyStage({
-      jobId,
-      videoObjectPath,
-      audioObjectPath
-    });
+    const final = await withStageTimeout('assembly', jobId, () =>
+      runAssemblyStage({
+        jobId,
+        videoObjectPath,
+        audioObjectPath
+      })
+    );
 
     await setAssetRef(jobId, 'finalObjectPath', final.finalVideo.objectPath);
     await insertTimeline(jobId, 'ASSET_FINAL_VIDEO_STORED', buildAssetDetail('final_video', final.finalVideo));
@@ -486,6 +590,7 @@ export const ensureQueueRuntime = async () => {
   if (initialized) return;
 
   await redisReady;
+  await recoverStaleActiveJobs();
 
   const videoWorker = createWorker(queueNames.video, processVideo);
   const audioWorker = createWorker(queueNames.audio, processAudio);
@@ -507,7 +612,7 @@ export const closeQueueRuntime = async () => {
   shuttingDown = true;
 
   try {
-    await Promise.all(workers.map((worker) => worker.close().catch(() => undefined)));
+    await Promise.all(workers.map((worker) => worker.close(true).catch(() => undefined)));
     await Promise.all(queueEvents.map((events) => events.close().catch(() => undefined)));
     await Promise.all(
       [videoQueue.close(), audioQueue.close(), assemblyQueue.close(), publishQueue.close(), deadLetterQueue.close()].map((p) =>

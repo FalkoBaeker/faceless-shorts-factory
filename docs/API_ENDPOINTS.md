@@ -17,6 +17,7 @@
 
 ## Billing/Entitlement support
 - `GET /v1/ledger/:organizationId`
+- In MVP default (`ENABLE_FREE_PLAN_MVP=true`), `free` users can run generation flow and receive `reason=FREE_PLAN_MVP_ALLOWED`.
 
 ## Admin
 - `GET /v1/admin/snapshot`
@@ -47,11 +48,11 @@
   "authenticated": true,
   "authRequired": true,
   "canRunJob": true,
-  "reason": "ALLOWLIST",
+  "reason": "FREE_PLAN_MVP_ALLOWED",
   "user": {
     "id": "user-id",
     "email": "you@example.com",
-    "plan": "beta",
+    "plan": "free",
     "subscriptionStatus": "inactive",
     "allowlisted": true,
     "creditsRemaining": null,
