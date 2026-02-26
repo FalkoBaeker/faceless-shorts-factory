@@ -40,7 +40,7 @@ export type CreateProjectPayload = {
 export type SelectConceptPayload = {
   jobId: string;
   creditReservationStatus: 'RESERVED';
-  estimatedSeconds: 16 | 32;
+  estimatedSeconds: 15 | 30;
 };
 
 export type JobPayload = {
@@ -138,13 +138,27 @@ export const createProject = (token: string, payload: { organizationId: string; 
     }
   });
 
-export const selectConcept = (token: string, projectId: string, variantType: 'SHORT_15' | 'MASTER_30') =>
+export const selectConcept = (
+  token: string,
+  projectId: string,
+  payload: {
+    variantType: 'SHORT_15' | 'MASTER_30';
+    conceptId: string;
+    startFrameStyle:
+      | 'storefront_hero'
+      | 'product_macro'
+      | 'owner_portrait'
+      | 'hands_at_work'
+      | 'before_after_split';
+  }
+) =>
   requestJson<SelectConceptPayload>(`/v1/projects/${projectId}/select`, {
     method: 'POST',
     token,
     body: {
-      conceptId: 'concept_web_vertical_slice',
-      variantType
+      conceptId: payload.conceptId,
+      startFrameStyle: payload.startFrameStyle,
+      variantType: payload.variantType
     }
   });
 

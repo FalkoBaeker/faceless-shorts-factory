@@ -22,7 +22,12 @@ npm run dev
 
 ## E2E (MVP)
 1. `/` öffnen, Signup ausführen (ggf. Email bestätigen), dann Login (`Signup starten` / `Login starten`)
-2. `/review` öffnen, im Block **`Live MVP Flow (ECHTE API-Daten)`** Topic setzen und `Echten Video-Flow starten` klicken
+2. `/review` öffnen, im Block **`Live MVP Flow (ECHTE API-Daten)`** folgende Felder setzen:
+   - Topic
+   - Video-Länge (`SHORT_15` oder `MASTER_30`)
+   - Storyboard/Concept
+   - Startframe
+   Danach `Echten Video-Flow starten` klicken
 3. Weiterleitung zu `/job-status?jobId=...`
 4. Im Block **`Real Runtime Status (API, kein Mock)`** auf `READY` warten
 5. `Export herunterladen` klicken (signed URL)

@@ -71,6 +71,125 @@ const cfg = {
   maxRpmVideo: Number(process.env.MAX_RPM_VIDEO ?? 3)
 };
 
+type VariantType = 'SHORT_15' | 'MASTER_30';
+
+type VariantDurationConfig = {
+  targetSeconds: number;
+  sourceSeconds: number;
+};
+
+type StartFrameStyle =
+  | 'storefront_hero'
+  | 'product_macro'
+  | 'owner_portrait'
+  | 'hands_at_work'
+  | 'before_after_split';
+
+type StoryboardConceptId =
+  | 'concept_web_vertical_slice'
+  | 'concept_offer_focus'
+  | 'concept_problem_solution'
+  | 'concept_before_after'
+  | 'concept_testimonial';
+
+type StoryboardConcept = {
+  id: StoryboardConceptId;
+  label: string;
+  videoDirection: string;
+  imageDirection: string;
+};
+
+const storyboardConcepts: Record<StoryboardConceptId, StoryboardConcept> = {
+  concept_web_vertical_slice: {
+    id: 'concept_web_vertical_slice',
+    label: 'Vertical Slice Klassiker',
+    videoDirection:
+      'Schneller Hook, dann 2 kurze Nutzenpunkte und klarer CTA. Jeder Shot zeigt eine andere Mikro-Szene zum Thema.',
+    imageDirection: 'Klares Hero-Keyvisual in vertikalem 9:16 Frame mit zentralem Fokusobjekt.'
+  },
+  concept_offer_focus: {
+    id: 'concept_offer_focus',
+    label: 'Angebot im Fokus',
+    videoDirection:
+      'Eröffne mit starkem Angebots-Hook, hebe Preisvorteil/Mehrwert hervor und ende mit zeitkritischem CTA.',
+    imageDirection: 'Preis/Angebot visuell dominant darstellen, hohe Lesbarkeit und sauberer Kontrast.'
+  },
+  concept_problem_solution: {
+    id: 'concept_problem_solution',
+    label: 'Problem → Lösung',
+    videoDirection:
+      'Starte mit typischem Kundenproblem, zeige dann die Lösung in 2 klaren Schritten und schließe mit Vertrauen/CTA.',
+    imageDirection: 'Vorher/Nachher-Anmutung mit klarer Problem-Lösung-Visualisierung in einem Frame.'
+  },
+  concept_before_after: {
+    id: 'concept_before_after',
+    label: 'Vorher / Nachher',
+    videoDirection:
+      'Direkter Vorher-Nachher-Kontrast, danach kurzer Beweis der Wirkung und eindeutiger Handlungsaufruf.',
+    imageDirection: 'Split-Komposition mit sofort erkennbarem Vorher-Nachher-Effekt.'
+  },
+  concept_testimonial: {
+    id: 'concept_testimonial',
+    label: 'Kundenstimme',
+    videoDirection:
+      'Beginne mit glaubwürdigem Testimonial-Zitat, stütze es durch kurze Szenenbeweise und ende mit CTA.',
+    imageDirection: 'Authentischer, vertrauensbildender Keyframe mit menschlichem Fokus und Marke im Kontext.'
+  }
+};
+
+const startFramePrompts: Record<StartFrameStyle, string> = {
+  storefront_hero: 'Startframe: Hero-Aufnahme der Ladenfront/Marke, gut ausgeleuchtet, ruhiger Hintergrund.',
+  product_macro: 'Startframe: Produkt-Makroaufnahme mit hoher Detailtiefe und klarer Trennung vom Hintergrund.',
+  owner_portrait: 'Startframe: freundliches Owner-Portrait, Blick zur Kamera, professionell aber authentisch.',
+  hands_at_work: 'Startframe: Hände bei der Arbeit/Herstellung, dynamisch und handwerklich nah.',
+  before_after_split: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
+};
+
+const parsePositiveInt = (value: unknown, fallback: number) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.round(parsed);
+};
+
+const parseRangeFloat = (value: unknown, fallback: number, min: number, max: number) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const resolveVariantDurations = (variantType: VariantType): VariantDurationConfig => {
+  const targetSeconds = variantType === 'SHORT_15'
+    ? parsePositiveInt(process.env.SHORT_15_TARGET_SECONDS ?? 15, 15)
+    : parsePositiveInt(process.env.MASTER_30_TARGET_SECONDS ?? 30, 30);
+
+  const defaultSource = variantType === 'SHORT_15' ? 12 : 12;
+  const sourceFromEnv = variantType === 'SHORT_15'
+    ? process.env.SHORT_15_SOURCE_VIDEO_SECONDS
+    : process.env.MASTER_30_SOURCE_VIDEO_SECONDS;
+
+  const sourceSeconds = Math.min(12, Math.max(4, parsePositiveInt(sourceFromEnv ?? defaultSource, defaultSource)));
+
+  return {
+    targetSeconds,
+    sourceSeconds
+  };
+};
+
+const resolveStoryboardConcept = (conceptId?: string): StoryboardConcept => {
+  if (!conceptId) return storyboardConcepts.concept_web_vertical_slice;
+  const key = conceptId as StoryboardConceptId;
+  return storyboardConcepts[key] ?? storyboardConcepts.concept_web_vertical_slice;
+};
+
+const resolveStartFrameStyle = (style?: string): StartFrameStyle => {
+  if (!style) return 'storefront_hero';
+  if (style in startFramePrompts) return style as StartFrameStyle;
+  return 'storefront_hero';
+};
+
+const resolveCaptionSafeAreaScale = () =>
+  parseRangeFloat(process.env.CAPTION_SAFE_AREA_SCALE ?? 0.9, 0.9, 0.75, 1);
+
 const now = () => Date.now();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -378,13 +497,17 @@ export const getProviderHealthSnapshot = (): ProviderHealthSnapshot => ({ ...hea
 
 export const isFatalProviderError = (error: unknown) => error instanceof ProviderRuntimeError && error.fatal;
 
-const createScriptFromLlm = async (topic: string, variantType: 'SHORT_15' | 'MASTER_30') => {
+const createScriptFromLlm = async (topic: string, variantType: VariantType) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.01, 'llm-script');
+
+  const { targetSeconds } = resolveVariantDurations(variantType);
+  const targetWords = Math.round(targetSeconds * 2.35);
+
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
-    input: `Create a concise narration script (${variantType}) for: ${topic}. Output 2-3 short sentences in German.` ,
-    max_output_tokens: 120
+    input: `Erstelle ein deutsches Voiceover-Skript für ein Kurzvideo zum Thema: "${topic}". Ziel-Länge: ca. ${targetSeconds} Sekunden, etwa ${targetWords} Wörter. Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints.` ,
+    max_output_tokens: 220
   });
   const text = parseOpenAiResponseText(response);
   if (!text) {
@@ -408,11 +531,12 @@ const createImage = async (prompt: string) => {
   return Buffer.from(b64, 'base64');
 };
 
-const createVideo = async (prompt: string, variantType: 'SHORT_15' | 'MASTER_30') => {
+const createVideo = async (prompt: string, variantType: VariantType) => {
   checkRate('video', cfg.maxRpmVideo);
-  const seconds = variantType === 'SHORT_15' ? '4' : '8';
+  const { sourceSeconds } = resolveVariantDurations(variantType);
+  const seconds = String(sourceSeconds);
   const model = 'sora-2';
-  const estimated = Number(seconds) * 0.1;
+  const estimated = sourceSeconds * 0.1;
   reserveBudget(estimated, `video-${model}`);
 
   const created = await openAiPostJson('/v1/videos', {
@@ -535,11 +659,16 @@ const uploadAsset = async (jobId: string, objectPath: string, bytes: Buffer, mim
   };
 };
 
-const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer) => {
+const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer, targetSeconds: number, safeAreaScale: number) => {
   const dir = mkdtempSync(join(tmpdir(), 'fsf-assemble-'));
   const inputVideo = join(dir, 'input-video.mp4');
   const inputAudio = join(dir, 'input-audio.mp3');
   const output = join(dir, 'output-final.mp4');
+
+  const targetWidth = 720;
+  const targetHeight = 1280;
+  const safeWidth = Math.max(2, Math.floor((targetWidth * safeAreaScale) / 2) * 2);
+  const safeHeight = Math.max(2, Math.floor((targetHeight * safeAreaScale) / 2) * 2);
 
   try {
     writeFileSync(inputVideo, videoBytes);
@@ -547,7 +676,41 @@ const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer) => {
 
     const run = spawnSync(
       'ffmpeg',
-      ['-y', '-loglevel', 'error', '-i', inputVideo, '-i', inputAudio, '-c:v', 'copy', '-c:a', 'aac', '-shortest', output],
+      [
+        '-y',
+        '-loglevel',
+        'error',
+        '-i',
+        inputVideo,
+        '-i',
+        inputAudio,
+        '-filter_complex',
+        `[0:v]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,` +
+          `pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
+          `tpad=stop_mode=clone:stop_duration=${targetSeconds},` +
+          `scale=${safeWidth}:${safeHeight}:flags=lanczos,` +
+          `pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
+          `format=yuv420p[v];[1:a]apad[a]`,
+        '-map',
+        '[v]',
+        '-map',
+        '[a]',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '20',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '160k',
+        '-movflags',
+        '+faststart',
+        '-t',
+        String(targetSeconds),
+        output
+      ],
       { encoding: 'utf8' }
     );
 
@@ -564,12 +727,38 @@ const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer) => {
   }
 };
 
-export const runVideoStage = async (input: { jobId: string; topic: string; variantType: 'SHORT_15' | 'MASTER_30' }) => {
+export const runVideoStage = async (input: {
+  jobId: string;
+  topic: string;
+  variantType: VariantType;
+  conceptId?: string;
+  startFrameStyle?: string;
+}) => {
   await runProviderHealthchecks();
 
+  const concept = resolveStoryboardConcept(input.conceptId);
+  const startFrameStyle = resolveStartFrameStyle(input.startFrameStyle);
+
   const llmText = await createScriptFromLlm(input.topic, input.variantType);
-  const imageBytes = await createImage(`Poster frame for: ${llmText}`);
-  const video = await createVideo(llmText, input.variantType);
+
+  const imagePrompt = [
+    `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
+    `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
+    startFramePrompts[startFrameStyle],
+    'Keep composition center-safe with at least 10% margin on all sides.',
+    `Narration context: ${llmText}`
+  ].join(' ');
+
+  const videoPrompt = [
+    `Create a vertical social video about: ${input.topic}.`,
+    `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
+    `Narration text: ${llmText}`,
+    'If on-screen text appears, keep it inside a title-safe area (10% margin from all edges).',
+    'No caption text should touch the frame border.'
+  ].join(' ');
+
+  const imageBytes = await createImage(imagePrompt);
+  const video = await createVideo(videoPrompt, input.variantType);
 
   const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageBytes, 'image/png', 'openai-image');
   const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, video.bytes, 'video/mp4', 'openai-video');
@@ -579,7 +768,9 @@ export const runVideoStage = async (input: { jobId: string; topic: string; varia
     image: imageAsset,
     video: videoAsset,
     videoModel: video.model,
-    videoId: video.videoId
+    videoId: video.videoId,
+    conceptId: concept.id,
+    startFrameStyle
   };
 };
 
@@ -595,16 +786,25 @@ export const runAudioStage = async (input: { jobId: string; script: string }) =>
   };
 };
 
-export const runAssemblyStage = async (input: { jobId: string; videoObjectPath: string; audioObjectPath: string }) => {
+export const runAssemblyStage = async (input: {
+  jobId: string;
+  videoObjectPath: string;
+  audioObjectPath: string;
+  variantType: VariantType;
+}) => {
   await runProviderHealthchecks();
 
+  const { targetSeconds } = resolveVariantDurations(input.variantType);
+  const safeAreaScale = resolveCaptionSafeAreaScale();
   const videoBytes = await supabaseDownload(input.videoObjectPath);
   const audioBytes = await supabaseDownload(input.audioObjectPath);
-  const muxed = muxVideoAndAudio(videoBytes, audioBytes);
+  const muxed = muxVideoAndAudio(videoBytes, audioBytes, targetSeconds, safeAreaScale);
 
   const finalAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/final.mp4`, muxed, 'video/mp4', 'ffmpeg');
 
   return {
-    finalVideo: finalAsset
+    finalVideo: finalAsset,
+    targetSeconds,
+    safeAreaScale
   };
 };

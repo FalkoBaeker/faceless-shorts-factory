@@ -29,6 +29,11 @@ type StagePayload = {
   replayCount?: number;
 };
 
+type StoryboardSelection = {
+  conceptId: string;
+  startFrameStyle: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+};
+
 type JobContext = {
   id: string;
   status: VideoJobStatus;
@@ -204,6 +209,38 @@ const buildAssetDetail = (kind: string, asset: StoredAsset) =>
     mimeType: asset.mimeType,
     provider: asset.provider
   });
+
+const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
+  const fallback: StoryboardSelection = {
+    conceptId: 'concept_web_vertical_slice',
+    startFrameStyle: 'storefront_hero'
+  };
+
+  const record = getJob(jobId);
+  if (!record) return fallback;
+
+  const selected = [...record.timeline]
+    .reverse()
+    .find((event) => event.event === 'STORYBOARD_SELECTED' && typeof event.detail === 'string');
+
+  if (!selected?.detail) return fallback;
+
+  try {
+    const parsed = JSON.parse(selected.detail) as Partial<StoryboardSelection>;
+    const startFrameStyle =
+      parsed.startFrameStyle &&
+      ['storefront_hero', 'product_macro', 'owner_portrait', 'hands_at_work', 'before_after_split'].includes(parsed.startFrameStyle)
+        ? parsed.startFrameStyle
+        : fallback.startFrameStyle;
+
+    return {
+      conceptId: String(parsed.conceptId ?? fallback.conceptId),
+      startFrameStyle
+    } as StoryboardSelection;
+  } catch {
+    return fallback;
+  }
+};
 
 const fetchJobContext = async (jobId: string): Promise<JobContext> => {
   if (!isPostgres()) {
@@ -462,14 +499,28 @@ const processVideo = async (job: Job<StagePayload>) => {
     const project = getProject(context.project_id);
     const topic = project?.topic ?? `faceless short for ${context.project_id}`;
     const variantType = project?.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15';
+    const storyboard = parseStoryboardSelection(jobId);
 
     await transitionStatus(jobId, 'VIDEO_PENDING', 'video worker started');
 
-    const result = await withStageTimeout('video', jobId, () => runVideoStage({ jobId, topic, variantType }));
+    const result = await withStageTimeout('video', jobId, () =>
+      runVideoStage({
+        jobId,
+        topic,
+        variantType,
+        conceptId: storyboard.conceptId,
+        startFrameStyle: storyboard.startFrameStyle
+      })
+    );
     await setAssetRef(jobId, 'script', result.script);
     await setAssetRef(jobId, 'videoObjectPath', result.video.objectPath);
     await setAssetRef(jobId, 'imageObjectPath', result.image.objectPath);
 
+    await insertTimeline(
+      jobId,
+      'VIDEO_CONCEPT_APPLIED',
+      JSON.stringify({ conceptId: result.conceptId, startFrameStyle: result.startFrameStyle })
+    );
     await insertTimeline(jobId, 'ASSET_SCRIPT_READY', result.script.slice(0, 280));
     await insertTimeline(jobId, 'ASSET_IMAGE_STORED', buildAssetDetail('image', result.image));
     await insertTimeline(jobId, 'ASSET_VIDEO_STORED', buildAssetDetail('video', result.video));
@@ -531,6 +582,8 @@ const processAssembly = async (job: Job<StagePayload>) => {
 
   try {
     const context = await fetchJobContext(jobId);
+    const project = getProject(context.project_id);
+    const variantType = project?.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15';
 
     await transitionStatus(jobId, 'ASSEMBLY_PENDING', 'assembly worker started');
     await transitionStatus(jobId, 'RENDERING', 'rendering started');
@@ -545,12 +598,15 @@ const processAssembly = async (job: Job<StagePayload>) => {
       runAssemblyStage({
         jobId,
         videoObjectPath,
-        audioObjectPath
+        audioObjectPath,
+        variantType
       })
     );
 
     await setAssetRef(jobId, 'finalObjectPath', final.finalVideo.objectPath);
     await insertTimeline(jobId, 'ASSET_FINAL_VIDEO_STORED', buildAssetDetail('final_video', final.finalVideo));
+    await insertTimeline(jobId, 'ASSEMBLY_TARGET_DURATION', `${variantType}:${final.targetSeconds}s`);
+    await insertTimeline(jobId, 'CAPTION_SAFE_AREA_APPLIED', `scale=${final.safeAreaScale}`);
 
     await transitionStatus(jobId, 'READY', 'render complete');
     await upsertLedgerFinalState(context.organization_id, jobId, 'COMMITTED', 0, 'reserved credit committed on READY');

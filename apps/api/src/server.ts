@@ -241,6 +241,12 @@ export const buildApiServer = () =>
         const selected = selectConceptHandler({
           projectId,
           conceptId: String(body.conceptId ?? 'concept_1'),
+          startFrameStyle: String(body.startFrameStyle ?? 'storefront_hero') as
+            | 'storefront_hero'
+            | 'product_macro'
+            | 'owner_portrait'
+            | 'hands_at_work'
+            | 'before_after_split',
           variantType: body.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15'
         });
 

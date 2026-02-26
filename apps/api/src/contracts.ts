@@ -17,13 +17,19 @@ export type CreateProjectResponse = {
 export type SelectConceptRequest = {
   projectId: string;
   conceptId: string;
+  startFrameStyle?:
+    | 'storefront_hero'
+    | 'product_macro'
+    | 'owner_portrait'
+    | 'hands_at_work'
+    | 'before_after_split';
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
 };
 
 export type SelectConceptResponse = {
   jobId: string;
   creditReservationStatus: 'RESERVED';
-  estimatedSeconds: 16 | 32;
+  estimatedSeconds: 15 | 30;
 };
 
 export type JobStatusResponse = {

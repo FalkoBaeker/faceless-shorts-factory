@@ -150,29 +150,36 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
         <div>
           <p className="kicker">Job Status</p>
           <h1 id="status-title" className="hero-title">
-            Laufzeitstatus, Queue-Metriken und Ergebniszustände auf einen Blick.
+            Reale Laufzeitdaten und Download an einem Ort.
           </h1>
         </div>
         <p className="hero-text">
-          Hinweis: Der Block „State Preview“ ist Mock-UI für visuelle Checks. Der echte Joblauf steht im
-          Block „Real Runtime Status (API, kein Mock)“ weiter unten.
+          Nutze primär den Block „Real Runtime Status (API, kein Mock)“. Dort läuft die echte Polling-Ansicht für
+          deinen Job.
         </p>
         <div className="action-row">
           <span className={`chip ${stateChipTone[currentState]}`}>
-            Aktiver Zustand: {jobStateLabels[currentState]}
+            UI Preview Zustand: {jobStateLabels[currentState]}
           </span>
           <span className="chip chip-neutral">Provider: {queueMetricsMock.provider}</span>
         </div>
       </section>
 
-      <section className="section-card" style={{ marginBottom: 12 }} aria-label="State Switcher">
-        <h2 className="section-title">State Preview (Mock)</h2>
-        <p className="section-copy">Zum schnellen UI-Check kannst du jeden Zustand einzeln anzeigen.</p>
+      <div style={{ marginBottom: 12 }}>
+        <JobRuntimePanel initialJobId={jobIdParam ?? ''} />
+      </div>
+
+      <details className="section-card" style={{ marginBottom: 12 }}>
+        <summary className="section-title" style={{ cursor: 'pointer' }}>
+          Optionale State Preview (Mock) öffnen
+        </summary>
+        <p className="section-copy">Nur für visuelle UI-Checks, nicht der echte Runtime-Flow.</p>
+
         <div className="state-toggle-row" role="tablist" aria-label="Job state toggles">
           {jobStateOrder.map((state) => (
             <Link
               key={state}
-              href={`/job-status?state=${state}`}
+              href={`/job-status?state=${state}${jobIdParam ? `&jobId=${encodeURIComponent(jobIdParam)}` : ''}`}
               className={`state-toggle ${currentState === state ? 'active' : ''}`}
               role="tab"
               aria-selected={currentState === state}
@@ -182,21 +189,17 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
             </Link>
           ))}
         </div>
-      </section>
 
-      <div id="job-state-panel" style={{ marginBottom: 12 }}>
-        {statePanel[currentState]}
-      </div>
+        <div id="job-state-panel" style={{ marginTop: 10 }}>
+          {statePanel[currentState]}
+        </div>
+      </details>
 
-      <div style={{ marginBottom: 12 }}>
-        <JobRuntimePanel initialJobId={jobIdParam ?? ''} />
-      </div>
-
-      <section className="section-card" aria-labelledby="metrics-title">
-        <h2 id="metrics-title" className="section-title">
+      <details className="section-card" aria-labelledby="metrics-title" style={{ marginBottom: 12 }}>
+        <summary id="metrics-title" className="section-title" style={{ cursor: 'pointer' }}>
           Queue & Runtime Metrics (Mock)
-        </h2>
-        <dl className="status-grid">
+        </summary>
+        <dl className="status-grid" style={{ marginTop: 10 }}>
           <div className="status-kpi">
             <dt>Queue Depth</dt>
             <dd>{queueMetricsMock.queueDepth}</dd>
@@ -210,8 +213,10 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
             <dd>{queueMetricsMock.retryBudgetLeft}</dd>
           </div>
         </dl>
+      </details>
 
-        <div className="action-row" style={{ marginTop: 2 }}>
+      <section className="section-card" aria-label="Navigation">
+        <div className="action-row">
           <Link href="/review" className="button-ghost">
             Zurück zu Review
           </Link>
@@ -220,12 +225,6 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
           </Link>
         </div>
       </section>
-
-      <div className="sticky-cta" role="complementary" aria-label="Primary mobile action">
-        <Link href="/job-status?state=ready" className="button">
-          Ready-State anzeigen
-        </Link>
-      </div>
     </PageFrame>
   );
 }

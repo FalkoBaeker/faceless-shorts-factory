@@ -95,6 +95,22 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     return entries.find((entry) => entry.kind === 'final_video') ?? null;
   }, [assets]);
 
+  const storyboardMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'VIDEO_CONCEPT_APPLIED' && entry.detail);
+    if (!event?.detail) return null;
+    try {
+      const parsed = JSON.parse(event.detail) as { conceptId?: string; startFrameStyle?: string };
+      return {
+        conceptId: parsed.conceptId ?? 'unknown',
+        startFrameStyle: parsed.startFrameStyle ?? 'unknown'
+      };
+    } catch {
+      return null;
+    }
+  }, [job]);
+
   const sendAlert = async () => {
     const token = readStoredToken();
     if (!token) {
@@ -135,6 +151,13 @@ export function JobRuntimePanel({ initialJobId }: Props) {
 
       {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
       {alertResult ? <p className="section-copy" style={{ marginTop: 0 }}>{alertResult}</p> : null}
+
+      {storyboardMeta ? (
+        <div className="action-row" style={{ marginTop: 0 }}>
+          <span className="chip chip-neutral">Concept: {storyboardMeta.conceptId}</span>
+          <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameStyle}</span>
+        </div>
+      ) : null}
 
       <ul className="list-clean" aria-label="Runtime timeline">
         {(job?.timeline ?? []).slice(-6).reverse().map((event) => (

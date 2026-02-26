@@ -10,7 +10,7 @@ import type {
 } from './contracts.ts';
 import { createProject, getProject, setProjectStatus } from './project-store.ts';
 import { startJob } from './services/job-service.ts';
-import { getJob } from './job-store.ts';
+import { getJob, appendTimelineEvent } from './job-store.ts';
 import { reserveCredit, listLedger, getLedgerBalance } from './services/billing-service.ts';
 import { getPublishPosts } from './services/publish-service.ts';
 import { getAdminSnapshot } from './services/admin-service.ts';
@@ -53,7 +53,16 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
 
   reserveCredit(project.organizationId, job.id);
 
-  const estimatedSeconds = payload.variantType === 'SHORT_15' ? 16 : 32;
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'STORYBOARD_SELECTED',
+    detail: JSON.stringify({
+      conceptId: payload.conceptId,
+      startFrameStyle: payload.startFrameStyle ?? 'storefront_hero'
+    })
+  });
+
+  const estimatedSeconds = payload.variantType === 'SHORT_15' ? 15 : 30;
 
   return {
     jobId: job.id,

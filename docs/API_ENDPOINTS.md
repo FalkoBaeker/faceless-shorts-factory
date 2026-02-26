@@ -10,7 +10,7 @@
 
 ## Project & Generation
 - `POST /v1/projects` — create project
-- `POST /v1/projects/:projectId/select` — reserve credit + create job
+- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ storyboard concept + startframe style)
 - `POST /v1/projects/:projectId/generate` — enqueue generation pipeline
 - `GET /v1/jobs/:jobId` — status timeline
 - `GET /v1/jobs/:jobId/assets` — signed asset URLs/events for export
