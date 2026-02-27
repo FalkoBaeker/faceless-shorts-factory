@@ -34,7 +34,7 @@ const run = async () => {
     const selectRes = await fetch(`${base}/v1/projects/${project.projectId}/select`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ conceptId: 'concept_http_fail', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'MASTER_30' })
+      body: JSON.stringify({ conceptId: 'concept_http_fail', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'MASTER_30', startFrameStyle: 'storefront_hero' })
     });
     const select = await selectRes.json();
 

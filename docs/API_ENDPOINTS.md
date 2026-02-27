@@ -11,7 +11,8 @@
 ## Project & Generation
 - `POST /v1/projects` — create project
 - `POST /v1/script/draft` — generate script draft with target-length estimation and mood preset
-- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ mood + storyboard concept + startframe + accepted script)
+- `POST /v1/startframes/candidates` — generate 3–5 startframe candidates for current topic/concept/mood
+- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ mood + storyboard concept + selected startframe candidate + accepted script)
 - `POST /v1/projects/:projectId/generate` — enqueue generation pipeline
 - `GET /v1/jobs/:jobId` — status timeline (includes quality events like `FINAL_SYNC_OK`, `CAPTION_SAFE_AREA_APPLIED`, `SCRIPT_DURATION_VALIDATED`)
 - `GET /v1/jobs/:jobId/assets` — signed asset URLs/events for export
@@ -55,12 +56,25 @@ Response (example):
 }
 ```
 
+## Example: `POST /v1/startframes/candidates`
+```json
+{
+  "topic": "Rohr verstopft",
+  "conceptId": "concept_problem_solution",
+  "moodPreset": "problem_solution",
+  "limit": 3
+}
+```
+
+Response contains `candidates[]` with `{ candidateId, style, label, description, prompt }`.
+
 ## Example: `POST /v1/projects/:projectId/select`
 ```json
 {
   "variantType": "SHORT_15",
   "moodPreset": "commercial_cta",
   "conceptId": "concept_offer_focus",
+  "startFrameCandidateId": "sfc_hands_at_work_ab12cd34ef",
   "startFrameStyle": "hands_at_work",
   "approvedScript": "Rohr verstopft? Unser Team ist heute noch bei Ihnen ..."
 }
@@ -68,6 +82,8 @@ Response (example):
 
 Notes:
 - Missing `approvedScript` returns `SCRIPT_ACCEPTANCE_REQUIRED`.
+- Missing startframe selection returns `STARTFRAME_SELECTION_REQUIRED`.
+- Timeline includes `SELECTED_STARTFRAME` event with selected candidate ID.
 - `SHORT_15` maps to standard 30s output in v1.1 semantics.
 - `MASTER_30` maps to premium 60s only when `ENABLE_PREMIUM_60=true`.
 

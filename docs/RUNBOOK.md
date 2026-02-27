@@ -81,6 +81,17 @@ Expected:
 - `sentencePreservedRate >= 95%`
 - safe-area dimensions stay inside `720x1280`
 
+## 4c) Startframe selection gate verify
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+npm run sim:startframe-gate
+```
+
+Expected:
+- select without startframe fails with `STARTFRAME_SELECTION_REQUIRED`
+- `/v1/startframes/candidates` returns at least 3 candidates
+- timeline contains `SELECTED_STARTFRAME` with selected `candidateId`
+
 ## 5) Pipeline smoke (real provider runtime)
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory

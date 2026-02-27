@@ -181,6 +181,14 @@ const startFramePrompts: Record<StartFrameStyle, string> = {
   before_after_split: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
 };
 
+const startFrameLabels: Record<StartFrameStyle, string> = {
+  storefront_hero: 'Storefront Hero',
+  product_macro: 'Produkt-Makro',
+  owner_portrait: 'Owner Portrait',
+  hands_at_work: 'Hands at Work',
+  before_after_split: 'Before/After Split'
+};
+
 const moodPromptMap: Record<MoodPreset, string> = {
   commercial_cta:
     'Stimmung: Commercial mit klarer Verkaufsbotschaft, Nutzenfokus und konkret handlungsorientiertem CTA.',
@@ -1030,6 +1038,8 @@ export const runVideoStage = async (input: {
   variantType: VariantType;
   conceptId?: string;
   startFrameStyle?: string;
+  startFrameCandidateId?: string;
+  startFramePromptOverride?: string;
   moodPreset?: MoodPreset;
   approvedScript?: string;
 }) => {
@@ -1042,6 +1052,8 @@ export const runVideoStage = async (input: {
   const durationConfig = resolveVariantDurations(input.variantType);
   const captionSafeArea = resolveCaptionSafeArea();
   const safeMarginPercent = Math.round(captionSafeArea.marginRatio * 100);
+  const startFramePrompt = input.startFramePromptOverride?.trim() || startFramePrompts[startFrameStyle];
+  const startFrameLabel = startFrameLabels[startFrameStyle];
 
   const draft = input.approvedScript?.trim()
     ? (() => {
@@ -1076,7 +1088,7 @@ export const runVideoStage = async (input: {
     `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
     `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
     `Mood: ${moodPromptMap[moodPreset]}`,
-    startFramePrompts[startFrameStyle],
+    startFramePrompt,
     `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
     `Narration context: ${llmText}`
   ].join(' ');
@@ -1104,6 +1116,8 @@ export const runVideoStage = async (input: {
     videoId: video.videoId,
     conceptId: concept.id,
     startFrameStyle,
+    startFrameCandidateId: input.startFrameCandidateId,
+    startFrameLabel,
     moodPreset,
     scriptValidation: {
       targetSeconds: draft.targetSeconds,

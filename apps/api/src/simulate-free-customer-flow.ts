@@ -371,7 +371,7 @@ const run = async () => {
       method: 'POST',
       token: accessToken,
       body: {
-        conceptId: 'concept_web_vertical_slice', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'SHORT_15'
+        conceptId: 'concept_web_vertical_slice', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'SHORT_15', startFrameStyle: 'storefront_hero'
       }
     });
 

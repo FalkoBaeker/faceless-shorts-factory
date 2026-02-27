@@ -101,11 +101,19 @@ export function JobRuntimePanel({ initialJobId }: Props) {
       .find((entry) => entry.event === 'VIDEO_CONCEPT_APPLIED' && entry.detail);
     if (!event?.detail) return null;
     try {
-      const parsed = JSON.parse(event.detail) as { conceptId?: string; moodPreset?: string; startFrameStyle?: string };
+      const parsed = JSON.parse(event.detail) as {
+        conceptId?: string;
+        moodPreset?: string;
+        startFrameStyle?: string;
+        startFrameCandidateId?: string;
+        startFrameLabel?: string;
+      };
       return {
         conceptId: parsed.conceptId ?? 'unknown',
         moodPreset: parsed.moodPreset ?? 'unknown',
-        startFrameStyle: parsed.startFrameStyle ?? 'unknown'
+        startFrameStyle: parsed.startFrameStyle ?? 'unknown',
+        startFrameCandidateId: parsed.startFrameCandidateId ?? 'unknown',
+        startFrameLabel: parsed.startFrameLabel ?? parsed.startFrameStyle ?? 'unknown'
       };
     } catch {
       return null;
@@ -209,7 +217,8 @@ export function JobRuntimePanel({ initialJobId }: Props) {
         <div className="action-row" style={{ marginTop: 0 }}>
           <span className="chip chip-neutral">Mood: {storyboardMeta.moodPreset}</span>
           <span className="chip chip-neutral">Concept: {storyboardMeta.conceptId}</span>
-          <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameStyle}</span>
+          <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameLabel}</span>
+          <span className="chip chip-neutral">Candidate: {storyboardMeta.startFrameCandidateId}</span>
         </div>
       ) : null}
 

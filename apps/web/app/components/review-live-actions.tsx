@@ -2,7 +2,15 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createProject, createScriptDraft, selectConcept, triggerGenerate, type ApiError } from '../lib/api-client';
+import {
+  createProject,
+  createScriptDraft,
+  createStartFrameCandidates,
+  selectConcept,
+  triggerGenerate,
+  type ApiError,
+  type StartFrameCandidatePayload
+} from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
 
 const premium60Enabled = (process.env.NEXT_PUBLIC_ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
@@ -11,27 +19,32 @@ const conceptOptions = [
   {
     id: 'concept_web_vertical_slice',
     label: 'Vertical Slice',
-    description: 'Klassischer Hook → Nutzenpunkte → klarer CTA.'
+    whatHappens: 'Hook, dann kurze Nutzenpunkte, dann klarer CTA.',
+    primary: true
   },
   {
     id: 'concept_offer_focus',
     label: 'Angebot im Fokus',
-    description: 'Starker Offer-Hook mit Preis-/Mehrwert-Fokus.'
+    whatHappens: 'Startet mit Offer-Highlight und endet mit Handlungsdruck.',
+    primary: true
   },
   {
     id: 'concept_problem_solution',
     label: 'Problem → Lösung',
-    description: 'Typisches Problem zeigen und kurz lösen.'
+    whatHappens: 'Zeigt erst Schmerzpunkt, dann direkte Lösung in zwei Steps.',
+    primary: true
   },
   {
     id: 'concept_before_after',
     label: 'Vorher / Nachher',
-    description: 'Direkter Kontrast mit klarer Verbesserung.'
+    whatHappens: 'Öffnet mit sichtbarem Kontrast und schließt mit Wirkung + CTA.',
+    primary: true
   },
   {
     id: 'concept_testimonial',
     label: 'Kundenstimme',
-    description: 'Social Proof + Beweis + CTA.'
+    whatHappens: 'Beginnt mit Testimonial-Zitat, dann Beweisbild und CTA.',
+    primary: false
   }
 ] as const;
 
@@ -62,36 +75,6 @@ const moodOptions: Array<{ id: MoodPreset; label: string; description: string }>
   }
 ];
 
-const startFrameOptions = [
-  {
-    id: 'storefront_hero',
-    label: 'Storefront Hero',
-    description: 'Laden/Brand als klarer Startframe.'
-  },
-  {
-    id: 'product_macro',
-    label: 'Produkt-Makro',
-    description: 'Detailaufnahme des Kernprodukts.'
-  },
-  {
-    id: 'owner_portrait',
-    label: 'Owner Portrait',
-    description: 'Persönlicher Start mit Vertrauenssignal.'
-  },
-  {
-    id: 'hands_at_work',
-    label: 'Hands at Work',
-    description: 'Handwerk/Arbeitsprozess als Einstieg.'
-  },
-  {
-    id: 'before_after_split',
-    label: 'Before/After Split',
-    description: 'Vorher-Nachher schon im ersten Frame.'
-  }
-] as const;
-
-type StartFrameStyle = (typeof startFrameOptions)[number]['id'];
-
 const asApiMessage = (error: unknown) => {
   const api = error as Partial<ApiError>;
   return api?.message ?? String(error);
@@ -103,27 +86,34 @@ export function ReviewLiveActions() {
   const [variantType, setVariantType] = useState<'SHORT_15' | 'MASTER_30'>('SHORT_15');
   const [moodPreset, setMoodPreset] = useState<MoodPreset>('commercial_cta');
   const [conceptId, setConceptId] = useState<ConceptId>('concept_web_vertical_slice');
-  const [startFrameStyle, setStartFrameStyle] = useState<StartFrameStyle>('storefront_hero');
+  const [startFrameCandidates, setStartFrameCandidates] = useState<StartFrameCandidatePayload[]>([]);
+  const [selectedStartFrameCandidateId, setSelectedStartFrameCandidateId] = useState('');
   const [scriptDraft, setScriptDraft] = useState('');
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [startFrameBusy, setStartFrameBusy] = useState(false);
   const [status, setStatus] = useState('');
 
-  const selectedConceptLabel = useMemo(
-    () => conceptOptions.find((option) => option.id === conceptId)?.label ?? conceptId,
-    [conceptId]
-  );
+  const primaryConceptOptions = useMemo(() => conceptOptions.filter((option) => option.primary), []);
+  const advancedConceptOptions = useMemo(() => conceptOptions.filter((option) => !option.primary), []);
 
-  const selectedStartFrameLabel = useMemo(
-    () => startFrameOptions.find((option) => option.id === startFrameStyle)?.label ?? startFrameStyle,
-    [startFrameStyle]
-  );
+  const selectedConcept = useMemo(() => conceptOptions.find((option) => option.id === conceptId) ?? conceptOptions[0], [conceptId]);
 
   const selectedMoodLabel = useMemo(
     () => moodOptions.find((option) => option.id === moodPreset)?.label ?? moodPreset,
     [moodPreset]
   );
+
+  const selectedStartFrameCandidate = useMemo(
+    () => startFrameCandidates.find((candidate) => candidate.candidateId === selectedStartFrameCandidateId) ?? null,
+    [startFrameCandidates, selectedStartFrameCandidateId]
+  );
+
+  const resetStartFrameCandidates = () => {
+    setStartFrameCandidates([]);
+    setSelectedStartFrameCandidateId('');
+  };
 
   const prepareScript = async () => {
     const token = readStoredToken();
@@ -143,6 +133,7 @@ export function ReviewLiveActions() {
         estimatedSeconds: draft.estimatedSeconds,
         suggestedWords: draft.suggestedWords
       });
+      resetStartFrameCandidates();
       setStatus(
         draft.withinTarget
           ? `Script bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s). Bitte prüfen und akzeptieren.`
@@ -160,8 +151,41 @@ export function ReviewLiveActions() {
       setStatus('Script ist leer. Bitte zuerst Script erzeugen.');
       return;
     }
+
     setScriptAccepted(true);
-    setStatus('Script akzeptiert. Du kannst jetzt den Flow starten.');
+    setStatus('Script akzeptiert. Als Nächstes: Startframe-Kandidaten erzeugen und einen auswählen.');
+  };
+
+  const prepareStartFrames = async () => {
+    const token = readStoredToken();
+    if (!token) {
+      setStatus('Bitte zuerst auf der Startseite einloggen.');
+      return;
+    }
+
+    if (!scriptAccepted) {
+      setStatus('Bitte zuerst Script akzeptieren, bevor du Startframe-Kandidaten erzeugst.');
+      return;
+    }
+
+    setStartFrameBusy(true);
+    setStatus(`Erzeuge Startframe-Kandidaten für ${selectedConcept.label} ...`);
+    try {
+      const response = await createStartFrameCandidates(token, {
+        topic,
+        conceptId,
+        moodPreset,
+        limit: 3
+      });
+
+      setStartFrameCandidates(response.candidates);
+      setSelectedStartFrameCandidateId('');
+      setStatus('Startframe-Kandidaten bereit. Bitte wähle einen Candidate aus.');
+    } catch (error) {
+      setStatus(`Startframe-Kandidaten fehlgeschlagen: ${asApiMessage(error)}`);
+    } finally {
+      setStartFrameBusy(false);
+    }
   };
 
   const runFlow = async () => {
@@ -176,6 +200,11 @@ export function ReviewLiveActions() {
       return;
     }
 
+    if (!selectedStartFrameCandidate) {
+      setStatus('Bitte zuerst Startframe-Kandidaten erzeugen und genau einen auswählen.');
+      return;
+    }
+
     setBusy(true);
     setStatus('Erstelle Projekt ...');
     try {
@@ -186,14 +215,15 @@ export function ReviewLiveActions() {
       });
 
       setStatus(
-        `Wähle Mood (${selectedMoodLabel}), Storyboard (${selectedConceptLabel}) + Startframe (${selectedStartFrameLabel}) ...`
+        `Wähle final Storyboard (${selectedConcept.label}) + Startframe (${selectedStartFrameCandidate.label}) und starte Render ...`
       );
       const selection = await selectConcept(token, project.projectId, {
         variantType,
         conceptId,
         moodPreset,
         approvedScript: scriptDraft.trim(),
-        startFrameStyle
+        startFrameCandidateId: selectedStartFrameCandidate.candidateId,
+        startFrameStyle: selectedStartFrameCandidate.style
       });
 
       setStatus('Starte Generierung ...');
@@ -213,7 +243,7 @@ export function ReviewLiveActions() {
         Live MVP Flow (ECHTE API-Daten)
       </h2>
       <p className="section-copy">
-        Echter End-to-End Pfad: Topic → Mood → Script Review (Pflicht) → Storyboard/Startframe → Generate → Job-Status → Download.
+        Echter End-to-End Pfad: Topic → Mood → Script Review (Pflicht) → Concept (Primary-first) → Startframe-Candidates (Pflicht) → Generate → Job-Status → Download.
       </p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
@@ -224,6 +254,7 @@ export function ReviewLiveActions() {
             onChange={(event) => {
               setTopic(event.target.value);
               setScriptAccepted(false);
+              resetStartFrameCandidates();
             }}
           />
         </label>
@@ -239,6 +270,7 @@ export function ReviewLiveActions() {
           onClick={() => {
             setVariantType('SHORT_15');
             setScriptAccepted(false);
+            resetStartFrameCandidates();
           }}
         >
           STANDARD_30 (30s)
@@ -250,6 +282,7 @@ export function ReviewLiveActions() {
             onClick={() => {
               setVariantType('MASTER_30');
               setScriptAccepted(false);
+              resetStartFrameCandidates();
             }}
           >
             PREMIUM_60 (60s)
@@ -269,6 +302,7 @@ export function ReviewLiveActions() {
             onClick={() => {
               setMoodPreset(option.id);
               setScriptAccepted(false);
+              resetStartFrameCandidates();
             }}
             aria-pressed={moodPreset === option.id}
             title={option.description}
@@ -300,6 +334,7 @@ export function ReviewLiveActions() {
           onChange={(event) => {
             setScriptDraft(event.target.value);
             setScriptAccepted(false);
+            resetStartFrameCandidates();
           }}
           rows={7}
           placeholder="Erzeuge zuerst einen Script-Entwurf."
@@ -318,54 +353,104 @@ export function ReviewLiveActions() {
       ) : null}
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Storyboard / Concept
+        Storyboard / Concept (Primary)
       </h3>
-      <div className="chip-wrap" role="list" aria-label="Concept Auswahl">
-        {conceptOptions.map((option) => (
+      <div className="chip-wrap" role="list" aria-label="Concept Auswahl (Primary)">
+        {primaryConceptOptions.map((option) => (
           <button
             key={option.id}
             type="button"
             className={`state-toggle ${conceptId === option.id ? 'active' : ''}`}
-            onClick={() => setConceptId(option.id)}
+            onClick={() => {
+              setConceptId(option.id);
+              resetStartFrameCandidates();
+            }}
             aria-pressed={conceptId === option.id}
-            title={option.description}
+            title={option.whatHappens}
           >
             {option.label}
           </button>
         ))}
       </div>
       <p className="section-copy" style={{ marginTop: 0 }}>
-        {conceptOptions.find((option) => option.id === conceptId)?.description}
+        {selectedConcept.whatHappens}
       </p>
+
+      <details className="section-card" style={{ marginTop: 0 }}>
+        <summary className="section-title" style={{ cursor: 'pointer' }}>
+          Erweiterte Concept-Optionen
+        </summary>
+        <p className="section-copy">Optional für feinere Narrative-Varianten.</p>
+        <div className="chip-wrap" role="list" aria-label="Concept Auswahl (Erweitert)">
+          {advancedConceptOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`state-toggle ${conceptId === option.id ? 'active' : ''}`}
+              onClick={() => {
+                setConceptId(option.id);
+                resetStartFrameCandidates();
+              }}
+              aria-pressed={conceptId === option.id}
+              title={option.whatHappens}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </details>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Startframe
+        Startframe-Kandidaten (Pflicht)
       </h3>
-      <div className="chip-wrap" role="list" aria-label="Startframe Auswahl">
-        {startFrameOptions.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={`state-toggle ${startFrameStyle === option.id ? 'active' : ''}`}
-            onClick={() => setStartFrameStyle(option.id)}
-            aria-pressed={startFrameStyle === option.id}
-            title={option.description}
-          >
-            {option.label}
-          </button>
-        ))}
+      <div className="action-row" style={{ marginTop: 8 }}>
+        <button className="button-ghost" type="button" disabled={busy || startFrameBusy || !scriptAccepted} onClick={prepareStartFrames}>
+          {startFrameBusy ? 'Erzeuge Kandidaten ...' : '3 Startframe-Kandidaten erzeugen'}
+        </button>
       </div>
-      <p className="section-copy" style={{ marginTop: 0 }}>
-        {startFrameOptions.find((option) => option.id === startFrameStyle)?.description}
-      </p>
+
+      {startFrameCandidates.length ? (
+        <div className="chip-wrap" role="list" aria-label="Startframe Candidate Auswahl">
+          {startFrameCandidates.map((candidate) => (
+            <button
+              key={candidate.candidateId}
+              type="button"
+              className={`state-toggle ${selectedStartFrameCandidateId === candidate.candidateId ? 'active' : ''}`}
+              onClick={() => setSelectedStartFrameCandidateId(candidate.candidateId)}
+              aria-pressed={selectedStartFrameCandidateId === candidate.candidateId}
+              title={candidate.description}
+            >
+              {candidate.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="section-copy" style={{ marginTop: 0 }}>
+          Noch keine Kandidaten erzeugt.
+        </p>
+      )}
+
+      {selectedStartFrameCandidate ? (
+        <p className="section-copy" style={{ marginTop: 0 }}>
+          Gewählt: {selectedStartFrameCandidate.label} ({selectedStartFrameCandidate.candidateId})
+        </p>
+      ) : null}
 
       <div className="action-row">
-        <button className="button" type="button" disabled={busy || !scriptAccepted} onClick={runFlow}>
+        <button className="button" type="button" disabled={busy || !scriptAccepted || !selectedStartFrameCandidate} onClick={runFlow}>
           {busy ? 'Flow läuft ...' : 'Echten Video-Flow starten'}
         </button>
       </div>
 
       {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
+
+      <div className="action-row" style={{ marginTop: 0 }}>
+        <span className="chip chip-neutral">Mood: {selectedMoodLabel}</span>
+        <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
+        <span className={`chip ${selectedStartFrameCandidate ? 'chip-success' : 'chip-warning'}`}>
+          {selectedStartFrameCandidate ? 'Startframe gewählt' : 'Startframe fehlt'}
+        </span>
+      </div>
     </article>
   );
 }

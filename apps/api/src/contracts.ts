@@ -21,6 +21,7 @@ export type SelectConceptRequest = {
   conceptId: string;
   moodPreset?: MoodPreset;
   approvedScript?: string;
+  startFrameCandidateId?: string;
   startFrameStyle?:
     | 'storefront_hero'
     | 'product_macro'
@@ -48,6 +49,23 @@ export type ScriptDraftResponse = {
   estimatedSeconds: number;
   withinTarget: boolean;
   suggestedWords: number;
+};
+
+export type StartFrameCandidatesRequest = {
+  topic: string;
+  conceptId?: string;
+  moodPreset?: MoodPreset;
+  limit?: number;
+};
+
+export type StartFrameCandidatesResponse = {
+  candidates: Array<{
+    candidateId: string;
+    style: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+    label: string;
+    description: string;
+    prompt: string;
+  }>;
 };
 
 export type JobStatusResponse = {

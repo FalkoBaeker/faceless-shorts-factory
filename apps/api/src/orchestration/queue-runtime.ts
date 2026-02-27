@@ -33,6 +33,9 @@ type StoryboardSelection = {
   conceptId: string;
   moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
   approvedScript?: string;
+  startFrameCandidateId?: string;
+  startFrameLabel?: string;
+  startFramePrompt?: string;
   startFrameStyle: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
 };
 
@@ -217,6 +220,9 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
     conceptId: 'concept_web_vertical_slice',
     moodPreset: 'commercial_cta',
     approvedScript: undefined,
+    startFrameCandidateId: undefined,
+    startFrameLabel: undefined,
+    startFramePrompt: undefined,
     startFrameStyle: 'storefront_hero'
   };
 
@@ -246,6 +252,12 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
       conceptId: String(parsed.conceptId ?? fallback.conceptId),
       moodPreset,
       approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
+      startFrameCandidateId:
+        typeof parsed.startFrameCandidateId === 'string' && parsed.startFrameCandidateId.trim()
+          ? parsed.startFrameCandidateId
+          : undefined,
+      startFrameLabel: typeof parsed.startFrameLabel === 'string' ? parsed.startFrameLabel : undefined,
+      startFramePrompt: typeof parsed.startFramePrompt === 'string' ? parsed.startFramePrompt : undefined,
       startFrameStyle
     } as StoryboardSelection;
   } catch {
@@ -522,7 +534,9 @@ const processVideo = async (job: Job<StagePayload>) => {
         conceptId: storyboard.conceptId,
         moodPreset: storyboard.moodPreset,
         approvedScript: storyboard.approvedScript,
-        startFrameStyle: storyboard.startFrameStyle
+        startFrameStyle: storyboard.startFrameStyle,
+        startFrameCandidateId: storyboard.startFrameCandidateId,
+        startFramePromptOverride: storyboard.startFramePrompt
       })
     );
     await setAssetRef(jobId, 'script', result.script);
@@ -532,7 +546,13 @@ const processVideo = async (job: Job<StagePayload>) => {
     await insertTimeline(
       jobId,
       'VIDEO_CONCEPT_APPLIED',
-      JSON.stringify({ conceptId: result.conceptId, moodPreset: result.moodPreset, startFrameStyle: result.startFrameStyle })
+      JSON.stringify({
+        conceptId: result.conceptId,
+        moodPreset: result.moodPreset,
+        startFrameStyle: result.startFrameStyle,
+        startFrameCandidateId: result.startFrameCandidateId ?? null,
+        startFrameLabel: result.startFrameLabel ?? null
+      })
     );
     await insertTimeline(
       jobId,

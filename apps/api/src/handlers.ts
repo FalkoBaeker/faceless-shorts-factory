@@ -5,6 +5,8 @@ import type {
   SelectConceptResponse,
   ScriptDraftRequest,
   ScriptDraftResponse,
+  StartFrameCandidatesRequest,
+  StartFrameCandidatesResponse,
   JobStatusResponse,
   LedgerResponse,
   PublishResponse,
@@ -24,6 +26,7 @@ import {
   ensureQueueRuntime
 } from './orchestration/queue-runtime.ts';
 import { generateScriptDraft } from './providers/live-provider-runtime.ts';
+import { buildStartFrameCandidates, resolveSelectedStartFrame } from './services/startframe-candidates.ts';
 
 const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
@@ -60,9 +63,22 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   }
 
   const variantType = normalizeVariantType(payload.variantType);
+  const moodPreset = payload.moodPreset ?? 'commercial_cta';
   const approvedScript = String(payload.approvedScript ?? '').trim();
   if (!approvedScript) {
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
+  }
+
+  const selectedStartFrame = resolveSelectedStartFrame({
+    topic: project.topic,
+    conceptId: payload.conceptId,
+    moodPreset,
+    startFrameCandidateId: payload.startFrameCandidateId,
+    startFrameStyle: payload.startFrameStyle
+  });
+
+  if (!selectedStartFrame) {
+    throw new Error('STARTFRAME_SELECTION_REQUIRED');
   }
 
   setProjectStatus(payload.projectId, 'SELECTED');
@@ -79,9 +95,22 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     event: 'STORYBOARD_SELECTED',
     detail: JSON.stringify({
       conceptId: payload.conceptId,
-      moodPreset: payload.moodPreset ?? 'commercial_cta',
+      moodPreset,
       approvedScript,
-      startFrameStyle: payload.startFrameStyle ?? 'storefront_hero'
+      startFrameCandidateId: selectedStartFrame.candidateId,
+      startFrameStyle: selectedStartFrame.style,
+      startFrameLabel: selectedStartFrame.label,
+      startFramePrompt: selectedStartFrame.prompt
+    })
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'SELECTED_STARTFRAME',
+    detail: JSON.stringify({
+      candidateId: selectedStartFrame.candidateId,
+      style: selectedStartFrame.style,
+      label: selectedStartFrame.label
     })
   });
 
@@ -94,7 +123,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
     event: 'SELECTED_MOOD',
-    detail: payload.moodPreset ?? 'commercial_cta'
+    detail: moodPreset
   });
 
   const estimatedSeconds = estimatedSecondsForVariant(variantType);
@@ -123,6 +152,22 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
     estimatedSeconds: draft.estimatedSeconds,
     withinTarget: draft.withinTarget,
     suggestedWords: draft.suggestedWords
+  };
+};
+
+export const createStartFrameCandidatesHandler = (
+  payload: StartFrameCandidatesRequest
+): StartFrameCandidatesResponse => {
+  const topic = String(payload.topic ?? '').trim();
+  if (!topic) throw new Error('TOPIC_REQUIRED');
+
+  return {
+    candidates: buildStartFrameCandidates({
+      topic,
+      conceptId: payload.conceptId,
+      moodPreset: payload.moodPreset,
+      limit: payload.limit
+    })
   };
 };
 

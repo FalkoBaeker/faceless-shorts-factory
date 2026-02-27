@@ -51,6 +51,18 @@ export type ScriptDraftPayload = {
   suggestedWords: number;
 };
 
+export type StartFrameCandidatePayload = {
+  candidateId: string;
+  style: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+  label: string;
+  description: string;
+  prompt: string;
+};
+
+export type StartFrameCandidatesPayload = {
+  candidates: StartFrameCandidatePayload[];
+};
+
 export type JobPayload = {
   jobId: string;
   status: string;
@@ -160,6 +172,21 @@ export const createScriptDraft = (
     body: payload
   });
 
+export const createStartFrameCandidates = (
+  token: string,
+  payload: {
+    topic: string;
+    conceptId: string;
+    moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+    limit?: number;
+  }
+) =>
+  requestJson<StartFrameCandidatesPayload>('/v1/startframes/candidates', {
+    method: 'POST',
+    token,
+    body: payload
+  });
+
 export const selectConcept = (
   token: string,
   projectId: string,
@@ -168,7 +195,8 @@ export const selectConcept = (
     conceptId: string;
     moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
     approvedScript: string;
-    startFrameStyle:
+    startFrameCandidateId: string;
+    startFrameStyle?:
       | 'storefront_hero'
       | 'product_macro'
       | 'owner_portrait'
@@ -183,6 +211,7 @@ export const selectConcept = (
       conceptId: payload.conceptId,
       moodPreset: payload.moodPreset,
       approvedScript: payload.approvedScript,
+      startFrameCandidateId: payload.startFrameCandidateId,
       startFrameStyle: payload.startFrameStyle,
       variantType: payload.variantType
     }

@@ -3,6 +3,7 @@ import { URL } from 'node:url';
 import {
   createProjectHandler,
   createScriptDraftHandler,
+  createStartFrameCandidatesHandler,
   selectConceptHandler,
   generateHandler,
   publishJobHandler,
@@ -260,6 +261,19 @@ export const buildApiServer = () =>
         return sendJson(res, 200, draft);
       }
 
+      if (method === 'POST' && path === '/v1/startframes/candidates') {
+        await ensureRunPermissionIfRequired(req);
+
+        const body = await readJsonBody(req);
+        const candidates = createStartFrameCandidatesHandler({
+          topic: String(body.topic ?? ''),
+          conceptId: String(body.conceptId ?? '').trim() || undefined,
+          moodPreset: parseMoodPreset(body.moodPreset),
+          limit: Number(body.limit ?? 3)
+        });
+        return sendJson(res, 200, candidates);
+      }
+
       if (method === 'POST' && /^\/v1\/projects\/[^/]+\/select$/.test(path)) {
         const user = await ensureRunPermissionIfRequired(req);
 
@@ -270,12 +284,15 @@ export const buildApiServer = () =>
           conceptId: String(body.conceptId ?? 'concept_1'),
           moodPreset: parseMoodPreset(body.moodPreset),
           approvedScript: String(body.approvedScript ?? ''),
-          startFrameStyle: String(body.startFrameStyle ?? 'storefront_hero') as
-            | 'storefront_hero'
-            | 'product_macro'
-            | 'owner_portrait'
-            | 'hands_at_work'
-            | 'before_after_split',
+          startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
+          startFrameStyle: String(body.startFrameStyle ?? '').trim()
+            ? (String(body.startFrameStyle) as
+                | 'storefront_hero'
+                | 'product_macro'
+                | 'owner_portrait'
+                | 'hands_at_work'
+                | 'before_after_split')
+            : undefined,
           variantType: parseVariantType(body.variantType)
         });
 
