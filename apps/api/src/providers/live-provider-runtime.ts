@@ -1041,12 +1041,14 @@ const probeMotion = (videoBytes: Buffer, label: string, options?: { sceneThresho
 
     const probe = spawnSync(
       'ffmpeg',
-      ['-hide_banner', '-loglevel', 'info', '-i', input, '-vf', `select=gt(scene\,${sceneThreshold}),showinfo`, '-an', '-f', 'null', '-'],
+      ['-hide_banner', '-loglevel', 'info', '-i', input, '-vf', `select='gt(scene,${sceneThreshold})',showinfo`, '-an', '-f', 'null', '-'],
       { encoding: 'utf8' }
     );
 
     if (probe.status !== 0) {
-      throw new ProviderRuntimeError(`FFMPEG_MOTION_PROBE_FAILED:${probe.stderr?.slice(0, 220) ?? 'unknown'}`, {
+      const stderr = String(probe.stderr ?? 'unknown');
+      const tail = stderr.split(/\r?\n/).filter(Boolean).slice(-6).join(' | ').slice(0, 500);
+      throw new ProviderRuntimeError(`FFMPEG_MOTION_PROBE_FAILED:${tail || 'unknown'}`, {
         provider: 'ffmpeg',
         fatal: true
       });
