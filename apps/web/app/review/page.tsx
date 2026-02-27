@@ -20,6 +20,12 @@ export default function ReviewPreviewPage() {
         </p>
 
         <div className="action-row">
+          <Link href="#live-mvp-flow" className="button">
+            Zum echten Flow (Primär)
+          </Link>
+          <Link href="/job-status" className="button-ghost">
+            Zum Runtime-Status
+          </Link>
           <span className="chip chip-success">Real Flow aktiv</span>
           <span className="chip chip-neutral">Variant: {selectedVariant.title}</span>
         </div>

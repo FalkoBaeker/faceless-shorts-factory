@@ -630,7 +630,37 @@ const processAssembly = async (job: Job<StagePayload>) => {
     await setAssetRef(jobId, 'finalObjectPath', final.finalVideo.objectPath);
     await insertTimeline(jobId, 'ASSET_FINAL_VIDEO_STORED', buildAssetDetail('final_video', final.finalVideo));
     await insertTimeline(jobId, 'ASSEMBLY_TARGET_DURATION', `${variantType}:${final.targetSeconds}s`);
-    await insertTimeline(jobId, 'CAPTION_SAFE_AREA_APPLIED', `scale=${final.safeAreaScale}`);
+    await insertTimeline(
+      jobId,
+      'CAPTION_SAFE_AREA_APPLIED',
+      JSON.stringify({
+        scale: final.safeArea.scale,
+        marginRatio: final.safeArea.marginRatio,
+        marginX: final.safeArea.marginX,
+        marginY: final.safeArea.marginY,
+        safeWidth: final.safeArea.safeWidth,
+        safeHeight: final.safeArea.safeHeight,
+        frameWidth: final.safeArea.frameWidth,
+        frameHeight: final.safeArea.frameHeight
+      })
+    );
+    await insertTimeline(
+      jobId,
+      'FINAL_SYNC_OK',
+      JSON.stringify({
+        mode: final.finalSync.mode,
+        targetSeconds: final.finalSync.targetSeconds,
+        toleranceSeconds: final.finalSync.toleranceSeconds,
+        sourceVideoSeconds: final.finalSync.sourceVideoSeconds,
+        sourceAudioSeconds: final.finalSync.sourceAudioSeconds,
+        adjustedAudioSeconds: final.finalSync.adjustedAudioSeconds,
+        outputSeconds: final.finalSync.outputSeconds,
+        tempo: final.finalSync.tempo,
+        avDeltaSeconds: final.finalSync.avDeltaSeconds,
+        deltaToTargetSeconds: final.finalSync.deltaToTargetSeconds,
+        withinTolerance: final.finalSync.withinTolerance
+      })
+    );
 
     await transitionStatus(jobId, 'READY', 'render complete');
     await upsertLedgerFinalState(context.organization_id, jobId, 'COMMITTED', 0, 'reserved credit committed on READY');

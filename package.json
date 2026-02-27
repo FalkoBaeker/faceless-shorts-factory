@@ -20,6 +20,7 @@
     "sim:free-customer": "node --experimental-strip-types apps/api/src/simulate-free-customer-flow.ts",
     "sim:alerts": "node --experimental-strip-types apps/api/src/simulate-alert-routing.ts",
     "sim:auth-guard": "node --experimental-strip-types apps/api/src/simulate-auth-guard.ts",
+    "sim:final-sync": "node --experimental-strip-types apps/api/src/simulate-final-sync-batch.ts",
     "sim:alert-endpoint": "node --experimental-strip-types apps/api/src/simulate-alert-endpoint.ts",
     "render:preflight": "node scripts/render_preflight_check.mjs",
     "render:plan": "node scripts/render_provision_plan.mjs"

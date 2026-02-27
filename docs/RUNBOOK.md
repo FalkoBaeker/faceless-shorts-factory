@@ -70,6 +70,17 @@ Expected:
 - status 200
 - response includes `script`, `targetSeconds`, `estimatedSeconds`, `withinTarget`
 
+## 4b) Final Sync + Safe Area batch verify (offline planning)
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+npm run sim:final-sync
+```
+
+Expected:
+- `withinToleranceRate >= 95%`
+- `sentencePreservedRate >= 95%`
+- safe-area dimensions stay inside `720x1280`
+
 ## 5) Pipeline smoke (real provider runtime)
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
@@ -78,7 +89,8 @@ node --experimental-strip-types apps/api/src/simulate-live-provider-e2e.ts
 
 Expected:
 - final status `READY`
-- asset timeline events exist (`ASSET_*`, `SCRIPT_DURATION_VALIDATED`, `SELECTED_MOOD`)
+- asset timeline events exist (`ASSET_*`, `SCRIPT_DURATION_VALIDATED`, `SELECTED_MOOD`, `FINAL_SYNC_OK`, `CAPTION_SAFE_AREA_APPLIED`)
+- `FINAL_SYNC_OK.avDeltaSeconds <= 0.3`
 - signed URL probes return HTTP 200
 
 ## 6) Alert smoke

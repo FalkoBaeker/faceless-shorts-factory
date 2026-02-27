@@ -78,6 +78,40 @@ type VariantDurationConfig = {
   sourceSeconds: number;
 };
 
+type CaptionSafeAreaConfig = {
+  frameWidth: number;
+  frameHeight: number;
+  scale: number;
+  marginRatio: number;
+  marginX: number;
+  marginY: number;
+  safeWidth: number;
+  safeHeight: number;
+};
+
+type FinalSyncPlan = {
+  mode: 'passthrough' | 'pad' | 'time_stretch' | 'time_stretch_trim';
+  tempo: number;
+  sourceAudioSeconds: number;
+  adjustedAudioSeconds: number;
+  finalDurationSeconds: number;
+  toleranceSeconds: number;
+};
+
+type FinalSyncMetrics = {
+  mode: FinalSyncPlan['mode'];
+  targetSeconds: number;
+  toleranceSeconds: number;
+  sourceVideoSeconds: number;
+  sourceAudioSeconds: number;
+  adjustedAudioSeconds: number;
+  outputSeconds: number;
+  tempo: number;
+  avDeltaSeconds: number;
+  deltaToTargetSeconds: number;
+  withinTolerance: boolean;
+};
+
 type StartFrameStyle =
   | 'storefront_hero'
   | 'product_macro'
@@ -210,8 +244,31 @@ const resolveMoodPreset = (mood?: string): MoodPreset => {
   return 'commercial_cta';
 };
 
-const resolveCaptionSafeAreaScale = () =>
-  parseRangeFloat(process.env.CAPTION_SAFE_AREA_SCALE ?? 0.9, 0.9, 0.75, 1);
+const FRAME_WIDTH = 720;
+const FRAME_HEIGHT = 1280;
+
+const roundSeconds = (value: number) => Number(value.toFixed(3));
+
+export const resolveCaptionSafeArea = (): CaptionSafeAreaConfig => {
+  const marginRatio = parseRangeFloat(process.env.CAPTION_SAFE_AREA_MARGIN_RATIO ?? 0.1, 0.1, 0.05, 0.2);
+  const derivedScale = 1 - marginRatio * 2;
+  const scale = parseRangeFloat(process.env.CAPTION_SAFE_AREA_SCALE ?? derivedScale, derivedScale, 0.75, 1);
+  const safeWidth = Math.max(2, Math.floor((FRAME_WIDTH * scale) / 2) * 2);
+  const safeHeight = Math.max(2, Math.floor((FRAME_HEIGHT * scale) / 2) * 2);
+  const marginX = Math.max(0, Math.floor((FRAME_WIDTH - safeWidth) / 2));
+  const marginY = Math.max(0, Math.floor((FRAME_HEIGHT - safeHeight) / 2));
+
+  return {
+    frameWidth: FRAME_WIDTH,
+    frameHeight: FRAME_HEIGHT,
+    scale,
+    marginRatio,
+    marginX,
+    marginY,
+    safeWidth,
+    safeHeight
+  };
+};
 
 const now = () => Date.now();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -761,20 +818,127 @@ const uploadAsset = async (jobId: string, objectPath: string, bytes: Buffer, mim
   };
 };
 
-const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer, targetSeconds: number, safeAreaScale: number) => {
+const probeMediaDurationSeconds = (inputPath: string, label: string) => {
+  const probe = spawnSync(
+    'ffprobe',
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=nokey=1:noprint_wrappers=1',
+      inputPath
+    ],
+    { encoding: 'utf8' }
+  );
+
+  if (probe.status !== 0) {
+    throw new ProviderRuntimeError(`FFPROBE_DURATION_FAILED:${label}:${probe.stderr?.slice(0, 220) ?? 'unknown'}`, {
+      provider: 'ffmpeg',
+      fatal: true
+    });
+  }
+
+  const parsed = Number((probe.stdout ?? '').trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new ProviderRuntimeError(`FFPROBE_DURATION_INVALID:${label}:${String((probe.stdout ?? '').trim()).slice(0, 80)}`, {
+      provider: 'ffmpeg',
+      fatal: true
+    });
+  }
+
+  return roundSeconds(parsed);
+};
+
+const buildAtempoFilter = (tempo: number) => {
+  if (Math.abs(tempo - 1) < 0.001) return 'anull';
+
+  let remaining = tempo;
+  const parts: string[] = [];
+
+  while (remaining > 2.0) {
+    parts.push('atempo=2.0');
+    remaining /= 2.0;
+  }
+
+  while (remaining < 0.5) {
+    parts.push('atempo=0.5');
+    remaining /= 0.5;
+  }
+
+  parts.push(`atempo=${remaining.toFixed(4)}`);
+  return parts.join(',');
+};
+
+export const planFinalSync = (input: { targetSeconds: number; sourceAudioSeconds: number }): FinalSyncPlan => {
+  const targetSeconds = Math.max(1, Number(input.targetSeconds) || 30);
+  const sourceAudioSeconds = Math.max(0.05, Number(input.sourceAudioSeconds) || targetSeconds);
+  const toleranceSeconds = parseRangeFloat(process.env.FINAL_SYNC_TOLERANCE_SECONDS ?? 0.3, 0.3, 0.05, 1.5);
+  const maxTempo = parseRangeFloat(process.env.FINAL_SYNC_MAX_TEMPO ?? 1.12, 1.12, 1, 2);
+
+  let mode: FinalSyncPlan['mode'] = 'passthrough';
+  let tempo = 1;
+  let adjustedAudioSeconds = sourceAudioSeconds;
+
+  if (sourceAudioSeconds < targetSeconds - toleranceSeconds) {
+    mode = 'pad';
+  } else if (sourceAudioSeconds > targetSeconds + toleranceSeconds) {
+    mode = 'time_stretch';
+    const requiredTempo = sourceAudioSeconds / targetSeconds;
+    tempo = Math.min(maxTempo, Math.max(1, requiredTempo));
+    adjustedAudioSeconds = sourceAudioSeconds / tempo;
+
+    if (adjustedAudioSeconds > targetSeconds + toleranceSeconds) {
+      mode = 'time_stretch_trim';
+      adjustedAudioSeconds = targetSeconds + toleranceSeconds;
+    }
+  }
+
+  const finalDurationSeconds = mode === 'pad' ? targetSeconds : adjustedAudioSeconds;
+
+  return {
+    mode,
+    tempo: roundSeconds(tempo),
+    sourceAudioSeconds: roundSeconds(sourceAudioSeconds),
+    adjustedAudioSeconds: roundSeconds(adjustedAudioSeconds),
+    finalDurationSeconds: roundSeconds(finalDurationSeconds),
+    toleranceSeconds: roundSeconds(toleranceSeconds)
+  };
+};
+
+const muxVideoAndAudio = (
+  videoBytes: Buffer,
+  audioBytes: Buffer,
+  targetSeconds: number,
+  safeArea: CaptionSafeAreaConfig
+): { bytes: Buffer; sync: FinalSyncMetrics } => {
   const dir = mkdtempSync(join(tmpdir(), 'fsf-assemble-'));
   const inputVideo = join(dir, 'input-video.mp4');
   const inputAudio = join(dir, 'input-audio.mp3');
   const output = join(dir, 'output-final.mp4');
 
-  const targetWidth = 720;
-  const targetHeight = 1280;
-  const safeWidth = Math.max(2, Math.floor((targetWidth * safeAreaScale) / 2) * 2);
-  const safeHeight = Math.max(2, Math.floor((targetHeight * safeAreaScale) / 2) * 2);
-
   try {
     writeFileSync(inputVideo, videoBytes);
     writeFileSync(inputAudio, audioBytes);
+
+    const sourceVideoSeconds = probeMediaDurationSeconds(inputVideo, 'source_video');
+    const sourceAudioSeconds = probeMediaDurationSeconds(inputAudio, 'source_audio');
+    const syncPlan = planFinalSync({ targetSeconds, sourceAudioSeconds });
+
+    const audioFilters: string[] = [];
+    const tempoFilter = buildAtempoFilter(syncPlan.tempo);
+    if (tempoFilter !== 'anull') {
+      audioFilters.push(tempoFilter);
+    }
+
+    if (syncPlan.mode === 'pad') {
+      const padDuration = Math.max(0, syncPlan.finalDurationSeconds - syncPlan.adjustedAudioSeconds);
+      audioFilters.push(`apad=pad_dur=${padDuration.toFixed(3)}`);
+    }
+
+    audioFilters.push(`atrim=0:${syncPlan.finalDurationSeconds.toFixed(3)}`);
+    audioFilters.push('asetpts=N/SR/TB');
 
     const run = spawnSync(
       'ffmpeg',
@@ -787,12 +951,12 @@ const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer, targetSeconds:
         '-i',
         inputAudio,
         '-filter_complex',
-        `[0:v]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,` +
-          `pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
-          `tpad=stop_mode=clone:stop_duration=${targetSeconds},` +
-          `scale=${safeWidth}:${safeHeight}:flags=lanczos,` +
-          `pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
-          `format=yuv420p[v];[1:a]apad[a]`,
+        `[0:v]scale=${safeArea.frameWidth}:${safeArea.frameHeight}:force_original_aspect_ratio=decrease,` +
+          `pad=${safeArea.frameWidth}:${safeArea.frameHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
+          `tpad=stop_mode=clone:stop_duration=${syncPlan.finalDurationSeconds.toFixed(3)},` +
+          `scale=${safeArea.safeWidth}:${safeArea.safeHeight}:flags=lanczos,` +
+          `pad=${safeArea.frameWidth}:${safeArea.frameHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
+          `format=yuv420p[v];[1:a]${audioFilters.join(',')}[a]`,
         '-map',
         '[v]',
         '-map',
@@ -810,7 +974,7 @@ const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer, targetSeconds:
         '-movflags',
         '+faststart',
         '-t',
-        String(targetSeconds),
+        syncPlan.finalDurationSeconds.toFixed(3),
         output
       ],
       { encoding: 'utf8' }
@@ -823,7 +987,38 @@ const muxVideoAndAudio = (videoBytes: Buffer, audioBytes: Buffer, targetSeconds:
       });
     }
 
-    return readFileSync(output);
+    const bytes = readFileSync(output);
+    const outputSeconds = probeMediaDurationSeconds(output, 'output_final');
+    const avDeltaSeconds = roundSeconds(Math.abs(outputSeconds - syncPlan.finalDurationSeconds));
+    const deltaToTargetSeconds = roundSeconds(outputSeconds - targetSeconds);
+    const withinTolerance = avDeltaSeconds <= syncPlan.toleranceSeconds;
+
+    if (!withinTolerance) {
+      throw new ProviderRuntimeError(
+        `FINAL_SYNC_OUT_OF_TOLERANCE:delta=${avDeltaSeconds}s:tolerance=${syncPlan.toleranceSeconds}s`,
+        {
+          provider: 'ffmpeg',
+          fatal: true
+        }
+      );
+    }
+
+    return {
+      bytes,
+      sync: {
+        mode: syncPlan.mode,
+        targetSeconds: roundSeconds(targetSeconds),
+        toleranceSeconds: syncPlan.toleranceSeconds,
+        sourceVideoSeconds,
+        sourceAudioSeconds: syncPlan.sourceAudioSeconds,
+        adjustedAudioSeconds: syncPlan.adjustedAudioSeconds,
+        outputSeconds,
+        tempo: syncPlan.tempo,
+        avDeltaSeconds,
+        deltaToTargetSeconds,
+        withinTolerance
+      }
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -845,6 +1040,8 @@ export const runVideoStage = async (input: {
   const moodPreset = resolveMoodPreset(input.moodPreset);
 
   const durationConfig = resolveVariantDurations(input.variantType);
+  const captionSafeArea = resolveCaptionSafeArea();
+  const safeMarginPercent = Math.round(captionSafeArea.marginRatio * 100);
 
   const draft = input.approvedScript?.trim()
     ? (() => {
@@ -880,7 +1077,7 @@ export const runVideoStage = async (input: {
     `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
     `Mood: ${moodPromptMap[moodPreset]}`,
     startFramePrompts[startFrameStyle],
-    'Keep composition center-safe with at least 10% margin on all sides.',
+    `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
     `Narration context: ${llmText}`
   ].join(' ');
 
@@ -889,7 +1086,7 @@ export const runVideoStage = async (input: {
     `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
     `Mood: ${moodPromptMap[moodPreset]}`,
     `Narration text: ${llmText}`,
-    'If on-screen text appears, keep it inside a title-safe area (10% margin from all edges).',
+    `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
     'No caption text should touch the frame border.'
   ].join(' ');
 
@@ -939,16 +1136,17 @@ export const runAssemblyStage = async (input: {
   await runProviderHealthchecks();
 
   const { targetSeconds } = resolveVariantDurations(input.variantType);
-  const safeAreaScale = resolveCaptionSafeAreaScale();
+  const safeArea = resolveCaptionSafeArea();
   const videoBytes = await supabaseDownload(input.videoObjectPath);
   const audioBytes = await supabaseDownload(input.audioObjectPath);
-  const muxed = muxVideoAndAudio(videoBytes, audioBytes, targetSeconds, safeAreaScale);
+  const muxed = muxVideoAndAudio(videoBytes, audioBytes, targetSeconds, safeArea);
 
-  const finalAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/final.mp4`, muxed, 'video/mp4', 'ffmpeg');
+  const finalAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/final.mp4`, muxed.bytes, 'video/mp4', 'ffmpeg');
 
   return {
     finalVideo: finalAsset,
     targetSeconds,
-    safeAreaScale
+    safeArea,
+    finalSync: muxed.sync
   };
 };

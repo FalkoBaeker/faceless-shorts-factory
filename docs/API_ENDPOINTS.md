@@ -13,7 +13,7 @@
 - `POST /v1/script/draft` — generate script draft with target-length estimation and mood preset
 - `POST /v1/projects/:projectId/select` — reserve credit + create job (+ mood + storyboard concept + startframe + accepted script)
 - `POST /v1/projects/:projectId/generate` — enqueue generation pipeline
-- `GET /v1/jobs/:jobId` — status timeline
+- `GET /v1/jobs/:jobId` — status timeline (includes quality events like `FINAL_SYNC_OK`, `CAPTION_SAFE_AREA_APPLIED`, `SCRIPT_DURATION_VALIDATED`)
 - `GET /v1/jobs/:jobId/assets` — signed asset URLs/events for export
 
 ## Billing/Entitlement support

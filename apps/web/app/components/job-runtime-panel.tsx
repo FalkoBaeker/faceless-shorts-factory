@@ -112,6 +112,58 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     }
   }, [job]);
 
+  const finalSyncMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'FINAL_SYNC_OK' && entry.detail);
+    if (!event?.detail) return null;
+
+    try {
+      const parsed = JSON.parse(event.detail) as {
+        mode?: string;
+        tempo?: number;
+        targetSeconds?: number;
+        outputSeconds?: number;
+        avDeltaSeconds?: number;
+      };
+      return {
+        mode: String(parsed.mode ?? 'unknown'),
+        tempo: Number(parsed.tempo ?? 1),
+        targetSeconds: Number(parsed.targetSeconds ?? 0),
+        outputSeconds: Number(parsed.outputSeconds ?? 0),
+        avDeltaSeconds: Number(parsed.avDeltaSeconds ?? 0)
+      };
+    } catch {
+      return null;
+    }
+  }, [job]);
+
+  const captionSafeAreaMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'CAPTION_SAFE_AREA_APPLIED' && entry.detail);
+    if (!event?.detail) return null;
+
+    try {
+      const parsed = JSON.parse(event.detail) as {
+        scale?: number;
+        marginX?: number;
+        marginY?: number;
+        safeWidth?: number;
+        safeHeight?: number;
+      };
+      return {
+        scale: Number(parsed.scale ?? 0),
+        marginX: Number(parsed.marginX ?? 0),
+        marginY: Number(parsed.marginY ?? 0),
+        safeWidth: Number(parsed.safeWidth ?? 0),
+        safeHeight: Number(parsed.safeHeight ?? 0)
+      };
+    } catch {
+      return null;
+    }
+  }, [job]);
+
   const sendAlert = async () => {
     const token = readStoredToken();
     if (!token) {
@@ -161,8 +213,32 @@ export function JobRuntimePanel({ initialJobId }: Props) {
         </div>
       ) : null}
 
+      {finalSyncMeta ? (
+        <div className="action-row" style={{ marginTop: 0 }}>
+          <span className="chip chip-success">Final Sync: {finalSyncMeta.avDeltaSeconds.toFixed(3)}s Drift</span>
+          <span className="chip chip-neutral">Mode: {finalSyncMeta.mode}</span>
+          <span className="chip chip-neutral">Tempo: {finalSyncMeta.tempo.toFixed(3)}x</span>
+          <span className="chip chip-neutral">
+            Dauer: {finalSyncMeta.outputSeconds.toFixed(2)}s / Ziel {finalSyncMeta.targetSeconds.toFixed(2)}s
+          </span>
+        </div>
+      ) : null}
+
+      {captionSafeAreaMeta ? (
+        <div className="action-row" style={{ marginTop: 0 }}>
+          <span className="chip chip-success">Caption Safe Area angewendet</span>
+          <span className="chip chip-neutral">Scale: {captionSafeAreaMeta.scale.toFixed(3)}</span>
+          <span className="chip chip-neutral">
+            Ränder: {captionSafeAreaMeta.marginX}px / {captionSafeAreaMeta.marginY}px
+          </span>
+          <span className="chip chip-neutral">
+            Fläche: {captionSafeAreaMeta.safeWidth}×{captionSafeAreaMeta.safeHeight}
+          </span>
+        </div>
+      ) : null}
+
       <ul className="list-clean" aria-label="Runtime timeline">
-        {(job?.timeline ?? []).slice(-6).reverse().map((event) => (
+        {(job?.timeline ?? []).slice(-10).reverse().map((event) => (
           <li className="step-item" key={`${event.at}-${event.event}`}>
             <div>
               <p className="step-name">{event.event}</p>

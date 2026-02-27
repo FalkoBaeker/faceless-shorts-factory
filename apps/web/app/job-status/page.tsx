@@ -15,14 +15,6 @@ const resolveState = (value: string | null): JobUiState => {
   return jobStateOrder.includes(value as JobUiState) ? (value as JobUiState) : 'progress';
 };
 
-const stateChipTone: Record<JobUiState, string> = {
-  loading: 'chip-neutral',
-  empty: 'chip-neutral',
-  progress: 'chip-warning',
-  ready: 'chip-success',
-  error: 'chip-danger'
-};
-
 function LoadingState() {
   return (
     <article className="section-card" aria-live="polite" aria-busy="true">
@@ -158,10 +150,10 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
           deinen Job.
         </p>
         <div className="action-row">
-          <span className={`chip ${stateChipTone[currentState]}`}>
-            UI Preview Zustand: {jobStateLabels[currentState]}
-          </span>
-          <span className="chip chip-neutral">Provider: {queueMetricsMock.provider}</span>
+          <span className="chip chip-success">Real Runtime aktiv</span>
+          <Link href="/review" className="button">
+            Neuen echten Flow starten
+          </Link>
         </div>
       </section>
 
@@ -217,8 +209,8 @@ export default async function JobStatusPage({ searchParams }: { searchParams?: S
 
       <section className="section-card" aria-label="Navigation">
         <div className="action-row">
-          <Link href="/review" className="button-ghost">
-            Zurück zu Review
+          <Link href="/review" className="button">
+            Zum echten Review-Flow
           </Link>
           <Link href="/" className="button-ghost">
             Neuer Wizard-Start
