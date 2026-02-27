@@ -429,6 +429,47 @@ a {
   gap: 8px;
 }
 
+.startframe-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-top: 8px;
+}
+
+.startframe-card {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  border: 1px solid rgba(136, 155, 235, 0.3);
+  background: rgba(136, 155, 235, 0.1);
+  border-radius: 12px;
+  padding: 8px;
+  color: var(--text);
+}
+
+.startframe-card.selected {
+  border-color: rgba(123, 141, 255, 0.9);
+  box-shadow: 0 0 0 2px rgba(123, 141, 255, 0.25);
+}
+
+.startframe-thumb {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.startframe-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.startframe-copy {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 .status-grid {
   display: grid;
   gap: 10px;
@@ -467,18 +508,24 @@ a {
   color: var(--text-muted);
 }
 
-.auth-field input {
+.auth-field input,
+.auth-field textarea {
   width: 100%;
   min-height: 44px;
   border-radius: 10px;
   border: 1px solid rgba(136, 155, 235, 0.34);
   background: rgba(136, 155, 235, 0.1);
   color: var(--text);
-  padding: 0 12px;
+  padding: 10px 12px;
   font-size: 0.92rem;
 }
 
-.auth-field input:focus-visible {
+.auth-field input[type='file'] {
+  padding: 9px 10px;
+}
+
+.auth-field input:focus-visible,
+.auth-field textarea:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ring);
   border-color: rgba(123, 141, 255, 0.74);

@@ -57,6 +57,7 @@ export type StartFrameCandidatePayload = {
   label: string;
   description: string;
   prompt: string;
+  thumbnailUrl: string;
 };
 
 export type StartFrameCandidatesPayload = {
@@ -195,13 +196,16 @@ export const selectConcept = (
     conceptId: string;
     moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
     approvedScript: string;
-    startFrameCandidateId: string;
+    startFrameCandidateId?: string;
     startFrameStyle?:
       | 'storefront_hero'
       | 'product_macro'
       | 'owner_portrait'
       | 'hands_at_work'
       | 'before_after_split';
+    startFrameCustomLabel?: string;
+    startFrameCustomPrompt?: string;
+    startFrameReferenceHint?: string;
   }
 ) =>
   requestJson<SelectConceptPayload>(`/v1/projects/${projectId}/select`, {
@@ -213,6 +217,9 @@ export const selectConcept = (
       approvedScript: payload.approvedScript,
       startFrameCandidateId: payload.startFrameCandidateId,
       startFrameStyle: payload.startFrameStyle,
+      startFrameCustomLabel: payload.startFrameCustomLabel,
+      startFrameCustomPrompt: payload.startFrameCustomPrompt,
+      startFrameReferenceHint: payload.startFrameReferenceHint,
       variantType: payload.variantType
     }
   });

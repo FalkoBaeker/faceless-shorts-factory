@@ -15,6 +15,7 @@ export type StartFrameCandidate = {
   label: string;
   description: string;
   prompt: string;
+  thumbnailUrl: string;
 };
 
 const styleCatalog: Record<
@@ -50,6 +51,14 @@ const styleCatalog: Record<
     description: 'Vorher/Nachher-Visual direkt in Frame 1 für starke Wirkung.',
     prompt: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
   }
+};
+
+const styleVisual: Record<StartFrameStyle, { emoji: string; gradientA: string; gradientB: string }> = {
+  storefront_hero: { emoji: '🏪', gradientA: '#6A85FF', gradientB: '#5FD1FF' },
+  product_macro: { emoji: '📦', gradientA: '#8B5CF6', gradientB: '#C084FC' },
+  owner_portrait: { emoji: '🙂', gradientA: '#3B82F6', gradientB: '#22D3EE' },
+  hands_at_work: { emoji: '🛠️', gradientA: '#10B981', gradientB: '#34D399' },
+  before_after_split: { emoji: '↔️', gradientA: '#F59E0B', gradientB: '#FB7185' }
 };
 
 const moodToStylePriority: Record<MoodPreset, StartFrameStyle[]> = {
@@ -101,6 +110,38 @@ const rankStyles = (input: { topic: string; conceptId?: string; moodPreset: Mood
   return base;
 };
 
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+const buildThumbnail = (input: { style: StartFrameStyle; label: string; topic: string }) => {
+  const visual = styleVisual[input.style];
+  const topic = escapeHtml(input.topic.trim().slice(0, 42) || 'Dein Topic');
+  const label = escapeHtml(input.label);
+
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${visual.gradientA}"/>
+      <stop offset="100%" stop-color="${visual.gradientB}"/>
+    </linearGradient>
+  </defs>
+  <rect width="720" height="1280" fill="url(#bg)"/>
+  <rect x="44" y="60" width="632" height="1160" rx="36" fill="rgba(0,0,0,0.25)" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>
+  <text x="360" y="420" text-anchor="middle" font-size="108">${visual.emoji}</text>
+  <text x="360" y="530" text-anchor="middle" fill="#ffffff" font-size="42" font-family="Arial" font-weight="700">${label}</text>
+  <text x="360" y="585" text-anchor="middle" fill="rgba(255,255,255,0.92)" font-size="28" font-family="Arial">${topic}</text>
+  <text x="360" y="1120" text-anchor="middle" fill="rgba(255,255,255,0.80)" font-size="24" font-family="Arial">Preview Startframe • 9:16</text>
+</svg>`;
+
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+};
+
 export const buildStartFrameCandidates = (input: {
   topic: string;
   conceptId?: string;
@@ -121,7 +162,8 @@ export const buildStartFrameCandidates = (input: {
       style,
       label: entry.label,
       description: entry.description,
-      prompt: entry.prompt
+      prompt: entry.prompt,
+      thumbnailUrl: buildThumbnail({ style, label: entry.label, topic })
     };
   });
 };

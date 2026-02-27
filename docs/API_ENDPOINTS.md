@@ -12,7 +12,7 @@
 - `POST /v1/projects` — create project
 - `POST /v1/script/draft` — generate script draft with target-length estimation and mood preset
 - `POST /v1/startframes/candidates` — generate 3–5 startframe candidates for current topic/concept/mood
-- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ mood + storyboard concept + selected startframe candidate + accepted script)
+- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ mood + storyboard concept + selected startframe candidate OR uploaded reference + accepted script)
 - `POST /v1/projects/:projectId/generate` — enqueue generation pipeline
 - `GET /v1/jobs/:jobId` — status timeline (includes quality events like `FINAL_SYNC_OK`, `CAPTION_SAFE_AREA_APPLIED`, `SCRIPT_DURATION_VALIDATED`)
 - `GET /v1/jobs/:jobId/assets` — signed asset URLs/events for export
@@ -66,7 +66,7 @@ Response (example):
 }
 ```
 
-Response contains `candidates[]` with `{ candidateId, style, label, description, prompt }`.
+Response contains `candidates[]` with `{ candidateId, style, label, description, prompt, thumbnailUrl }`.
 
 ## Example: `POST /v1/projects/:projectId/select`
 ```json
@@ -83,6 +83,7 @@ Response contains `candidates[]` with `{ candidateId, style, label, description,
 Notes:
 - Missing `approvedScript` returns `SCRIPT_ACCEPTANCE_REQUIRED`.
 - Missing startframe selection returns `STARTFRAME_SELECTION_REQUIRED`.
+- Optional custom upload path: send `startFrameCustomLabel`, `startFrameCustomPrompt`, `startFrameReferenceHint` to bypass candidate ID (MVP prompt-reference mode).
 - Timeline includes `SELECTED_STARTFRAME` event with selected candidate ID.
 - `SHORT_15` maps to standard 30s output in v1.1 semantics.
 - `MASTER_30` maps to premium 60s only when `ENABLE_PREMIUM_60=true`.

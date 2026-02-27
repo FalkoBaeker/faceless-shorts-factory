@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import {
   createProject,
@@ -88,6 +89,7 @@ export function ReviewLiveActions() {
   const [conceptId, setConceptId] = useState<ConceptId>('concept_web_vertical_slice');
   const [startFrameCandidates, setStartFrameCandidates] = useState<StartFrameCandidatePayload[]>([]);
   const [selectedStartFrameCandidateId, setSelectedStartFrameCandidateId] = useState('');
+  const [uploadedStartFrame, setUploadedStartFrame] = useState<{ fileName: string; previewUrl: string } | null>(null);
   const [scriptDraft, setScriptDraft] = useState('');
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
@@ -110,9 +112,19 @@ export function ReviewLiveActions() {
     [startFrameCandidates, selectedStartFrameCandidateId]
   );
 
+  const generationBlocker = useMemo(() => {
+    if (!scriptAccepted || !scriptDraft.trim()) return 'Script prüfen und akzeptieren.';
+    if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Startframe wählen oder eigenes Bild hochladen.';
+    return null;
+  }, [scriptAccepted, scriptDraft, selectedStartFrameCandidate, uploadedStartFrame]);
+
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
     setSelectedStartFrameCandidateId('');
+  };
+
+  const resetUploadedReference = () => {
+    setUploadedStartFrame(null);
   };
 
   const prepareScript = async () => {
@@ -134,6 +146,7 @@ export function ReviewLiveActions() {
         suggestedWords: draft.suggestedWords
       });
       resetStartFrameCandidates();
+      resetUploadedReference();
       setStatus(
         draft.withinTarget
           ? `Script bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s). Bitte prüfen und akzeptieren.`
@@ -153,7 +166,7 @@ export function ReviewLiveActions() {
     }
 
     setScriptAccepted(true);
-    setStatus('Script akzeptiert. Als Nächstes: Startframe-Kandidaten erzeugen und einen auswählen.');
+    setStatus('Script akzeptiert. Als Nächstes: visuelle Startframe-Kandidaten erzeugen oder eigenes Bild hochladen.');
   };
 
   const prepareStartFrames = async () => {
@@ -180,12 +193,39 @@ export function ReviewLiveActions() {
 
       setStartFrameCandidates(response.candidates);
       setSelectedStartFrameCandidateId('');
-      setStatus('Startframe-Kandidaten bereit. Bitte wähle einen Candidate aus.');
+      setUploadedStartFrame(null);
+      setStatus('Startframe-Kandidaten bereit. Bitte visuell auswählen oder eigenes Bild nutzen.');
     } catch (error) {
       setStatus(`Startframe-Kandidaten fehlgeschlagen: ${asApiMessage(error)}`);
     } finally {
       setStartFrameBusy(false);
     }
+  };
+
+  const onUploadReference = (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setStatus('Bitte ein Bild auswählen (png/jpg/webp).');
+      return;
+    }
+
+    if (file.size > 8 * 1024 * 1024) {
+      setStatus('Bild zu groß. Maximal 8MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const previewUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!previewUrl) {
+        setStatus('Bild konnte nicht gelesen werden.');
+        return;
+      }
+      setUploadedStartFrame({ fileName: file.name, previewUrl });
+      setSelectedStartFrameCandidateId('');
+      setStatus('Eigenes Referenzbild aktiv. Es wird als Startframe-Referenz verwendet.');
+    };
+    reader.readAsDataURL(file);
   };
 
   const runFlow = async () => {
@@ -195,13 +235,8 @@ export function ReviewLiveActions() {
       return;
     }
 
-    if (!scriptAccepted || !scriptDraft.trim()) {
-      setStatus('Bitte zuerst ein Script erzeugen, prüfen und mit "Script akzeptieren" bestätigen.');
-      return;
-    }
-
-    if (!selectedStartFrameCandidate) {
-      setStatus('Bitte zuerst Startframe-Kandidaten erzeugen und genau einen auswählen.');
+    if (generationBlocker) {
+      setStatus(`Noch offen: ${generationBlocker}`);
       return;
     }
 
@@ -214,16 +249,26 @@ export function ReviewLiveActions() {
         variantType
       });
 
+      const customPrompt = uploadedStartFrame
+        ? `Nutzer-Referenzbild: ${uploadedStartFrame.fileName}. Nutze dieses Motiv als visuellen Startframe und orientiere Shot 1 daran.`
+        : undefined;
+
       setStatus(
-        `Wähle final Storyboard (${selectedConcept.label}) + Startframe (${selectedStartFrameCandidate.label}) und starte Render ...`
+        uploadedStartFrame
+          ? `Starte Render mit eigenem Referenzbild (${uploadedStartFrame.fileName}) ...`
+          : `Wähle final Storyboard (${selectedConcept.label}) + Startframe (${selectedStartFrameCandidate?.label}) und starte Render ...`
       );
+
       const selection = await selectConcept(token, project.projectId, {
         variantType,
         conceptId,
         moodPreset,
         approvedScript: scriptDraft.trim(),
-        startFrameCandidateId: selectedStartFrameCandidate.candidateId,
-        startFrameStyle: selectedStartFrameCandidate.style
+        startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
+        startFrameStyle: selectedStartFrameCandidate?.style ?? 'owner_portrait',
+        startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
+        startFrameCustomPrompt: customPrompt,
+        startFrameReferenceHint: uploadedStartFrame?.fileName
       });
 
       setStatus('Starte Generierung ...');
@@ -243,7 +288,7 @@ export function ReviewLiveActions() {
         Live MVP Flow (ECHTE API-Daten)
       </h2>
       <p className="section-copy">
-        Echter End-to-End Pfad: Topic → Mood → Script Review (Pflicht) → Concept (Primary-first) → Startframe-Candidates (Pflicht) → Generate → Job-Status → Download.
+        Echter End-to-End Pfad: Topic → Mood → Script Review (Pflicht) → Concept (Primary-first) → Startframe-Preview (Pflicht) → Generate → Job-Status → Download.
       </p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
@@ -255,6 +300,7 @@ export function ReviewLiveActions() {
               setTopic(event.target.value);
               setScriptAccepted(false);
               resetStartFrameCandidates();
+              resetUploadedReference();
             }}
           />
         </label>
@@ -271,6 +317,7 @@ export function ReviewLiveActions() {
             setVariantType('SHORT_15');
             setScriptAccepted(false);
             resetStartFrameCandidates();
+            resetUploadedReference();
           }}
         >
           STANDARD_30 (30s)
@@ -283,6 +330,7 @@ export function ReviewLiveActions() {
               setVariantType('MASTER_30');
               setScriptAccepted(false);
               resetStartFrameCandidates();
+              resetUploadedReference();
             }}
           >
             PREMIUM_60 (60s)
@@ -303,6 +351,7 @@ export function ReviewLiveActions() {
               setMoodPreset(option.id);
               setScriptAccepted(false);
               resetStartFrameCandidates();
+              resetUploadedReference();
             }}
             aria-pressed={moodPreset === option.id}
             title={option.description}
@@ -334,7 +383,6 @@ export function ReviewLiveActions() {
           onChange={(event) => {
             setScriptDraft(event.target.value);
             setScriptAccepted(false);
-            resetStartFrameCandidates();
           }}
           rows={7}
           placeholder="Erzeuge zuerst einen Script-Entwurf."
@@ -410,19 +458,34 @@ export function ReviewLiveActions() {
       </div>
 
       {startFrameCandidates.length ? (
-        <div className="chip-wrap" role="list" aria-label="Startframe Candidate Auswahl">
-          {startFrameCandidates.map((candidate) => (
-            <button
-              key={candidate.candidateId}
-              type="button"
-              className={`state-toggle ${selectedStartFrameCandidateId === candidate.candidateId ? 'active' : ''}`}
-              onClick={() => setSelectedStartFrameCandidateId(candidate.candidateId)}
-              aria-pressed={selectedStartFrameCandidateId === candidate.candidateId}
-              title={candidate.description}
-            >
-              {candidate.label}
-            </button>
-          ))}
+        <div className="startframe-grid" role="list" aria-label="Startframe Candidate Auswahl">
+          {startFrameCandidates.map((candidate) => {
+            const selected = selectedStartFrameCandidateId === candidate.candidateId;
+            return (
+              <button
+                key={candidate.candidateId}
+                type="button"
+                className={`startframe-card ${selected ? 'selected' : ''}`}
+                onClick={() => {
+                  setSelectedStartFrameCandidateId(candidate.candidateId);
+                  setUploadedStartFrame(null);
+                }}
+                aria-pressed={selected}
+                title={candidate.description}
+              >
+                <Image
+                  src={candidate.thumbnailUrl}
+                  alt={`Preview ${candidate.label}`}
+                  className="startframe-thumb"
+                  width={360}
+                  height={640}
+                  unoptimized
+                />
+                <span className="startframe-title">{candidate.label}</span>
+                <span className="startframe-copy">{candidate.description}</span>
+              </button>
+            );
+          })}
         </div>
       ) : (
         <p className="section-copy" style={{ marginTop: 0 }}>
@@ -430,25 +493,50 @@ export function ReviewLiveActions() {
         </p>
       )}
 
-      {selectedStartFrameCandidate ? (
-        <p className="section-copy" style={{ marginTop: 0 }}>
-          Gewählt: {selectedStartFrameCandidate.label} ({selectedStartFrameCandidate.candidateId})
-        </p>
+      <label className="auth-field" style={{ marginTop: 8 }}>
+        <span>Eigenes Bild hochladen (als Referenz)</span>
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          onChange={(event) => onUploadReference(event.target.files?.[0] ?? null)}
+        />
+      </label>
+
+      {uploadedStartFrame ? (
+        <div className="startframe-card selected" style={{ marginTop: 8 }}>
+          <Image
+            src={uploadedStartFrame.previewUrl}
+            alt="Eigenes Referenzbild"
+            className="startframe-thumb"
+            width={360}
+            height={640}
+            unoptimized
+          />
+          <span className="startframe-title">Eigenes Referenzbild</span>
+          <span className="startframe-copy">{uploadedStartFrame.fileName}</span>
+        </div>
       ) : null}
 
       <div className="action-row">
-        <button className="button" type="button" disabled={busy || !scriptAccepted || !selectedStartFrameCandidate} onClick={runFlow}>
+        <button
+          className="button"
+          type="button"
+          disabled={busy || Boolean(generationBlocker)}
+          onClick={runFlow}
+          title={generationBlocker ?? 'Generierung starten'}
+        >
           {busy ? 'Flow läuft ...' : 'Echten Video-Flow starten'}
         </button>
       </div>
 
+      {generationBlocker ? <p className="section-copy" style={{ marginTop: 0 }}>Blocker: {generationBlocker}</p> : null}
       {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
 
       <div className="action-row" style={{ marginTop: 0 }}>
         <span className="chip chip-neutral">Mood: {selectedMoodLabel}</span>
         <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
-        <span className={`chip ${selectedStartFrameCandidate ? 'chip-success' : 'chip-warning'}`}>
-          {selectedStartFrameCandidate ? 'Startframe gewählt' : 'Startframe fehlt'}
+        <span className={`chip ${selectedStartFrameCandidate || uploadedStartFrame ? 'chip-success' : 'chip-warning'}`}>
+          {selectedStartFrameCandidate || uploadedStartFrame ? 'Startframe gewählt' : 'Startframe fehlt'}
         </span>
       </div>
     </article>

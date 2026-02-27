@@ -69,13 +69,27 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
   }
 
-  const selectedStartFrame = resolveSelectedStartFrame({
-    topic: project.topic,
-    conceptId: payload.conceptId,
-    moodPreset,
-    startFrameCandidateId: payload.startFrameCandidateId,
-    startFrameStyle: payload.startFrameStyle
-  });
+  const customPrompt = String(payload.startFrameCustomPrompt ?? '').trim();
+  const customLabel = String(payload.startFrameCustomLabel ?? '').trim() || 'Eigenes Referenzbild';
+  const customReferenceHint = String(payload.startFrameReferenceHint ?? '').trim();
+
+  const selectedStartFrame =
+    customPrompt.length > 0
+      ? {
+          candidateId: `sfc_custom_${Date.now()}`,
+          style: payload.startFrameStyle ?? 'owner_portrait',
+          label: customLabel,
+          description: 'Nutzerdefinierter Startframe aus Upload-Referenz',
+          prompt: customPrompt,
+          thumbnailUrl: ''
+        }
+      : resolveSelectedStartFrame({
+          topic: project.topic,
+          conceptId: payload.conceptId,
+          moodPreset,
+          startFrameCandidateId: payload.startFrameCandidateId,
+          startFrameStyle: payload.startFrameStyle
+        });
 
   if (!selectedStartFrame) {
     throw new Error('STARTFRAME_SELECTION_REQUIRED');
@@ -100,7 +114,9 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       startFrameCandidateId: selectedStartFrame.candidateId,
       startFrameStyle: selectedStartFrame.style,
       startFrameLabel: selectedStartFrame.label,
-      startFramePrompt: selectedStartFrame.prompt
+      startFramePrompt: selectedStartFrame.prompt,
+      startFrameMode: customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate',
+      startFrameReferenceHint: customReferenceHint || undefined
     })
   });
 

@@ -197,7 +197,13 @@ const moodPromptMap: Record<MoodPreset, string> = {
   testimonial:
     'Stimmung: glaubwürdige Kundenstimme, social proof, seriöser Ton, kurzes Vertrauen-Signal vor CTA.',
   humor_light:
-    'Stimmung: leicht humorvoll, freundlich, aber professionell und markenkonform mit klarem CTA am Ende.'
+    'Stimmung: leicht humorvoll, freundlich, professionell. Keine Rabatt-Deadline-/Hard-Sell-Formulierungen wie "nur heute", "Angebot endet", "jetzt kaufen".'
+};
+
+const motionGuardByVariant: Record<VariantType, string> = {
+  SHORT_15: 'Motion-Guard: mindestens 5 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.',
+  MASTER_30: 'Motion-Guard: mindestens 8 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.',
+  CUTDOWN_15_FROM_30: 'Motion-Guard: mindestens 5 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.'
 };
 
 const parsePositiveInt = (value: unknown, fallback: number) => {
@@ -1097,6 +1103,7 @@ export const runVideoStage = async (input: {
     `Create a vertical social video about: ${input.topic}.`,
     `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
     `Mood: ${moodPromptMap[moodPreset]}`,
+    motionGuardByVariant[input.variantType],
     `Narration text: ${llmText}`,
     `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
     'No caption text should touch the frame border.'

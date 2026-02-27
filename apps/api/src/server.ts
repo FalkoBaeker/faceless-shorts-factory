@@ -293,6 +293,9 @@ export const buildApiServer = () =>
                 | 'hands_at_work'
                 | 'before_after_split')
             : undefined,
+          startFrameCustomLabel: String(body.startFrameCustomLabel ?? '').trim() || undefined,
+          startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
+          startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
           variantType: parseVariantType(body.variantType)
         });
 

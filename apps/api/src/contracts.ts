@@ -28,6 +28,9 @@ export type SelectConceptRequest = {
     | 'owner_portrait'
     | 'hands_at_work'
     | 'before_after_split';
+  startFrameCustomLabel?: string;
+  startFrameCustomPrompt?: string;
+  startFrameReferenceHint?: string;
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
 };
 
@@ -65,6 +68,7 @@ export type StartFrameCandidatesResponse = {
     label: string;
     description: string;
     prompt: string;
+    thumbnailUrl: string;
   }>;
 };
 
