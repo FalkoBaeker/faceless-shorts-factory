@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type LoadOptions = {
   cwd?: string;
@@ -85,10 +86,18 @@ export const loadEnvFiles = (options?: LoadOptions) => {
 
   const cwd = options?.cwd ?? process.cwd();
   const files = options?.files ?? ['.env', '.env.providers'];
+  const repoRootFromLoader = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
   for (const file of files) {
-    const resolvedPath = findFileInAncestors(cwd, file) ?? resolve(cwd, file);
-    loadEnvFile(resolvedPath);
+    const preferredPath = findFileInAncestors(cwd, file) ?? resolve(cwd, file);
+    const repoRootPath = resolve(repoRootFromLoader, file);
+
+    // 1) keep CWD/ancestor behavior for explicit local overrides
+    loadEnvFile(preferredPath);
+    // 2) always load repo-root env as fallback when process starts outside the repo
+    if (repoRootPath !== preferredPath) {
+      loadEnvFile(repoRootPath);
+    }
   }
 
   applySafetyDefaults();
