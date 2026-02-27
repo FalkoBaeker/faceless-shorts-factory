@@ -120,6 +120,60 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     }
   }, [job]);
 
+  const userControlsMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'USER_CONTROLS_ENFORCED' && entry.detail);
+    if (!event?.detail) return null;
+
+    try {
+      const parsed = JSON.parse(event.detail) as {
+        ctaStrength?: string;
+        motionIntensity?: string;
+        shotPace?: string;
+        visualStyle?: string;
+      };
+      return {
+        ctaStrength: parsed.ctaStrength ?? 'balanced',
+        motionIntensity: parsed.motionIntensity ?? 'medium',
+        shotPace: parsed.shotPace ?? 'balanced',
+        visualStyle: parsed.visualStyle ?? 'clean'
+      };
+    } catch {
+      return null;
+    }
+  }, [job]);
+
+  const motionMeta = useMemo(() => {
+    const enforced = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'MOTION_ENFORCED' && entry.detail);
+    const finalMotion = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'FINAL_MOTION_OK' && entry.detail);
+
+    const parse = (detail?: string) => {
+      if (!detail) return null;
+      try {
+        return JSON.parse(detail) as {
+          motionPhases?: number;
+          minPhasesRequired?: number;
+          longestStaticSeconds?: number;
+          maxStaticSecondsAllowed?: number;
+          attempts?: number;
+          withinThreshold?: boolean;
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    return {
+      enforced: parse(enforced?.detail),
+      final: parse(finalMotion?.detail)
+    };
+  }, [job]);
+
   const finalSyncMeta = useMemo(() => {
     const event = [...(job?.timeline ?? [])]
       .reverse()
@@ -222,6 +276,16 @@ export function JobRuntimePanel({ initialJobId }: Props) {
         </div>
       ) : null}
 
+      {userControlsMeta ? (
+        <div className="action-row" style={{ marginTop: 0 }}>
+          <span className="chip chip-neutral">Controls</span>
+          <span className="chip chip-neutral">CTA: {userControlsMeta.ctaStrength}</span>
+          <span className="chip chip-neutral">Motion: {userControlsMeta.motionIntensity}</span>
+          <span className="chip chip-neutral">Pace: {userControlsMeta.shotPace}</span>
+          <span className="chip chip-neutral">Style: {userControlsMeta.visualStyle}</span>
+        </div>
+      ) : null}
+
       {finalSyncMeta ? (
         <div className="action-row" style={{ marginTop: 0 }}>
           <span className="chip chip-success">Final Sync: {finalSyncMeta.avDeltaSeconds.toFixed(3)}s Drift</span>
@@ -230,6 +294,27 @@ export function JobRuntimePanel({ initialJobId }: Props) {
           <span className="chip chip-neutral">
             Dauer: {finalSyncMeta.outputSeconds.toFixed(2)}s / Ziel {finalSyncMeta.targetSeconds.toFixed(2)}s
           </span>
+        </div>
+      ) : null}
+
+      {motionMeta.enforced || motionMeta.final ? (
+        <div className="action-row" style={{ marginTop: 0 }}>
+          {motionMeta.enforced ? (
+            <span className={`chip ${motionMeta.enforced.withinThreshold ? 'chip-success' : 'chip-warning'}`}>
+              Motion Guard: {motionMeta.enforced.motionPhases ?? 0}/{motionMeta.enforced.minPhasesRequired ?? 0} Phasen
+            </span>
+          ) : null}
+          {motionMeta.enforced ? (
+            <span className="chip chip-neutral">
+              Statisch max: {(motionMeta.enforced.longestStaticSeconds ?? 0).toFixed(2)}s / {(motionMeta.enforced.maxStaticSecondsAllowed ?? 0).toFixed(2)}s
+            </span>
+          ) : null}
+          {motionMeta.enforced ? (
+            <span className="chip chip-neutral">Attempts: {motionMeta.enforced.attempts ?? 1}</span>
+          ) : null}
+          {motionMeta.final ? (
+            <span className="chip chip-success">Final Motion checked</span>
+          ) : null}
         </div>
       ) : null}
 

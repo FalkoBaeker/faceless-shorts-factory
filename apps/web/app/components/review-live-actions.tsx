@@ -7,10 +7,12 @@ import {
   createProject,
   createScriptDraft,
   createStartFrameCandidates,
+  uploadStartFrameReference,
   selectConcept,
   triggerGenerate,
   type ApiError,
-  type StartFrameCandidatePayload
+  type StartFrameCandidatePayload,
+  type UserControlsPayload
 } from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
 
@@ -51,6 +53,14 @@ const conceptOptions = [
 
 type ConceptId = (typeof conceptOptions)[number]['id'];
 
+const defaultStyleByConcept: Record<ConceptId, 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split'> = {
+  concept_web_vertical_slice: 'storefront_hero',
+  concept_offer_focus: 'product_macro',
+  concept_problem_solution: 'before_after_split',
+  concept_before_after: 'before_after_split',
+  concept_testimonial: 'owner_portrait'
+};
+
 type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
 
 const moodOptions: Array<{ id: MoodPreset; label: string; description: string }> = [
@@ -81,6 +91,22 @@ const asApiMessage = (error: unknown) => {
   return api?.message ?? String(error);
 };
 
+const fileToDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string' && reader.result.trim()) {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('UPLOAD_PREVIEW_READ_FAILED'));
+    };
+    reader.onerror = () => reject(new Error('UPLOAD_PREVIEW_READ_FAILED'));
+    reader.readAsDataURL(file);
+  });
+
+const toBase64Payload = (dataUrl: string) => dataUrl.replace(/^data:[^;]+;base64,/, '');
+
 export function ReviewLiveActions() {
   const router = useRouter();
   const [topic, setTopic] = useState('Sommerangebot für lokale Bäckerei in Berlin');
@@ -89,7 +115,23 @@ export function ReviewLiveActions() {
   const [conceptId, setConceptId] = useState<ConceptId>('concept_web_vertical_slice');
   const [startFrameCandidates, setStartFrameCandidates] = useState<StartFrameCandidatePayload[]>([]);
   const [selectedStartFrameCandidateId, setSelectedStartFrameCandidateId] = useState('');
-  const [uploadedStartFrame, setUploadedStartFrame] = useState<{ fileName: string; previewUrl: string } | null>(null);
+  const [uploadedStartFrame, setUploadedStartFrame] = useState<
+    | {
+        fileName: string;
+        previewUrl: string;
+        objectPath: string;
+        signedUrl: string;
+        bytes: number;
+        mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+      }
+    | null
+  >(null);
+  const [userControls, setUserControls] = useState<UserControlsPayload>({
+    ctaStrength: 'balanced',
+    motionIntensity: 'medium',
+    shotPace: 'balanced',
+    visualStyle: 'clean'
+  });
   const [scriptDraft, setScriptDraft] = useState('');
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
@@ -111,6 +153,8 @@ export function ReviewLiveActions() {
     () => startFrameCandidates.find((candidate) => candidate.candidateId === selectedStartFrameCandidateId) ?? null,
     [startFrameCandidates, selectedStartFrameCandidateId]
   );
+
+  const organizationId = 'org_web_mvp';
 
   const generationBlocker = useMemo(() => {
     if (!scriptAccepted || !scriptDraft.trim()) return 'Script prüfen und akzeptieren.';
@@ -202,8 +246,15 @@ export function ReviewLiveActions() {
     }
   };
 
-  const onUploadReference = (file: File | null) => {
+  const onUploadReference = async (file: File | null) => {
     if (!file) return;
+
+    const token = readStoredToken();
+    if (!token) {
+      setStatus('Bitte zuerst auf der Startseite einloggen.');
+      return;
+    }
+
     if (!file.type.startsWith('image/')) {
       setStatus('Bitte ein Bild auswählen (png/jpg/webp).');
       return;
@@ -214,18 +265,38 @@ export function ReviewLiveActions() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const previewUrl = typeof reader.result === 'string' ? reader.result : '';
-      if (!previewUrl) {
-        setStatus('Bild konnte nicht gelesen werden.');
-        return;
-      }
-      setUploadedStartFrame({ fileName: file.name, previewUrl });
+    setStartFrameBusy(true);
+    setStatus(`Lade Referenzbild hoch (${file.name}) ...`);
+
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const normalizedMimeType =
+        file.type === 'image/png' || file.type === 'image/webp' || file.type === 'image/jpeg'
+          ? (file.type as 'image/png' | 'image/jpeg' | 'image/webp')
+          : 'image/jpeg';
+
+      const uploaded = await uploadStartFrameReference(token, {
+        organizationId,
+        fileName: file.name,
+        mimeType: normalizedMimeType,
+        imageBase64: toBase64Payload(dataUrl)
+      });
+
+      setUploadedStartFrame({
+        fileName: file.name,
+        previewUrl: dataUrl,
+        objectPath: uploaded.objectPath,
+        signedUrl: uploaded.signedUrl,
+        bytes: uploaded.bytes,
+        mimeType: uploaded.mimeType
+      });
       setSelectedStartFrameCandidateId('');
-      setStatus('Eigenes Referenzbild aktiv. Es wird als Startframe-Referenz verwendet.');
-    };
-    reader.readAsDataURL(file);
+      setStatus('Eigenes Referenzbild hochgeladen und aktiv. Es wird direkt in die Generierung eingespeist.');
+    } catch (error) {
+      setStatus(`Upload fehlgeschlagen: ${asApiMessage(error)}`);
+    } finally {
+      setStartFrameBusy(false);
+    }
   };
 
   const runFlow = async () => {
@@ -244,14 +315,16 @@ export function ReviewLiveActions() {
     setStatus('Erstelle Projekt ...');
     try {
       const project = await createProject(token, {
-        organizationId: 'org_web_mvp',
+        organizationId,
         topic,
         variantType
       });
 
       const customPrompt = uploadedStartFrame
-        ? `Nutzer-Referenzbild: ${uploadedStartFrame.fileName}. Nutze dieses Motiv als visuellen Startframe und orientiere Shot 1 daran.`
+        ? `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) ist hochgeladen: ${uploadedStartFrame.objectPath}. Nutze dieses Motiv als Startframe und als visuelle Leitplanke.`
         : undefined;
+
+      const fallbackStyle = defaultStyleByConcept[conceptId];
 
       setStatus(
         uploadedStartFrame
@@ -265,10 +338,12 @@ export function ReviewLiveActions() {
         moodPreset,
         approvedScript: scriptDraft.trim(),
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
-        startFrameStyle: selectedStartFrameCandidate?.style ?? 'owner_portrait',
+        startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
         startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
         startFrameCustomPrompt: customPrompt,
-        startFrameReferenceHint: uploadedStartFrame?.fileName
+        startFrameReferenceHint: uploadedStartFrame?.fileName,
+        startFrameUploadObjectPath: uploadedStartFrame?.objectPath,
+        userControls
       });
 
       setStatus('Starte Generierung ...');
@@ -498,7 +573,9 @@ export function ReviewLiveActions() {
         <input
           type="file"
           accept="image/png,image/jpeg,image/webp"
-          onChange={(event) => onUploadReference(event.target.files?.[0] ?? null)}
+          onChange={(event) => {
+            void onUploadReference(event.target.files?.[0] ?? null);
+          }}
         />
       </label>
 
@@ -516,6 +593,58 @@ export function ReviewLiveActions() {
           <span className="startframe-copy">{uploadedStartFrame.fileName}</span>
         </div>
       ) : null}
+
+      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+        User-Steuerparameter (gegen Randomness)
+      </h3>
+      <div className="chip-wrap" role="list" aria-label="CTA Stärke">
+        {(['soft', 'balanced', 'strong'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`state-toggle ${userControls.ctaStrength === value ? 'active' : ''}`}
+            onClick={() => setUserControls((prev) => ({ ...prev, ctaStrength: value }))}
+          >
+            CTA: {value}
+          </button>
+        ))}
+      </div>
+      <div className="chip-wrap" role="list" aria-label="Motion Intensität">
+        {(['low', 'medium', 'high'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`state-toggle ${userControls.motionIntensity === value ? 'active' : ''}`}
+            onClick={() => setUserControls((prev) => ({ ...prev, motionIntensity: value }))}
+          >
+            Motion: {value}
+          </button>
+        ))}
+      </div>
+      <div className="chip-wrap" role="list" aria-label="Shot Pace">
+        {(['relaxed', 'balanced', 'fast'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`state-toggle ${userControls.shotPace === value ? 'active' : ''}`}
+            onClick={() => setUserControls((prev) => ({ ...prev, shotPace: value }))}
+          >
+            Pace: {value}
+          </button>
+        ))}
+      </div>
+      <div className="chip-wrap" role="list" aria-label="Visual Style">
+        {(['clean', 'cinematic', 'ugc'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`state-toggle ${userControls.visualStyle === value ? 'active' : ''}`}
+            onClick={() => setUserControls((prev) => ({ ...prev, visualStyle: value }))}
+          >
+            Style: {value}
+          </button>
+        ))}
+      </div>
 
       <div className="action-row">
         <button
@@ -535,6 +664,7 @@ export function ReviewLiveActions() {
       <div className="action-row" style={{ marginTop: 0 }}>
         <span className="chip chip-neutral">Mood: {selectedMoodLabel}</span>
         <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
+        <span className="chip chip-neutral">Controls: {userControls.ctaStrength}/{userControls.motionIntensity}/{userControls.shotPace}/{userControls.visualStyle}</span>
         <span className={`chip ${selectedStartFrameCandidate || uploadedStartFrame ? 'chip-success' : 'chip-warning'}`}>
           {selectedStartFrameCandidate || uploadedStartFrame ? 'Startframe gewählt' : 'Startframe fehlt'}
         </span>

@@ -5,6 +5,8 @@ import type {
   SelectConceptResponse,
   ScriptDraftRequest,
   ScriptDraftResponse,
+  StartFrameUploadRequest,
+  StartFrameUploadResponse,
   StartFrameCandidatesRequest,
   StartFrameCandidatesResponse,
   JobStatusResponse,
@@ -25,8 +27,13 @@ import {
   replayDeadLetter,
   ensureQueueRuntime
 } from './orchestration/queue-runtime.ts';
-import { generateScriptDraft } from './providers/live-provider-runtime.ts';
+import {
+  generateScriptDraft,
+  uploadStartFrameReference,
+  generateStartFrameThumbnail
+} from './providers/live-provider-runtime.ts';
 import { buildStartFrameCandidates, resolveSelectedStartFrame } from './services/startframe-candidates.ts';
+import { normalizeUserControlProfile, validateCreativeConsistency } from './services/creative-consistency.ts';
 
 const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
@@ -56,6 +63,36 @@ export const createProjectHandler = (payload: CreateProjectRequest): CreateProje
   };
 };
 
+export const uploadStartFrameHandler = async (payload: StartFrameUploadRequest): Promise<StartFrameUploadResponse> => {
+  const organizationId = String(payload.organizationId ?? '').trim();
+  if (!organizationId) throw new Error('ORGANIZATION_ID_REQUIRED');
+
+  const fileName = String(payload.fileName ?? '').trim() || 'startframe-upload.jpg';
+  const mimeType = String(payload.mimeType ?? '').trim().toLowerCase();
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) {
+    throw new Error('STARTFRAME_UPLOAD_MIMETYPE_INVALID');
+  }
+
+  const base64Raw = String(payload.imageBase64 ?? '').trim().replace(/^data:[^;]+;base64,/, '');
+  if (!base64Raw) throw new Error('STARTFRAME_UPLOAD_EMPTY');
+
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(base64Raw, 'base64');
+  } catch {
+    throw new Error('STARTFRAME_UPLOAD_BASE64_INVALID');
+  }
+
+  if (!bytes.length) throw new Error('STARTFRAME_UPLOAD_EMPTY');
+
+  return uploadStartFrameReference({
+    organizationId,
+    fileName,
+    bytes,
+    mimeType: mimeType as 'image/png' | 'image/jpeg' | 'image/webp'
+  });
+};
+
 export const selectConceptHandler = (payload: SelectConceptRequest): SelectConceptResponse => {
   const project = getProject(payload.projectId);
   if (!project) {
@@ -72,15 +109,19 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   const customPrompt = String(payload.startFrameCustomPrompt ?? '').trim();
   const customLabel = String(payload.startFrameCustomLabel ?? '').trim() || 'Eigenes Referenzbild';
   const customReferenceHint = String(payload.startFrameReferenceHint ?? '').trim();
+  const uploadObjectPath = String(payload.startFrameUploadObjectPath ?? '').trim();
+  const hasUploadedReference = uploadObjectPath.length > 0;
 
   const selectedStartFrame =
-    customPrompt.length > 0
+    customPrompt.length > 0 || hasUploadedReference
       ? {
           candidateId: `sfc_custom_${Date.now()}`,
           style: payload.startFrameStyle ?? 'owner_portrait',
           label: customLabel,
           description: 'Nutzerdefinierter Startframe aus Upload-Referenz',
-          prompt: customPrompt,
+          prompt:
+            customPrompt ||
+            'Nutze das hochgeladene Referenzbild als visuelle Leitplanke für Shot 1 und den gesamten Look des Videos.',
           thumbnailUrl: ''
         }
       : resolveSelectedStartFrame({
@@ -93,6 +134,19 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
 
   if (!selectedStartFrame) {
     throw new Error('STARTFRAME_SELECTION_REQUIRED');
+  }
+
+  const userControls = normalizeUserControlProfile(payload.userControls);
+  const consistency = validateCreativeConsistency({
+    script: approvedScript,
+    conceptId: payload.conceptId,
+    moodPreset,
+    startFrameStyle: selectedStartFrame.style,
+    userControls
+  });
+
+  if (!consistency.ok) {
+    throw new Error(`CREATIVE_CONSISTENCY_FAILED:${consistency.reasons.join('|')}`);
   }
 
   setProjectStatus(payload.projectId, 'SELECTED');
@@ -115,9 +169,26 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       startFrameStyle: selectedStartFrame.style,
       startFrameLabel: selectedStartFrame.label,
       startFramePrompt: selectedStartFrame.prompt,
-      startFrameMode: customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate',
-      startFrameReferenceHint: customReferenceHint || undefined
+      startFrameMode: hasUploadedReference ? 'uploaded_asset' : customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate',
+      startFrameReferenceHint: customReferenceHint || undefined,
+      startFrameReferenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined,
+      userControls
     })
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'CONSISTENCY_CHECK_PASSED',
+    detail: JSON.stringify({
+      score: consistency.score,
+      checks: consistency.checks
+    })
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'USER_CONTROLS_APPLIED',
+    detail: JSON.stringify(userControls)
   });
 
   appendTimelineEvent(job.id, {
@@ -126,7 +197,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     detail: JSON.stringify({
       candidateId: selectedStartFrame.candidateId,
       style: selectedStartFrame.style,
-      label: selectedStartFrame.label
+      label: selectedStartFrame.label,
+      referenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined
     })
   });
 
@@ -171,20 +243,45 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
   };
 };
 
-export const createStartFrameCandidatesHandler = (
+export const createStartFrameCandidatesHandler = async (
   payload: StartFrameCandidatesRequest
-): StartFrameCandidatesResponse => {
+): Promise<StartFrameCandidatesResponse> => {
   const topic = String(payload.topic ?? '').trim();
   if (!topic) throw new Error('TOPIC_REQUIRED');
 
-  return {
-    candidates: buildStartFrameCandidates({
-      topic,
-      conceptId: payload.conceptId,
-      moodPreset: payload.moodPreset,
-      limit: payload.limit
+  const moodPreset = (payload.moodPreset ?? 'commercial_cta') as
+    | 'commercial_cta'
+    | 'problem_solution'
+    | 'testimonial'
+    | 'humor_light';
+
+  const baseCandidates = buildStartFrameCandidates({
+    topic,
+    conceptId: payload.conceptId,
+    moodPreset,
+    limit: payload.limit
+  });
+
+  const candidates = await Promise.all(
+    baseCandidates.map(async (candidate) => {
+      const generated = await generateStartFrameThumbnail({
+        candidateId: candidate.candidateId,
+        topic,
+        style: candidate.style,
+        label: candidate.label,
+        description: candidate.description,
+        moodPreset
+      });
+
+      if (!generated?.signedUrl) return candidate;
+      return {
+        ...candidate,
+        thumbnailUrl: generated.signedUrl
+      };
     })
-  };
+  );
+
+  return { candidates };
 };
 
 export const generateHandler = async (jobId: string, options?: { forceFail?: boolean }): Promise<JobStatusResponse> => {
@@ -202,6 +299,11 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
   const accepted = existing.timeline.some((event) => event.event === 'SCRIPT_ACCEPTED' && Boolean(event.detail?.trim()));
   if (!accepted) {
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
+  }
+
+  const consistencyChecked = existing.timeline.some((event) => event.event === 'CONSISTENCY_CHECK_PASSED');
+  if (!consistencyChecked) {
+    throw new Error('CREATIVE_CONSISTENCY_REQUIRED');
   }
 
   await ensureQueueRuntime();

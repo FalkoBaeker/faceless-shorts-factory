@@ -64,6 +64,21 @@ export type StartFrameCandidatesPayload = {
   candidates: StartFrameCandidatePayload[];
 };
 
+export type UserControlsPayload = {
+  ctaStrength: 'soft' | 'balanced' | 'strong';
+  motionIntensity: 'low' | 'medium' | 'high';
+  shotPace: 'relaxed' | 'balanced' | 'fast';
+  visualStyle: 'clean' | 'cinematic' | 'ugc';
+};
+
+export type StartFrameUploadPayload = {
+  assetId: string;
+  objectPath: string;
+  signedUrl: string;
+  bytes: number;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+};
+
 export type JobPayload = {
   jobId: string;
   status: string;
@@ -173,6 +188,21 @@ export const createScriptDraft = (
     body: payload
   });
 
+export const uploadStartFrameReference = (
+  token: string,
+  payload: {
+    organizationId: string;
+    fileName: string;
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+    imageBase64: string;
+  }
+) =>
+  requestJson<StartFrameUploadPayload>('/v1/startframes/upload', {
+    method: 'POST',
+    token,
+    body: payload
+  });
+
 export const createStartFrameCandidates = (
   token: string,
   payload: {
@@ -206,6 +236,8 @@ export const selectConcept = (
     startFrameCustomLabel?: string;
     startFrameCustomPrompt?: string;
     startFrameReferenceHint?: string;
+    startFrameUploadObjectPath?: string;
+    userControls?: UserControlsPayload;
   }
 ) =>
   requestJson<SelectConceptPayload>(`/v1/projects/${projectId}/select`, {
@@ -220,6 +252,8 @@ export const selectConcept = (
       startFrameCustomLabel: payload.startFrameCustomLabel,
       startFrameCustomPrompt: payload.startFrameCustomPrompt,
       startFrameReferenceHint: payload.startFrameReferenceHint,
+      startFrameUploadObjectPath: payload.startFrameUploadObjectPath,
+      userControls: payload.userControls,
       variantType: payload.variantType
     }
   });

@@ -3,6 +3,7 @@ import { URL } from 'node:url';
 import {
   createProjectHandler,
   createScriptDraftHandler,
+  uploadStartFrameHandler,
   createStartFrameCandidatesHandler,
   selectConceptHandler,
   generateHandler,
@@ -108,6 +109,22 @@ const parseMoodPreset = (raw: unknown): 'commercial_cta' | 'problem_solution' | 
     return value as 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
   }
   return 'commercial_cta';
+};
+
+const parseUserControls = (raw: unknown) => {
+  const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+
+  const parseEnum = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T => {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return (allowed as readonly string[]).includes(normalized) ? (normalized as T) : fallback;
+  };
+
+  return {
+    ctaStrength: parseEnum(input.ctaStrength, ['soft', 'balanced', 'strong'] as const, 'balanced'),
+    motionIntensity: parseEnum(input.motionIntensity, ['low', 'medium', 'high'] as const, 'medium'),
+    shotPace: parseEnum(input.shotPace, ['relaxed', 'balanced', 'fast'] as const, 'balanced'),
+    visualStyle: parseEnum(input.visualStyle, ['clean', 'cinematic', 'ugc'] as const, 'clean')
+  };
 };
 
 const ensureRunPermissionIfRequired = async (req: IncomingMessage) => {
@@ -261,11 +278,25 @@ export const buildApiServer = () =>
         return sendJson(res, 200, draft);
       }
 
+      if (method === 'POST' && path === '/v1/startframes/upload') {
+        await ensureRunPermissionIfRequired(req);
+
+        const body = await readJsonBody(req);
+        const uploaded = await uploadStartFrameHandler({
+          organizationId: String(body.organizationId ?? '').trim(),
+          fileName: String(body.fileName ?? '').trim(),
+          mimeType: String(body.mimeType ?? 'image/jpeg').trim() as 'image/png' | 'image/jpeg' | 'image/webp',
+          imageBase64: String(body.imageBase64 ?? '').trim()
+        });
+
+        return sendJson(res, 200, uploaded);
+      }
+
       if (method === 'POST' && path === '/v1/startframes/candidates') {
         await ensureRunPermissionIfRequired(req);
 
         const body = await readJsonBody(req);
-        const candidates = createStartFrameCandidatesHandler({
+        const candidates = await createStartFrameCandidatesHandler({
           topic: String(body.topic ?? ''),
           conceptId: String(body.conceptId ?? '').trim() || undefined,
           moodPreset: parseMoodPreset(body.moodPreset),
@@ -296,6 +327,8 @@ export const buildApiServer = () =>
           startFrameCustomLabel: String(body.startFrameCustomLabel ?? '').trim() || undefined,
           startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
           startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
+          startFrameUploadObjectPath: String(body.startFrameUploadObjectPath ?? '').trim() || undefined,
+          userControls: parseUserControls(body.userControls),
           variantType: parseVariantType(body.variantType)
         });
 

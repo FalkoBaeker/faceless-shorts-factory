@@ -36,6 +36,13 @@ type StoryboardSelection = {
   startFrameCandidateId?: string;
   startFrameLabel?: string;
   startFramePrompt?: string;
+  startFrameReferenceObjectPath?: string;
+  userControls: {
+    ctaStrength: 'soft' | 'balanced' | 'strong';
+    motionIntensity: 'low' | 'medium' | 'high';
+    shotPace: 'relaxed' | 'balanced' | 'fast';
+    visualStyle: 'clean' | 'cinematic' | 'ugc';
+  };
   startFrameStyle: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
 };
 
@@ -223,6 +230,13 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
     startFrameCandidateId: undefined,
     startFrameLabel: undefined,
     startFramePrompt: undefined,
+    startFrameReferenceObjectPath: undefined,
+    userControls: {
+      ctaStrength: 'balanced',
+      motionIntensity: 'medium',
+      shotPace: 'balanced',
+      visualStyle: 'clean'
+    },
     startFrameStyle: 'storefront_hero'
   };
 
@@ -248,6 +262,31 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
         ? parsed.moodPreset
         : fallback.moodPreset;
 
+    const rawControls = parsed.userControls && typeof parsed.userControls === 'object' ? parsed.userControls : {};
+
+    const userControls = {
+      ctaStrength:
+        typeof (rawControls as { ctaStrength?: unknown }).ctaStrength === 'string' &&
+        ['soft', 'balanced', 'strong'].includes((rawControls as { ctaStrength?: string }).ctaStrength ?? '')
+          ? ((rawControls as { ctaStrength?: string }).ctaStrength as 'soft' | 'balanced' | 'strong')
+          : fallback.userControls.ctaStrength,
+      motionIntensity:
+        typeof (rawControls as { motionIntensity?: unknown }).motionIntensity === 'string' &&
+        ['low', 'medium', 'high'].includes((rawControls as { motionIntensity?: string }).motionIntensity ?? '')
+          ? ((rawControls as { motionIntensity?: string }).motionIntensity as 'low' | 'medium' | 'high')
+          : fallback.userControls.motionIntensity,
+      shotPace:
+        typeof (rawControls as { shotPace?: unknown }).shotPace === 'string' &&
+        ['relaxed', 'balanced', 'fast'].includes((rawControls as { shotPace?: string }).shotPace ?? '')
+          ? ((rawControls as { shotPace?: string }).shotPace as 'relaxed' | 'balanced' | 'fast')
+          : fallback.userControls.shotPace,
+      visualStyle:
+        typeof (rawControls as { visualStyle?: unknown }).visualStyle === 'string' &&
+        ['clean', 'cinematic', 'ugc'].includes((rawControls as { visualStyle?: string }).visualStyle ?? '')
+          ? ((rawControls as { visualStyle?: string }).visualStyle as 'clean' | 'cinematic' | 'ugc')
+          : fallback.userControls.visualStyle
+    };
+
     return {
       conceptId: String(parsed.conceptId ?? fallback.conceptId),
       moodPreset,
@@ -258,6 +297,11 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
           : undefined,
       startFrameLabel: typeof parsed.startFrameLabel === 'string' ? parsed.startFrameLabel : undefined,
       startFramePrompt: typeof parsed.startFramePrompt === 'string' ? parsed.startFramePrompt : undefined,
+      startFrameReferenceObjectPath:
+        typeof parsed.startFrameReferenceObjectPath === 'string' && parsed.startFrameReferenceObjectPath.trim()
+          ? parsed.startFrameReferenceObjectPath
+          : undefined,
+      userControls,
       startFrameStyle
     } as StoryboardSelection;
   } catch {
@@ -536,12 +580,17 @@ const processVideo = async (job: Job<StagePayload>) => {
         approvedScript: storyboard.approvedScript,
         startFrameStyle: storyboard.startFrameStyle,
         startFrameCandidateId: storyboard.startFrameCandidateId,
-        startFramePromptOverride: storyboard.startFramePrompt
+        startFramePromptOverride: storyboard.startFramePrompt,
+        startFrameReferenceObjectPath: storyboard.startFrameReferenceObjectPath,
+        userControls: storyboard.userControls
       })
     );
     await setAssetRef(jobId, 'script', result.script);
     await setAssetRef(jobId, 'videoObjectPath', result.video.objectPath);
     await setAssetRef(jobId, 'imageObjectPath', result.image.objectPath);
+    if (result.referenceAsset?.objectPath) {
+      await setAssetRef(jobId, 'startFrameReferenceObjectPath', result.referenceAsset.objectPath);
+    }
 
     await insertTimeline(
       jobId,
@@ -568,6 +617,11 @@ const processVideo = async (job: Job<StagePayload>) => {
     await insertTimeline(jobId, 'ASSET_SCRIPT_READY', result.script.slice(0, 280));
     await insertTimeline(jobId, 'ASSET_IMAGE_STORED', buildAssetDetail('image', result.image));
     await insertTimeline(jobId, 'ASSET_VIDEO_STORED', buildAssetDetail('video', result.video));
+    if (result.referenceAsset) {
+      await insertTimeline(jobId, 'ASSET_STARTFRAME_REFERENCE_STORED', buildAssetDetail('startframe_reference', result.referenceAsset));
+    }
+    await insertTimeline(jobId, 'USER_CONTROLS_ENFORCED', JSON.stringify(result.userControls));
+    await insertTimeline(jobId, 'MOTION_ENFORCED', JSON.stringify(result.motionEnforcement));
 
     await enqueueAudio(job.data);
 
@@ -681,6 +735,7 @@ const processAssembly = async (job: Job<StagePayload>) => {
         withinTolerance: final.finalSync.withinTolerance
       })
     );
+    await insertTimeline(jobId, 'FINAL_MOTION_OK', JSON.stringify(final.finalMotion));
 
     await transitionStatus(jobId, 'READY', 'render complete');
     await upsertLedgerFinalState(context.organization_id, jobId, 'COMMITTED', 0, 'reserved credit committed on READY');

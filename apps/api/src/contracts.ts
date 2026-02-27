@@ -2,6 +2,13 @@ export type VariantType = 'SHORT_15' | 'MASTER_30' | 'CUTDOWN_15_FROM_30';
 
 export type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
 
+export type UserControlProfile = {
+  ctaStrength?: 'soft' | 'balanced' | 'strong';
+  motionIntensity?: 'low' | 'medium' | 'high';
+  shotPace?: 'relaxed' | 'balanced' | 'fast';
+  visualStyle?: 'clean' | 'cinematic' | 'ugc';
+};
+
 export type CreateProjectRequest = {
   organizationId: string;
   topic: string;
@@ -31,6 +38,8 @@ export type SelectConceptRequest = {
   startFrameCustomLabel?: string;
   startFrameCustomPrompt?: string;
   startFrameReferenceHint?: string;
+  startFrameUploadObjectPath?: string;
+  userControls?: UserControlProfile;
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
 };
 
@@ -52,6 +61,21 @@ export type ScriptDraftResponse = {
   estimatedSeconds: number;
   withinTarget: boolean;
   suggestedWords: number;
+};
+
+export type StartFrameUploadRequest = {
+  organizationId: string;
+  fileName: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  imageBase64: string;
+};
+
+export type StartFrameUploadResponse = {
+  assetId: string;
+  objectPath: string;
+  signedUrl: string;
+  bytes: number;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
 };
 
 export type StartFrameCandidatesRequest = {

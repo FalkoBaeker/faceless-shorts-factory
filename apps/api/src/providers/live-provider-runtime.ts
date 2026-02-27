@@ -1,8 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { loadEnvFiles } from '../config/env-loader.ts';
+import { normalizeUserControlProfile, type UserControlProfile } from '../services/creative-consistency.ts';
 import { logEvent } from '../utils/app-logger.ts';
 
 loadEnvFiles();
@@ -112,6 +114,21 @@ type FinalSyncMetrics = {
   withinTolerance: boolean;
 };
 
+type MotionAnalysis = {
+  durationSeconds: number;
+  sceneThreshold: number;
+  motionCuts: number;
+  motionPhases: number;
+  longestStaticSeconds: number;
+};
+
+type MotionEnforcement = MotionAnalysis & {
+  minPhasesRequired: number;
+  maxStaticSecondsAllowed: number;
+  withinThreshold: boolean;
+  attempts: number;
+};
+
 type StartFrameStyle =
   | 'storefront_hero'
   | 'product_macro'
@@ -202,8 +219,31 @@ const moodPromptMap: Record<MoodPreset, string> = {
 
 const motionGuardByVariant: Record<VariantType, string> = {
   SHORT_15: 'Motion-Guard: mindestens 5 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.',
-  MASTER_30: 'Motion-Guard: mindestens 8 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.',
-  CUTDOWN_15_FROM_30: 'Motion-Guard: mindestens 5 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.'
+  MASTER_30: 'Motion-Guard: mindestens 8 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.'
+};
+
+const ctaDirectnessByControl: Record<UserControlProfile['ctaStrength'], string> = {
+  soft: 'CTA zurückhaltend und beratend, kein Druck.',
+  balanced: 'CTA klar, konkret und freundlich.',
+  strong: 'CTA deutlich und handlungsorientiert, aber ohne unseriösen Druck.'
+};
+
+const shotPaceByControl: Record<UserControlProfile['shotPace'], string> = {
+  relaxed: 'Shot-Pace ruhig, längere Einstellungen, weiche Übergänge.',
+  balanced: 'Shot-Pace ausgewogen mit klaren Szenenwechseln.',
+  fast: 'Shot-Pace dynamisch mit schnellen, aber lesbaren Übergängen.'
+};
+
+const visualStyleByControl: Record<UserControlProfile['visualStyle'], string> = {
+  clean: 'Visual Style clean/minimal, klare Komposition, wenig visuelles Rauschen.',
+  cinematic: 'Visual Style cinematic mit kontrollierter Tiefenwirkung und Lichtführung.',
+  ugc: 'Visual Style UGC-authentisch, nahbar, handgehaltene Mikrobewegung erlaubt.'
+};
+
+const motionBoostByControl: Record<UserControlProfile['motionIntensity'], number> = {
+  low: -1,
+  medium: 0,
+  high: 2
 };
 
 const parsePositiveInt = (value: unknown, fallback: number) => {
@@ -257,6 +297,24 @@ const resolveMoodPreset = (mood?: string): MoodPreset => {
   if (mood in moodPromptMap) return mood as MoodPreset;
   return 'commercial_cta';
 };
+
+const resolveMotionRequirement = (
+  variantType: VariantType,
+  controls: UserControlProfile
+): { minPhases: number; maxStaticSeconds: number } => {
+  const baseMin = variantType === 'MASTER_30' ? 8 : 5;
+  const minPhases = Math.max(4, baseMin + motionBoostByControl[controls.motionIntensity]);
+  const maxStaticSeconds = controls.shotPace === 'fast' ? 2 : controls.shotPace === 'relaxed' ? 3 : 2.5;
+  return { minPhases, maxStaticSeconds };
+};
+
+const renderUserControlPrompt = (controls: UserControlProfile) =>
+  [
+    `User-Control CTA: ${ctaDirectnessByControl[controls.ctaStrength]}`,
+    `User-Control Motion: Intensität=${controls.motionIntensity}.`,
+    `User-Control Pace: ${shotPaceByControl[controls.shotPace]}`,
+    `User-Control Visual: ${visualStyleByControl[controls.visualStyle]}`
+  ].join(' ');
 
 const FRAME_WIDTH = 720;
 const FRAME_HEIGHT = 1280;
@@ -832,6 +890,278 @@ const uploadAsset = async (jobId: string, objectPath: string, bytes: Buffer, mim
   };
 };
 
+const sanitizeSegment = (value: string, fallback: string) => {
+  const trimmed = value.trim().toLowerCase();
+  const cleaned = trimmed.replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned || fallback;
+};
+
+const detectImageMimeFromName = (fileName: string, provided?: string): 'image/png' | 'image/jpeg' | 'image/webp' => {
+  const fromProvided = String(provided ?? '').toLowerCase();
+  if (['image/png', 'image/jpeg', 'image/webp'].includes(fromProvided)) {
+    return fromProvided as 'image/png' | 'image/jpeg' | 'image/webp';
+  }
+
+  const ext = extname(fileName).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/jpeg';
+};
+
+const extensionForMime = (mimeType: string) => {
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'jpg';
+};
+
+const thumbnailCache = new Map<string, StoredAsset>();
+
+export const uploadStartFrameReference = async (input: {
+  organizationId: string;
+  fileName: string;
+  bytes: Buffer;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+}) => {
+  if (cfg.storageProvider !== 'supabase') {
+    throw new ProviderRuntimeError(`UNSUPPORTED_STORAGE_PROVIDER:${cfg.storageProvider}`, { provider: 'storage', fatal: true });
+  }
+
+  const maxUploadBytes = Math.max(1_000_000, Number(process.env.STARTFRAME_UPLOAD_MAX_BYTES ?? 8 * 1024 * 1024));
+  if (!input.bytes.length || input.bytes.length > maxUploadBytes) {
+    throw new ProviderRuntimeError(`STARTFRAME_UPLOAD_SIZE_INVALID:${input.bytes.length}:${maxUploadBytes}`, {
+      provider: 'upload',
+      fatal: true
+    });
+  }
+
+  const mimeType = detectImageMimeFromName(input.fileName, input.mimeType);
+  const ext = extensionForMime(mimeType);
+  const orgSegment = sanitizeSegment(input.organizationId || 'org', 'org');
+  const fileSegment = sanitizeSegment(input.fileName.replace(/\.[^/.]+$/, ''), 'startframe');
+  const hash = createHash('sha1').update(input.bytes).digest('hex').slice(0, 12);
+  const objectPath = `uploads/startframes/${orgSegment}/${Date.now()}-${fileSegment}-${hash}.${ext}`;
+
+  await supabaseUpload(objectPath, input.bytes, mimeType);
+  const signedUrl = await supabaseSignedUrl(objectPath);
+
+  return {
+    assetId: `sfu_${randomUUID().slice(0, 8)}`,
+    objectPath,
+    signedUrl,
+    bytes: input.bytes.length,
+    mimeType
+  };
+};
+
+export const generateStartFrameThumbnail = async (input: {
+  candidateId: string;
+  topic: string;
+  style: StartFrameStyle;
+  label: string;
+  description: string;
+  moodPreset: MoodPreset;
+}) => {
+  if (!cfg.openaiApiKey || cfg.storageProvider !== 'supabase') {
+    return null;
+  }
+
+  const cached = thumbnailCache.get(input.candidateId);
+  if (cached) {
+    return cached;
+  }
+
+  const thumbPrompt = [
+    `Create a high-quality 9:16 startframe thumbnail for a short social video.`,
+    `Topic: ${input.topic}.`,
+    `Startframe style: ${input.label}.`,
+    `Mood: ${moodPromptMap[input.moodPreset]}`,
+    `Description: ${input.description}`,
+    `Output should look like a realistic keyframe still (no collage, no text overlays).`
+  ].join(' ');
+
+  try {
+    const bytes = await createImage(thumbPrompt);
+    const objectPath = `catalog/startframe-thumbnails/${sanitizeSegment(input.candidateId, 'candidate')}.png`;
+    const asset = await uploadAsset('catalog-startframe', objectPath, bytes, 'image/png', 'openai-image-thumbnail');
+    thumbnailCache.set(input.candidateId, asset);
+    return asset;
+  } catch (error) {
+    logEvent({
+      event: 'startframe_thumbnail_generation_failed',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error),
+      data: {
+        candidateId: input.candidateId,
+        style: input.style
+      }
+    });
+    return null;
+  }
+};
+
+const summarizeReferenceImage = async (signedUrl: string) => {
+  if (!cfg.openaiApiKey) return '';
+
+  try {
+    const response = await openAiPostJson('/v1/responses', {
+      model: 'gpt-4o-mini',
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: 'Describe the main visual cues of this image in one short sentence for a video generation prompt.'
+            },
+            {
+              type: 'input_image',
+              image_url: signedUrl
+            }
+          ]
+        }
+      ],
+      max_output_tokens: 70
+    });
+
+    return parseOpenAiResponseText(response).slice(0, 220);
+  } catch {
+    return '';
+  }
+};
+
+const probeMotion = (videoBytes: Buffer, label: string, options?: { sceneThreshold?: number }): MotionAnalysis => {
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-motion-'));
+  const input = join(dir, `${label}.mp4`);
+
+  try {
+    writeFileSync(input, videoBytes);
+    const durationSeconds = probeMediaDurationSeconds(input, `${label}_duration`);
+    const sceneThreshold = parseRangeFloat(options?.sceneThreshold ?? process.env.MOTION_SCENE_THRESHOLD ?? 0.018, 0.018, 0.005, 0.2);
+
+    const probe = spawnSync(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'info', '-i', input, '-vf', `select=gt(scene\,${sceneThreshold}),showinfo`, '-an', '-f', 'null', '-'],
+      { encoding: 'utf8' }
+    );
+
+    if (probe.status !== 0) {
+      throw new ProviderRuntimeError(`FFMPEG_MOTION_PROBE_FAILED:${probe.stderr?.slice(0, 220) ?? 'unknown'}`, {
+        provider: 'ffmpeg',
+        fatal: true
+      });
+    }
+
+    const stderr = String(probe.stderr ?? '');
+    const times = [...stderr.matchAll(/pts_time:([0-9]+(?:\.[0-9]+)?)/g)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value) && value >= 0)
+      .sort((a, b) => a - b);
+
+    const deduped: number[] = [];
+    for (const t of times) {
+      if (!deduped.length || Math.abs(deduped[deduped.length - 1] - t) > 0.05) {
+        deduped.push(roundSeconds(t));
+      }
+    }
+
+    const anchors = [0, ...deduped, durationSeconds].map((value) => roundSeconds(value));
+    let longestStaticSeconds = 0;
+    for (let i = 1; i < anchors.length; i += 1) {
+      const gap = roundSeconds(Math.max(0, anchors[i] - anchors[i - 1]));
+      if (gap > longestStaticSeconds) longestStaticSeconds = gap;
+    }
+
+    const motionCuts = deduped.length;
+    const motionPhases = motionCuts + 1;
+
+    return {
+      durationSeconds,
+      sceneThreshold: roundSeconds(sceneThreshold),
+      motionCuts,
+      motionPhases,
+      longestStaticSeconds: roundSeconds(longestStaticSeconds)
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const createVideoWithMotionEnforcement = async (input: {
+  prompt: string;
+  variantType: VariantType;
+  requirement: { minPhases: number; maxStaticSeconds: number };
+}) => {
+  const maxAttempts = Math.max(1, Number(process.env.MOTION_ENFORCEMENT_ATTEMPTS ?? 2));
+  const staticTolerance = parseRangeFloat(process.env.MOTION_STATIC_TOLERANCE_SECONDS ?? 0.15, 0.15, 0, 1.2);
+
+  let attempt = 0;
+  let prompt = input.prompt;
+  let lastVideo: Awaited<ReturnType<typeof createVideo>> | null = null;
+  let lastMetrics: MotionAnalysis | null = null;
+
+  while (attempt < maxAttempts) {
+    attempt += 1;
+    const video = await createVideo(prompt, input.variantType);
+    const metrics = probeMotion(video.bytes, `segment_attempt_${attempt}`);
+
+    const withinThreshold =
+      metrics.motionPhases >= input.requirement.minPhases &&
+      metrics.longestStaticSeconds <= input.requirement.maxStaticSeconds + staticTolerance;
+
+    lastVideo = video;
+    lastMetrics = metrics;
+
+    if (withinThreshold) {
+      return {
+        video,
+        enforcement: {
+          ...metrics,
+          minPhasesRequired: input.requirement.minPhases,
+          maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds),
+          withinThreshold: true,
+          attempts: attempt
+        } as MotionEnforcement
+      };
+    }
+
+    if (attempt < maxAttempts) {
+      prompt = [
+        input.prompt,
+        `Retry with stronger motion: ensure at least ${input.requirement.minPhases} distinct movement phases and no static shot longer than ${input.requirement.maxStaticSeconds}s.`
+      ].join(' ');
+    }
+  }
+
+  if (lastMetrics) {
+    throw new ProviderRuntimeError(
+      `MOTION_ENFORCEMENT_FAILED:phases=${lastMetrics.motionPhases}/${input.requirement.minPhases}:longest_static=${lastMetrics.longestStaticSeconds}s>${input.requirement.maxStaticSeconds}s`,
+      { provider: 'motion', fatal: true }
+    );
+  }
+
+  if (!lastVideo) {
+    throw new ProviderRuntimeError('MOTION_ENFORCEMENT_FAILED:NO_VIDEO', { provider: 'motion', fatal: true });
+  }
+
+  return {
+    video: lastVideo,
+    enforcement: {
+      ...(lastMetrics ?? {
+        durationSeconds: 0,
+        sceneThreshold: 0,
+        motionCuts: 0,
+        motionPhases: 0,
+        longestStaticSeconds: 0
+      }),
+      minPhasesRequired: input.requirement.minPhases,
+      maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds),
+      withinThreshold: false,
+      attempts: maxAttempts
+    } as MotionEnforcement
+  };
+};
+
 const probeMediaDurationSeconds = (inputPath: string, label: string) => {
   const probe = spawnSync(
     'ffprobe',
@@ -960,6 +1290,8 @@ const muxVideoAndAudio = (
         '-y',
         '-loglevel',
         'error',
+        '-stream_loop',
+        '-1',
         '-i',
         inputVideo,
         '-i',
@@ -967,7 +1299,6 @@ const muxVideoAndAudio = (
         '-filter_complex',
         `[0:v]scale=${safeArea.frameWidth}:${safeArea.frameHeight}:force_original_aspect_ratio=decrease,` +
           `pad=${safeArea.frameWidth}:${safeArea.frameHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
-          `tpad=stop_mode=clone:stop_duration=${syncPlan.finalDurationSeconds.toFixed(3)},` +
           `scale=${safeArea.safeWidth}:${safeArea.safeHeight}:flags=lanczos,` +
           `pad=${safeArea.frameWidth}:${safeArea.frameHeight}:(ow-iw)/2:(oh-ih)/2:black,` +
           `format=yuv420p[v];[1:a]${audioFilters.join(',')}[a]`,
@@ -1046,20 +1377,49 @@ export const runVideoStage = async (input: {
   startFrameStyle?: string;
   startFrameCandidateId?: string;
   startFramePromptOverride?: string;
+  startFrameReferenceObjectPath?: string;
   moodPreset?: MoodPreset;
   approvedScript?: string;
+  userControls?: Partial<UserControlProfile>;
 }) => {
   await runProviderHealthchecks();
 
   const concept = resolveStoryboardConcept(input.conceptId);
   const startFrameStyle = resolveStartFrameStyle(input.startFrameStyle);
   const moodPreset = resolveMoodPreset(input.moodPreset);
+  const userControls = normalizeUserControlProfile(input.userControls);
+  const motionRequirement = resolveMotionRequirement(input.variantType, userControls);
 
   const durationConfig = resolveVariantDurations(input.variantType);
   const captionSafeArea = resolveCaptionSafeArea();
   const safeMarginPercent = Math.round(captionSafeArea.marginRatio * 100);
-  const startFramePrompt = input.startFramePromptOverride?.trim() || startFramePrompts[startFrameStyle];
+
+  let referenceAsset: StoredAsset | null = null;
+  let referenceSummary = '';
+
+  if (input.startFrameReferenceObjectPath) {
+    const referenceBytes = await supabaseDownload(input.startFrameReferenceObjectPath);
+    const referenceMimeType = detectImageMimeFromName(input.startFrameReferenceObjectPath);
+    const referenceExt = extensionForMime(referenceMimeType);
+    referenceAsset = await uploadAsset(
+      input.jobId,
+      `jobs/${input.jobId}/assets/startframe-reference.${referenceExt}`,
+      referenceBytes,
+      referenceMimeType,
+      'user-upload-reference'
+    );
+    referenceSummary = await summarizeReferenceImage(referenceAsset.signedUrl);
+  }
+
+  const startFramePromptBase = input.startFramePromptOverride?.trim() || startFramePrompts[startFrameStyle];
   const startFrameLabel = startFrameLabels[startFrameStyle];
+  const startFramePrompt = [
+    startFramePromptBase,
+    referenceAsset ? `Reference image URL: ${referenceAsset.signedUrl}.` : '',
+    referenceSummary ? `Reference cues: ${referenceSummary}` : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   const draft = input.approvedScript?.trim()
     ? (() => {
@@ -1089,11 +1449,13 @@ export const runVideoStage = async (input: {
   }
 
   const llmText = draft.script;
+  const controlPrompt = renderUserControlPrompt(userControls);
 
   const imagePrompt = [
     `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
     `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
     `Mood: ${moodPromptMap[moodPreset]}`,
+    controlPrompt,
     startFramePrompt,
     `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
     `Narration context: ${llmText}`
@@ -1103,29 +1465,39 @@ export const runVideoStage = async (input: {
     `Create a vertical social video about: ${input.topic}.`,
     `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
     `Mood: ${moodPromptMap[moodPreset]}`,
+    controlPrompt,
     motionGuardByVariant[input.variantType],
+    `Hard motion target: minimum ${motionRequirement.minPhases} movement phases, max static shot ${motionRequirement.maxStaticSeconds} seconds.`,
+    startFramePrompt,
     `Narration text: ${llmText}`,
     `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
     'No caption text should touch the frame border.'
   ].join(' ');
 
   const imageBytes = await createImage(imagePrompt);
-  const video = await createVideo(videoPrompt, input.variantType);
+  const motionVideo = await createVideoWithMotionEnforcement({
+    prompt: videoPrompt,
+    variantType: input.variantType,
+    requirement: motionRequirement
+  });
 
   const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageBytes, 'image/png', 'openai-image');
-  const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, video.bytes, 'video/mp4', 'openai-video');
+  const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, motionVideo.video.bytes, 'video/mp4', 'openai-video');
 
   return {
     script: llmText,
     image: imageAsset,
     video: videoAsset,
-    videoModel: video.model,
-    videoId: video.videoId,
+    referenceAsset,
+    videoModel: motionVideo.video.model,
+    videoId: motionVideo.video.videoId,
     conceptId: concept.id,
     startFrameStyle,
     startFrameCandidateId: input.startFrameCandidateId,
     startFrameLabel,
     moodPreset,
+    userControls,
+    motionEnforcement: motionVideo.enforcement,
     scriptValidation: {
       targetSeconds: draft.targetSeconds,
       estimatedSeconds: draft.estimatedSeconds,
@@ -1162,12 +1534,14 @@ export const runAssemblyStage = async (input: {
   const audioBytes = await supabaseDownload(input.audioObjectPath);
   const muxed = muxVideoAndAudio(videoBytes, audioBytes, targetSeconds, safeArea);
 
+  const finalMotion = probeMotion(muxed.bytes, 'final_video');
   const finalAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/final.mp4`, muxed.bytes, 'video/mp4', 'ffmpeg');
 
   return {
     finalVideo: finalAsset,
     targetSeconds,
     safeArea,
-    finalSync: muxed.sync
+    finalSync: muxed.sync,
+    finalMotion
   };
 };
