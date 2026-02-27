@@ -17,29 +17,29 @@ export type VariantCard = {
   type: VariantType;
   title: string;
   subtitle: string;
-  plannedSeconds: 16 | 32;
-  finalSeconds: 15 | 30;
-  segmentPattern: '8+8' | '12+12+8';
+  plannedSeconds: 32 | 64;
+  finalSeconds: 30 | 60;
+  segmentPattern: '12+12+8' | '12x5';
   tier: 'STANDARD' | 'PREMIUM';
 };
 
 export const variantCards: VariantCard[] = [
   {
     type: 'SHORT_15',
-    title: '15s Short',
-    subtitle: 'Schnell und günstig',
-    plannedSeconds: 16,
-    finalSeconds: 15,
-    segmentPattern: '8+8',
+    title: '30s Standard',
+    subtitle: 'Besseres Story-Pacing für den Kern-Flow',
+    plannedSeconds: 32,
+    finalSeconds: 30,
+    segmentPattern: '12+12+8',
     tier: 'STANDARD'
   },
   {
     type: 'MASTER_30',
-    title: '30s Master',
-    subtitle: 'Mehr Inhalt + optionaler 15s Cutdown',
-    plannedSeconds: 32,
-    finalSeconds: 30,
-    segmentPattern: '12+12+8',
+    title: '60s Premium',
+    subtitle: 'Mehr Tiefe und Narrative, optional per Feature-Flag',
+    plannedSeconds: 64,
+    finalSeconds: 60,
+    segmentPattern: '12x5',
     tier: 'PREMIUM'
   }
 ];

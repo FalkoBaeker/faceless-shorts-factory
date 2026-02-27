@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { URL } from 'node:url';
 import {
   createProjectHandler,
+  createScriptDraftHandler,
   selectConceptHandler,
   generateHandler,
   publishJobHandler,
@@ -93,6 +94,20 @@ const handleError = (res: ServerResponse, error: unknown) => {
 
 const testAlertAllowed = () => (process.env.ALERT_TEST_ALLOWED ?? 'false').trim().toLowerCase() === 'true';
 const autoPublishEnabled = () => (process.env.ENABLE_AUTO_PUBLISH ?? 'false').trim().toLowerCase() === 'true';
+const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
+
+const parseVariantType = (raw: unknown): 'SHORT_15' | 'MASTER_30' => {
+  if (raw === 'MASTER_30' && premium60Enabled()) return 'MASTER_30';
+  return 'SHORT_15';
+};
+
+const parseMoodPreset = (raw: unknown): 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light' => {
+  const value = String(raw ?? 'commercial_cta');
+  if (['commercial_cta', 'problem_solution', 'testimonial', 'humor_light'].includes(value)) {
+    return value as 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+  }
+  return 'commercial_cta';
+};
 
 const ensureRunPermissionIfRequired = async (req: IncomingMessage) => {
   if (!authRequired()) return null;
@@ -228,9 +243,21 @@ export const buildApiServer = () =>
           topic: String(body.topic ?? ''),
           language: String(body.language ?? 'de'),
           voice: String(body.voice ?? 'de_female_01'),
-          variantType: body.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15'
+          variantType: parseVariantType(body.variantType)
         });
         return sendJson(res, 201, created);
+      }
+
+      if (method === 'POST' && path === '/v1/script/draft') {
+        await ensureRunPermissionIfRequired(req);
+
+        const body = await readJsonBody(req);
+        const draft = await createScriptDraftHandler({
+          topic: String(body.topic ?? ''),
+          variantType: parseVariantType(body.variantType),
+          moodPreset: parseMoodPreset(body.moodPreset)
+        });
+        return sendJson(res, 200, draft);
       }
 
       if (method === 'POST' && /^\/v1\/projects\/[^/]+\/select$/.test(path)) {
@@ -241,13 +268,15 @@ export const buildApiServer = () =>
         const selected = selectConceptHandler({
           projectId,
           conceptId: String(body.conceptId ?? 'concept_1'),
+          moodPreset: parseMoodPreset(body.moodPreset),
+          approvedScript: String(body.approvedScript ?? ''),
           startFrameStyle: String(body.startFrameStyle ?? 'storefront_hero') as
             | 'storefront_hero'
             | 'product_macro'
             | 'owner_portrait'
             | 'hands_at_work'
             | 'before_after_split',
-          variantType: body.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15'
+          variantType: parseVariantType(body.variantType)
         });
 
         if (user) {

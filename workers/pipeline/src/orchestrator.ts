@@ -10,8 +10,8 @@ export type SegmentTask = {
 export type OrchestrationPlan = {
   projectId: string;
   variantType: 'SHORT_15' | 'MASTER_30';
-  targetSeconds: 15 | 30;
-  trimToSeconds: 15 | 30;
+  targetSeconds: 30 | 60;
+  trimToSeconds: 30 | 60;
   tasks: SegmentTask[];
 };
 

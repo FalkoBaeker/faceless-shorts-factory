@@ -11,6 +11,8 @@
 3. `AUTH_REQUIRED=true` for real auth test
 4. `ENABLE_AUTO_PUBLISH=false` for MVP mode
 5. `ENABLE_FREE_PLAN_MVP=true` (default) so free customer can run end-to-end flow
+6. `ENABLE_PREMIUM_60=false` by default (set `true` only when testing 60s premium path)
+7. `NEXT_PUBLIC_ENABLE_PREMIUM_60=true` in web env only if you want the 60s option visible in UI
 
 ## 1) Local start
 
@@ -53,11 +55,22 @@ Expected:
 - optional public signup check with `FREE_FLOW_PUBLIC_SIGNUP=true` (single run, valid inbox only)
 - login works with confirmed user
 - authenticated free user can run job (`reason=FREE_PLAN_MVP_ALLOWED`)
+- script acceptance gate is satisfied before select/generate (`SCRIPT_ACCEPTANCE_REQUIRED` when missing)
 - pipeline reaches `READY`
 - `/v1/jobs/:jobId/assets` includes `final_video`
 - signed URL probe returns HTTP 200
 
-## 4) Pipeline smoke (real provider runtime)
+## 4) Script draft API smoke
+```bash
+cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
+node --experimental-strip-types --input-type=module -e "process.env.AUTH_REQUIRED='false'; const { startApiServer } = await import('./apps/api/src/server.ts'); const { server, port } = await startApiServer(0); const res = await fetch('http://127.0.0.1:'+port+'/v1/script/draft',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({topic:'Rohr verstopft',variantType:'SHORT_15',moodPreset:'problem_solution'})}); console.log(await res.text()); server.close();"
+```
+
+Expected:
+- status 200
+- response includes `script`, `targetSeconds`, `estimatedSeconds`, `withinTarget`
+
+## 5) Pipeline smoke (real provider runtime)
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
 node --experimental-strip-types apps/api/src/simulate-live-provider-e2e.ts
@@ -65,10 +78,10 @@ node --experimental-strip-types apps/api/src/simulate-live-provider-e2e.ts
 
 Expected:
 - final status `READY`
-- asset timeline events exist (`ASSET_*`)
+- asset timeline events exist (`ASSET_*`, `SCRIPT_DURATION_VALIDATED`, `SELECTED_MOOD`)
 - signed URL probes return HTTP 200
 
-## 5) Alert smoke
+## 6) Alert smoke
 Set:
 - `ALERT_TARGET=email`
 - `ALERT_EMAIL_SEVERITIES=critical,warn`
@@ -85,7 +98,7 @@ Expected:
 - `target=email` when gog/Gmail available
 - fallback `target=logs` when connector unavailable (no crash)
 
-## 6) Render checks
+## 7) Render checks
 ```bash
 cd /Users/falkobaeker/.openclaw/workspace/faceless-shorts-factory
 npm run render:preflight
@@ -97,7 +110,7 @@ Expected:
 - missing services clearly listed (api/web/postgres/redis)
 - env vars required per service listed in plan output
 
-## 7) Incident quick actions
+## 8) Incident quick actions
 - **Auth errors (`AUTH_PROVIDER_401/403`)**
   - verify `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
   - verify Supabase Auth URL config (`SITE_URL`, `REDIRECT_URLS`)
@@ -113,7 +126,7 @@ Expected:
   - inspect `logs/app.log`
   - inspect DLQ: `GET /v1/dlq`
 
-## 8) Security hygiene reminders
+## 9) Security hygiene reminders
 - never paste API keys in chat/logs
 - `.env` / `.env.providers` stay local
 - keep `AUTH_REQUIRED=true` outside local dev

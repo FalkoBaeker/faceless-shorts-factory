@@ -31,6 +31,8 @@ type StagePayload = {
 
 type StoryboardSelection = {
   conceptId: string;
+  moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+  approvedScript?: string;
   startFrameStyle: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
 };
 
@@ -213,6 +215,8 @@ const buildAssetDetail = (kind: string, asset: StoredAsset) =>
 const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   const fallback: StoryboardSelection = {
     conceptId: 'concept_web_vertical_slice',
+    moodPreset: 'commercial_cta',
+    approvedScript: undefined,
     startFrameStyle: 'storefront_hero'
   };
 
@@ -233,8 +237,15 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
         ? parsed.startFrameStyle
         : fallback.startFrameStyle;
 
+    const moodPreset =
+      parsed.moodPreset && ['commercial_cta', 'problem_solution', 'testimonial', 'humor_light'].includes(parsed.moodPreset)
+        ? parsed.moodPreset
+        : fallback.moodPreset;
+
     return {
       conceptId: String(parsed.conceptId ?? fallback.conceptId),
+      moodPreset,
+      approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
       startFrameStyle
     } as StoryboardSelection;
   } catch {
@@ -509,6 +520,8 @@ const processVideo = async (job: Job<StagePayload>) => {
         topic,
         variantType,
         conceptId: storyboard.conceptId,
+        moodPreset: storyboard.moodPreset,
+        approvedScript: storyboard.approvedScript,
         startFrameStyle: storyboard.startFrameStyle
       })
     );
@@ -519,7 +532,18 @@ const processVideo = async (job: Job<StagePayload>) => {
     await insertTimeline(
       jobId,
       'VIDEO_CONCEPT_APPLIED',
-      JSON.stringify({ conceptId: result.conceptId, startFrameStyle: result.startFrameStyle })
+      JSON.stringify({ conceptId: result.conceptId, moodPreset: result.moodPreset, startFrameStyle: result.startFrameStyle })
+    );
+    await insertTimeline(
+      jobId,
+      'SCRIPT_DURATION_VALIDATED',
+      JSON.stringify({
+        targetSeconds: result.scriptValidation.targetSeconds,
+        estimatedSeconds: result.scriptValidation.estimatedSeconds,
+        suggestedWords: result.scriptValidation.suggestedWords,
+        withinTarget: result.scriptValidation.withinTarget,
+        condensed: result.scriptValidation.condensed
+      })
     );
     await insertTimeline(jobId, 'ASSET_SCRIPT_READY', result.script.slice(0, 280));
     await insertTimeline(jobId, 'ASSET_IMAGE_STORED', buildAssetDetail('image', result.image));

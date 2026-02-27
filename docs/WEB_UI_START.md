@@ -24,7 +24,9 @@ npm run dev
 1. `/` öffnen, Signup ausführen (ggf. Email bestätigen), dann Login (`Signup starten` / `Login starten`)
 2. `/review` öffnen, im Block **`Live MVP Flow (ECHTE API-Daten)`** folgende Felder setzen:
    - Topic
-   - Video-Länge (`SHORT_15` oder `MASTER_30`)
+   - Video-Länge (`STANDARD_30`, optional `PREMIUM_60` bei `NEXT_PUBLIC_ENABLE_PREMIUM_60=true`)
+   - Mood/Preset
+   - Script Review (Script erzeugen → ggf. editieren → **Script akzeptieren**)
    - Storyboard/Concept
    - Startframe
    Danach `Echten Video-Flow starten` klicken
@@ -52,5 +54,7 @@ npm run lint
 ## Hinweise
 - Auto-Publish ist im MVP deaktiviert (`ENABLE_AUTO_PUBLISH=false`), Connector bleibt nachrüstbar.
 - Free-Customer-Flow ist im MVP standardmäßig aktiv (`ENABLE_FREE_PLAN_MVP=true`).
+- Standard-Länge ist 30s; 60s wird nur mit `ENABLE_PREMIUM_60=true` (API) + `NEXT_PUBLIC_ENABLE_PREMIUM_60=true` (Web) angeboten.
+- Script-Review ist Pflicht: ohne `Script akzeptieren` blockt der Backend-Select/Gateway-Flow.
 - Keine externe UI-Library im Slice verwendet.
 - API Base URL via `NEXT_PUBLIC_API_BASE_URL` konfigurierbar (default `http://localhost:3001`).

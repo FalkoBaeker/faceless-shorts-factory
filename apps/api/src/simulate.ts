@@ -27,8 +27,7 @@ const run = async () => {
 
   const selection = selectConceptHandler({
     projectId: project.projectId,
-    conceptId: 'concept_1',
-    variantType: 'SHORT_15'
+    conceptId: 'concept_1', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'SHORT_15'
   });
 
   await generateHandler(selection.jobId);

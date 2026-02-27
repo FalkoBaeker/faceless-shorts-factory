@@ -2,8 +2,10 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createProject, selectConcept, triggerGenerate, type ApiError } from '../lib/api-client';
+import { createProject, createScriptDraft, selectConcept, triggerGenerate, type ApiError } from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
+
+const premium60Enabled = (process.env.NEXT_PUBLIC_ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
 const conceptOptions = [
   {
@@ -34,6 +36,31 @@ const conceptOptions = [
 ] as const;
 
 type ConceptId = (typeof conceptOptions)[number]['id'];
+
+type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+
+const moodOptions: Array<{ id: MoodPreset; label: string; description: string }> = [
+  {
+    id: 'commercial_cta',
+    label: 'Commercial mit CTA',
+    description: 'Direkt, nutzenorientiert, mit klarem Abschluss-Call-to-Action.'
+  },
+  {
+    id: 'problem_solution',
+    label: 'Problem → Lösung',
+    description: 'Zeigt erst das Problem und dann die konkrete Lösung.'
+  },
+  {
+    id: 'testimonial',
+    label: 'Testimonial',
+    description: 'Vertrauensaufbau durch Kundenstimme / Social Proof.'
+  },
+  {
+    id: 'humor_light',
+    label: 'Humor light',
+    description: 'Leicht humorvoll, aber markenkonform und mit CTA.'
+  }
+];
 
 const startFrameOptions = [
   {
@@ -74,8 +101,12 @@ export function ReviewLiveActions() {
   const router = useRouter();
   const [topic, setTopic] = useState('Sommerangebot für lokale Bäckerei in Berlin');
   const [variantType, setVariantType] = useState<'SHORT_15' | 'MASTER_30'>('SHORT_15');
+  const [moodPreset, setMoodPreset] = useState<MoodPreset>('commercial_cta');
   const [conceptId, setConceptId] = useState<ConceptId>('concept_web_vertical_slice');
   const [startFrameStyle, setStartFrameStyle] = useState<StartFrameStyle>('storefront_hero');
+  const [scriptDraft, setScriptDraft] = useState('');
+  const [scriptAccepted, setScriptAccepted] = useState(false);
+  const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
 
@@ -89,10 +120,59 @@ export function ReviewLiveActions() {
     [startFrameStyle]
   );
 
+  const selectedMoodLabel = useMemo(
+    () => moodOptions.find((option) => option.id === moodPreset)?.label ?? moodPreset,
+    [moodPreset]
+  );
+
+  const prepareScript = async () => {
+    const token = readStoredToken();
+    if (!token) {
+      setStatus('Bitte zuerst auf der Startseite einloggen.');
+      return;
+    }
+
+    setBusy(true);
+    setStatus('Erzeuge Script-Entwurf ...');
+    try {
+      const draft = await createScriptDraft(token, { topic, variantType, moodPreset });
+      setScriptDraft(draft.script);
+      setScriptAccepted(false);
+      setScriptMeta({
+        targetSeconds: draft.targetSeconds,
+        estimatedSeconds: draft.estimatedSeconds,
+        suggestedWords: draft.suggestedWords
+      });
+      setStatus(
+        draft.withinTarget
+          ? `Script bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s). Bitte prüfen und akzeptieren.`
+          : `Script zu lang (${Math.round(draft.estimatedSeconds)}s). Bitte kürzen oder regenerieren.`
+      );
+    } catch (error) {
+      setStatus(`Script-Entwurf fehlgeschlagen: ${asApiMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const acceptScript = () => {
+    if (!scriptDraft.trim()) {
+      setStatus('Script ist leer. Bitte zuerst Script erzeugen.');
+      return;
+    }
+    setScriptAccepted(true);
+    setStatus('Script akzeptiert. Du kannst jetzt den Flow starten.');
+  };
+
   const runFlow = async () => {
     const token = readStoredToken();
     if (!token) {
       setStatus('Bitte zuerst auf der Startseite einloggen.');
+      return;
+    }
+
+    if (!scriptAccepted || !scriptDraft.trim()) {
+      setStatus('Bitte zuerst ein Script erzeugen, prüfen und mit "Script akzeptieren" bestätigen.');
       return;
     }
 
@@ -105,10 +185,14 @@ export function ReviewLiveActions() {
         variantType
       });
 
-      setStatus(`Wähle Storyboard (${selectedConceptLabel}) + Startframe (${selectedStartFrameLabel}) ...`);
+      setStatus(
+        `Wähle Mood (${selectedMoodLabel}), Storyboard (${selectedConceptLabel}) + Startframe (${selectedStartFrameLabel}) ...`
+      );
       const selection = await selectConcept(token, project.projectId, {
         variantType,
         conceptId,
+        moodPreset,
+        approvedScript: scriptDraft.trim(),
         startFrameStyle
       });
 
@@ -129,13 +213,19 @@ export function ReviewLiveActions() {
         Live MVP Flow (ECHTE API-Daten)
       </h2>
       <p className="section-copy">
-        Echter End-to-End Pfad: Project → Storyboard/Concept → Generate → Job-Status → Download.
+        Echter End-to-End Pfad: Topic → Mood → Script Review (Pflicht) → Storyboard/Startframe → Generate → Job-Status → Download.
       </p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
         <label className="auth-field">
           <span>Topic</span>
-          <input value={topic} onChange={(event) => setTopic(event.target.value)} />
+          <input
+            value={topic}
+            onChange={(event) => {
+              setTopic(event.target.value);
+              setScriptAccepted(false);
+            }}
+          />
         </label>
       </div>
 
@@ -146,18 +236,86 @@ export function ReviewLiveActions() {
         <button
           type="button"
           className={`state-toggle ${variantType === 'SHORT_15' ? 'active' : ''}`}
-          onClick={() => setVariantType('SHORT_15')}
+          onClick={() => {
+            setVariantType('SHORT_15');
+            setScriptAccepted(false);
+          }}
         >
-          SHORT_15 (15s)
+          STANDARD_30 (30s)
         </button>
-        <button
-          type="button"
-          className={`state-toggle ${variantType === 'MASTER_30' ? 'active' : ''}`}
-          onClick={() => setVariantType('MASTER_30')}
-        >
-          MASTER_30 (30s)
+        {premium60Enabled ? (
+          <button
+            type="button"
+            className={`state-toggle ${variantType === 'MASTER_30' ? 'active' : ''}`}
+            onClick={() => {
+              setVariantType('MASTER_30');
+              setScriptAccepted(false);
+            }}
+          >
+            PREMIUM_60 (60s)
+          </button>
+        ) : null}
+      </div>
+
+      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+        Mood / Grundstimmung
+      </h3>
+      <div className="chip-wrap" role="list" aria-label="Mood Auswahl">
+        {moodOptions.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={`state-toggle ${moodPreset === option.id ? 'active' : ''}`}
+            onClick={() => {
+              setMoodPreset(option.id);
+              setScriptAccepted(false);
+            }}
+            aria-pressed={moodPreset === option.id}
+            title={option.description}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <p className="section-copy" style={{ marginTop: 0 }}>
+        {moodOptions.find((option) => option.id === moodPreset)?.description}
+      </p>
+
+      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+        Script Review (Pflicht)
+      </h3>
+      <div className="action-row" style={{ marginTop: 8 }}>
+        <button className="button-ghost" type="button" disabled={busy} onClick={prepareScript}>
+          Script erzeugen / regenerieren
+        </button>
+        <button className="button" type="button" disabled={busy || !scriptDraft.trim()} onClick={acceptScript}>
+          Script akzeptieren
         </button>
       </div>
+
+      <label className="auth-field" style={{ marginTop: 8 }}>
+        <span>Skripttext (editierbar)</span>
+        <textarea
+          value={scriptDraft}
+          onChange={(event) => {
+            setScriptDraft(event.target.value);
+            setScriptAccepted(false);
+          }}
+          rows={7}
+          placeholder="Erzeuge zuerst einen Script-Entwurf."
+        />
+      </label>
+
+      {scriptMeta ? (
+        <div className="action-row" style={{ marginTop: 0 }}>
+          <span className="chip chip-neutral">Target: {scriptMeta.targetSeconds}s</span>
+          <span className="chip chip-neutral">Estimate: {Math.round(scriptMeta.estimatedSeconds)}s</span>
+          <span className="chip chip-neutral">Wörter Ziel: ~{scriptMeta.suggestedWords}</span>
+          <span className={`chip ${scriptAccepted ? 'chip-success' : 'chip-warning'}`}>
+            {scriptAccepted ? 'Script akzeptiert' : 'Script noch nicht akzeptiert'}
+          </span>
+        </div>
+      ) : null}
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
         Storyboard / Concept
@@ -202,7 +360,7 @@ export function ReviewLiveActions() {
       </p>
 
       <div className="action-row">
-        <button className="button" type="button" disabled={busy} onClick={runFlow}>
+        <button className="button" type="button" disabled={busy || !scriptAccepted} onClick={runFlow}>
           {busy ? 'Flow läuft ...' : 'Echten Video-Flow starten'}
         </button>
       </div>

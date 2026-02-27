@@ -10,7 +10,8 @@
 
 ## Project & Generation
 - `POST /v1/projects` — create project
-- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ storyboard concept + startframe style)
+- `POST /v1/script/draft` — generate script draft with target-length estimation and mood preset
+- `POST /v1/projects/:projectId/select` — reserve credit + create job (+ mood + storyboard concept + startframe + accepted script)
 - `POST /v1/projects/:projectId/generate` — enqueue generation pipeline
 - `GET /v1/jobs/:jobId` — status timeline
 - `GET /v1/jobs/:jobId/assets` — signed asset URLs/events for export
@@ -33,6 +34,42 @@
 - In current MVP with `ENABLE_AUTO_PUBLISH=false` returns entitlement block (`FEATURE_DISABLED_MVP`).
 
 ---
+
+## Example: `POST /v1/script/draft`
+```json
+{
+  "topic": "Rohr verstopft",
+  "variantType": "SHORT_15",
+  "moodPreset": "problem_solution"
+}
+```
+
+Response (example):
+```json
+{
+  "script": "Ihr Abfluss ist dicht? Wir lösen das heute schnell und sauber ...",
+  "targetSeconds": 30,
+  "estimatedSeconds": 28.7,
+  "withinTarget": true,
+  "suggestedWords": 71
+}
+```
+
+## Example: `POST /v1/projects/:projectId/select`
+```json
+{
+  "variantType": "SHORT_15",
+  "moodPreset": "commercial_cta",
+  "conceptId": "concept_offer_focus",
+  "startFrameStyle": "hands_at_work",
+  "approvedScript": "Rohr verstopft? Unser Team ist heute noch bei Ihnen ..."
+}
+```
+
+Notes:
+- Missing `approvedScript` returns `SCRIPT_ACCEPTANCE_REQUIRED`.
+- `SHORT_15` maps to standard 30s output in v1.1 semantics.
+- `MASTER_30` maps to premium 60s only when `ENABLE_PREMIUM_60=true`.
 
 ## Example: `POST /v1/auth/login`
 ```json

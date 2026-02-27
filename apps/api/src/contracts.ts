@@ -1,5 +1,7 @@
 export type VariantType = 'SHORT_15' | 'MASTER_30' | 'CUTDOWN_15_FROM_30';
 
+export type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+
 export type CreateProjectRequest = {
   organizationId: string;
   topic: string;
@@ -17,6 +19,8 @@ export type CreateProjectResponse = {
 export type SelectConceptRequest = {
   projectId: string;
   conceptId: string;
+  moodPreset?: MoodPreset;
+  approvedScript?: string;
   startFrameStyle?:
     | 'storefront_hero'
     | 'product_macro'
@@ -29,7 +33,21 @@ export type SelectConceptRequest = {
 export type SelectConceptResponse = {
   jobId: string;
   creditReservationStatus: 'RESERVED';
-  estimatedSeconds: 15 | 30;
+  estimatedSeconds: 30 | 60;
+};
+
+export type ScriptDraftRequest = {
+  topic: string;
+  variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
+  moodPreset?: MoodPreset;
+};
+
+export type ScriptDraftResponse = {
+  script: string;
+  targetSeconds: number;
+  estimatedSeconds: number;
+  withinTarget: boolean;
+  suggestedWords: number;
 };
 
 export type JobStatusResponse = {

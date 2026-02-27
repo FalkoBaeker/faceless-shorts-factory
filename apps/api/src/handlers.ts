@@ -3,6 +3,8 @@ import type {
   CreateProjectResponse,
   SelectConceptRequest,
   SelectConceptResponse,
+  ScriptDraftRequest,
+  ScriptDraftResponse,
   JobStatusResponse,
   LedgerResponse,
   PublishResponse,
@@ -21,6 +23,19 @@ import {
   replayDeadLetter,
   ensureQueueRuntime
 } from './orchestration/queue-runtime.ts';
+import { generateScriptDraft } from './providers/live-provider-runtime.ts';
+
+const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
+
+const normalizeVariantType = (variantType: 'SHORT_15' | 'MASTER_30'): 'SHORT_15' | 'MASTER_30' => {
+  if (variantType === 'MASTER_30' && premium60Enabled()) {
+    return 'MASTER_30';
+  }
+  return 'SHORT_15';
+};
+
+const estimatedSecondsForVariant = (variantType: 'SHORT_15' | 'MASTER_30') =>
+  variantType === 'MASTER_30' && premium60Enabled() ? 60 : 30;
 
 export const createProjectHandler = (payload: CreateProjectRequest): CreateProjectResponse => {
   const project = createProject({
@@ -28,7 +43,7 @@ export const createProjectHandler = (payload: CreateProjectRequest): CreateProje
     topic: payload.topic,
     language: payload.language,
     voice: payload.voice,
-    variantType: payload.variantType
+    variantType: normalizeVariantType(payload.variantType)
   });
 
   return {
@@ -44,11 +59,17 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     throw new Error(`PROJECT_NOT_FOUND:${payload.projectId}`);
   }
 
+  const variantType = normalizeVariantType(payload.variantType);
+  const approvedScript = String(payload.approvedScript ?? '').trim();
+  if (!approvedScript) {
+    throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
+  }
+
   setProjectStatus(payload.projectId, 'SELECTED');
 
   const job = startJob({
     projectId: payload.projectId,
-    variantType: payload.variantType
+    variantType
   });
 
   reserveCredit(project.organizationId, job.id);
@@ -58,16 +79,50 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     event: 'STORYBOARD_SELECTED',
     detail: JSON.stringify({
       conceptId: payload.conceptId,
+      moodPreset: payload.moodPreset ?? 'commercial_cta',
+      approvedScript,
       startFrameStyle: payload.startFrameStyle ?? 'storefront_hero'
     })
   });
 
-  const estimatedSeconds = payload.variantType === 'SHORT_15' ? 15 : 30;
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'SCRIPT_ACCEPTED',
+    detail: approvedScript
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'SELECTED_MOOD',
+    detail: payload.moodPreset ?? 'commercial_cta'
+  });
+
+  const estimatedSeconds = estimatedSecondsForVariant(variantType);
 
   return {
     jobId: job.id,
     creditReservationStatus: 'RESERVED',
     estimatedSeconds
+  };
+};
+
+export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Promise<ScriptDraftResponse> => {
+  const topic = String(payload.topic ?? '').trim();
+  if (!topic) throw new Error('TOPIC_REQUIRED');
+
+  const variantType = normalizeVariantType(payload.variantType);
+  const draft = await generateScriptDraft({
+    topic,
+    variantType,
+    moodPreset: payload.moodPreset
+  });
+
+  return {
+    script: draft.script,
+    targetSeconds: draft.targetSeconds,
+    estimatedSeconds: draft.estimatedSeconds,
+    withinTarget: draft.withinTarget,
+    suggestedWords: draft.suggestedWords
   };
 };
 
@@ -81,6 +136,11 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
       status: existing.status as JobStatusResponse['status'],
       timeline: existing.timeline
     };
+  }
+
+  const accepted = existing.timeline.some((event) => event.event === 'SCRIPT_ACCEPTED' && Boolean(event.detail?.trim()));
+  if (!accepted) {
+    throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
   }
 
   await ensureQueueRuntime();

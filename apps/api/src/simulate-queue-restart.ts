@@ -73,7 +73,7 @@ const run = async () => {
     const selectRes = await fetch(`${firstBase}/v1/projects/${project.projectId}/select`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ conceptId: 'concept_restart', variantType: 'SHORT_15' })
+      body: JSON.stringify({ conceptId: 'concept_restart', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'SHORT_15' })
     });
     const select = await selectRes.json();
     jobId = select.jobId;

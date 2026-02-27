@@ -1,7 +1,7 @@
 import { buildDefaultReviewPayload } from '../../src/review-model';
 import { getVariantCard, variantCards, wizardSteps, type VariantType } from '../../src/wizard-model';
 
-export const selectedVariantType: VariantType = 'MASTER_30';
+export const selectedVariantType: VariantType = 'SHORT_15';
 export const selectedVariant = getVariantCard(selectedVariantType);
 export const availableVariants = variantCards;
 export const wizardStepList = wizardSteps;

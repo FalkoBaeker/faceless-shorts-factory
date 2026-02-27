@@ -40,7 +40,15 @@ export type CreateProjectPayload = {
 export type SelectConceptPayload = {
   jobId: string;
   creditReservationStatus: 'RESERVED';
-  estimatedSeconds: 15 | 30;
+  estimatedSeconds: 30 | 60;
+};
+
+export type ScriptDraftPayload = {
+  script: string;
+  targetSeconds: number;
+  estimatedSeconds: number;
+  withinTarget: boolean;
+  suggestedWords: number;
 };
 
 export type JobPayload = {
@@ -138,12 +146,28 @@ export const createProject = (token: string, payload: { organizationId: string; 
     }
   });
 
+export const createScriptDraft = (
+  token: string,
+  payload: {
+    topic: string;
+    variantType: 'SHORT_15' | 'MASTER_30';
+    moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+  }
+) =>
+  requestJson<ScriptDraftPayload>('/v1/script/draft', {
+    method: 'POST',
+    token,
+    body: payload
+  });
+
 export const selectConcept = (
   token: string,
   projectId: string,
   payload: {
     variantType: 'SHORT_15' | 'MASTER_30';
     conceptId: string;
+    moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+    approvedScript: string;
     startFrameStyle:
       | 'storefront_hero'
       | 'product_macro'
@@ -157,6 +181,8 @@ export const selectConcept = (
     token,
     body: {
       conceptId: payload.conceptId,
+      moodPreset: payload.moodPreset,
+      approvedScript: payload.approvedScript,
       startFrameStyle: payload.startFrameStyle,
       variantType: payload.variantType
     }

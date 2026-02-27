@@ -85,6 +85,8 @@ type StartFrameStyle =
   | 'hands_at_work'
   | 'before_after_split';
 
+type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+
 type StoryboardConceptId =
   | 'concept_web_vertical_slice'
   | 'concept_offer_focus'
@@ -145,6 +147,17 @@ const startFramePrompts: Record<StartFrameStyle, string> = {
   before_after_split: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
 };
 
+const moodPromptMap: Record<MoodPreset, string> = {
+  commercial_cta:
+    'Stimmung: Commercial mit klarer Verkaufsbotschaft, Nutzenfokus und konkret handlungsorientiertem CTA.',
+  problem_solution:
+    'Stimmung: Problem->Lösung. Zeige klar das Problem, dann direkte Lösung in 2 Schritten, danach CTA.',
+  testimonial:
+    'Stimmung: glaubwürdige Kundenstimme, social proof, seriöser Ton, kurzes Vertrauen-Signal vor CTA.',
+  humor_light:
+    'Stimmung: leicht humorvoll, freundlich, aber professionell und markenkonform mit klarem CTA am Ende.'
+};
+
 const parsePositiveInt = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -157,15 +170,19 @@ const parseRangeFloat = (value: unknown, fallback: number, min: number, max: num
   return Math.min(max, Math.max(min, parsed));
 };
 
-const resolveVariantDurations = (variantType: VariantType): VariantDurationConfig => {
-  const targetSeconds = variantType === 'SHORT_15'
-    ? parsePositiveInt(process.env.SHORT_15_TARGET_SECONDS ?? 15, 15)
-    : parsePositiveInt(process.env.MASTER_30_TARGET_SECONDS ?? 30, 30);
+const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
-  const defaultSource = variantType === 'SHORT_15' ? 12 : 12;
-  const sourceFromEnv = variantType === 'SHORT_15'
-    ? process.env.SHORT_15_SOURCE_VIDEO_SECONDS
-    : process.env.MASTER_30_SOURCE_VIDEO_SECONDS;
+const resolveVariantDurations = (variantType: VariantType): VariantDurationConfig => {
+  const isPremium60 = variantType === 'MASTER_30' && premium60Enabled();
+
+  const targetSeconds = isPremium60
+    ? parsePositiveInt(process.env.PREMIUM_60_TARGET_SECONDS ?? 60, 60)
+    : parsePositiveInt(process.env.STANDARD_30_TARGET_SECONDS ?? 30, 30);
+
+  const defaultSource = 12;
+  const sourceFromEnv = isPremium60
+    ? process.env.PREMIUM_60_SOURCE_VIDEO_SECONDS
+    : process.env.STANDARD_30_SOURCE_VIDEO_SECONDS;
 
   const sourceSeconds = Math.min(12, Math.max(4, parsePositiveInt(sourceFromEnv ?? defaultSource, defaultSource)));
 
@@ -185,6 +202,12 @@ const resolveStartFrameStyle = (style?: string): StartFrameStyle => {
   if (!style) return 'storefront_hero';
   if (style in startFramePrompts) return style as StartFrameStyle;
   return 'storefront_hero';
+};
+
+const resolveMoodPreset = (mood?: string): MoodPreset => {
+  if (!mood) return 'commercial_cta';
+  if (mood in moodPromptMap) return mood as MoodPreset;
+  return 'commercial_cta';
 };
 
 const resolveCaptionSafeAreaScale = () =>
@@ -497,23 +520,102 @@ export const getProviderHealthSnapshot = (): ProviderHealthSnapshot => ({ ...hea
 
 export const isFatalProviderError = (error: unknown) => error instanceof ProviderRuntimeError && error.fatal;
 
-const createScriptFromLlm = async (topic: string, variantType: VariantType) => {
+const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
+
+const estimateSpeechSeconds = (text: string) => {
+  const words = countWords(text);
+  return Number((words / 2.35).toFixed(2));
+};
+
+const ensureSentenceEnding = (text: string) => {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  if (/[.!?…]$/.test(trimmed)) return trimmed;
+  return `${trimmed}.`;
+};
+
+const createScriptFromLlm = async (topic: string, variantType: VariantType, moodPreset: MoodPreset) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.01, 'llm-script');
 
   const { targetSeconds } = resolveVariantDurations(variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
+  const moodPrompt = moodPromptMap[moodPreset];
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
-    input: `Erstelle ein deutsches Voiceover-Skript für ein Kurzvideo zum Thema: "${topic}". Ziel-Länge: ca. ${targetSeconds} Sekunden, etwa ${targetWords} Wörter. Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints.` ,
-    max_output_tokens: 220
+    input:
+      `Erstelle ein deutsches Voiceover-Skript für ein Kurzvideo zum Thema: "${topic}". ` +
+      `Ziel-Länge: ca. ${targetSeconds} Sekunden, etwa ${targetWords} Wörter. ` +
+      `${moodPrompt} ` +
+      'Das Skript muss mit einem vollständigen, abgeschlossenen Satz enden. ' +
+      'Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints.',
+    max_output_tokens: Math.max(220, Math.round(targetWords * 2.4))
   });
   const text = parseOpenAiResponseText(response);
   if (!text) {
     throw new ProviderRuntimeError('LLM_EMPTY_OUTPUT', { provider: 'openai', fatal: true });
   }
-  return text;
+  return ensureSentenceEnding(text);
+};
+
+const condenseScriptToTarget = async (
+  script: string,
+  targetSeconds: number,
+  targetWords: number,
+  moodPreset: MoodPreset
+) => {
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.008, 'llm-script-condense');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: 'gpt-4o-mini',
+    input:
+      `Kürze dieses deutsche Voiceover-Skript auf maximal ${targetWords} Wörter (ca. ${targetSeconds} Sekunden). ` +
+      `${moodPromptMap[moodPreset]} ` +
+      'Bewahre den roten Faden und einen klaren CTA. Der letzte Satz muss vollständig sein. ' +
+      `Text: """${script}""". Gib nur den finalen gesprochenen Text aus.`,
+    max_output_tokens: Math.max(180, Math.round(targetWords * 2.2))
+  });
+
+  const text = parseOpenAiResponseText(response);
+  if (!text) return script;
+  return ensureSentenceEnding(text);
+};
+
+export const generateScriptDraft = async (input: {
+  topic: string;
+  variantType: VariantType;
+  moodPreset?: MoodPreset;
+  regenerate?: boolean;
+}) => {
+  await runProviderHealthchecks();
+
+  const moodPreset = resolveMoodPreset(input.moodPreset);
+  const { targetSeconds } = resolveVariantDurations(input.variantType);
+  const targetWords = Math.round(targetSeconds * 2.35);
+
+  let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset);
+  let estimatedSeconds = estimateSpeechSeconds(script);
+  let condensed = false;
+
+  if (estimatedSeconds > targetSeconds * 1.08) {
+    script = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset);
+    estimatedSeconds = estimateSpeechSeconds(script);
+    condensed = true;
+  }
+
+  const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
+
+  return {
+    script,
+    moodPreset,
+    targetSeconds,
+    suggestedWords: targetWords,
+    estimatedSeconds,
+    withinTarget,
+    condensed
+  };
 };
 
 const createImage = async (prompt: string) => {
@@ -733,17 +835,50 @@ export const runVideoStage = async (input: {
   variantType: VariantType;
   conceptId?: string;
   startFrameStyle?: string;
+  moodPreset?: MoodPreset;
+  approvedScript?: string;
 }) => {
   await runProviderHealthchecks();
 
   const concept = resolveStoryboardConcept(input.conceptId);
   const startFrameStyle = resolveStartFrameStyle(input.startFrameStyle);
+  const moodPreset = resolveMoodPreset(input.moodPreset);
 
-  const llmText = await createScriptFromLlm(input.topic, input.variantType);
+  const durationConfig = resolveVariantDurations(input.variantType);
+
+  const draft = input.approvedScript?.trim()
+    ? (() => {
+        const script = ensureSentenceEnding(input.approvedScript.trim());
+        const estimatedSeconds = estimateSpeechSeconds(script);
+        return {
+          script,
+          targetSeconds: durationConfig.targetSeconds,
+          estimatedSeconds,
+          withinTarget: estimatedSeconds <= durationConfig.targetSeconds * 1.08,
+          suggestedWords: Math.round(durationConfig.targetSeconds * 2.35),
+          condensed: false,
+          moodPreset
+        };
+      })()
+    : await generateScriptDraft({
+        topic: input.topic,
+        variantType: input.variantType,
+        moodPreset
+      });
+
+  if (!draft.withinTarget) {
+    throw new ProviderRuntimeError(
+      `SCRIPT_DURATION_EXCEEDS_TARGET:${draft.estimatedSeconds}s>${draft.targetSeconds}s`,
+      { provider: 'openai', fatal: true }
+    );
+  }
+
+  const llmText = draft.script;
 
   const imagePrompt = [
     `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
     `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
+    `Mood: ${moodPromptMap[moodPreset]}`,
     startFramePrompts[startFrameStyle],
     'Keep composition center-safe with at least 10% margin on all sides.',
     `Narration context: ${llmText}`
@@ -752,6 +887,7 @@ export const runVideoStage = async (input: {
   const videoPrompt = [
     `Create a vertical social video about: ${input.topic}.`,
     `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
+    `Mood: ${moodPromptMap[moodPreset]}`,
     `Narration text: ${llmText}`,
     'If on-screen text appears, keep it inside a title-safe area (10% margin from all edges).',
     'No caption text should touch the frame border.'
@@ -770,7 +906,15 @@ export const runVideoStage = async (input: {
     videoModel: video.model,
     videoId: video.videoId,
     conceptId: concept.id,
-    startFrameStyle
+    startFrameStyle,
+    moodPreset,
+    scriptValidation: {
+      targetSeconds: draft.targetSeconds,
+      estimatedSeconds: draft.estimatedSeconds,
+      suggestedWords: draft.suggestedWords,
+      withinTarget: draft.withinTarget,
+      condensed: draft.condensed
+    }
   };
 };
 
