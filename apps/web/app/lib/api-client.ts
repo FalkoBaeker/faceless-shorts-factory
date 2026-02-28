@@ -71,6 +71,59 @@ export type UserControlsPayload = {
   visualStyle: 'clean' | 'cinematic' | 'ugc';
 };
 
+export type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+
+export type CreativeEffectGoal =
+  | 'sell_conversion'
+  | 'funny'
+  | 'cringe_hook'
+  | 'testimonial_trust'
+  | 'urgency_offer';
+
+export type CreativeNarrativeFormat =
+  | 'before_after'
+  | 'dialog'
+  | 'offer_focus'
+  | 'commercial'
+  | 'problem_solution';
+
+export type ShotStyleTag =
+  | 'cinematic_closeup'
+  | 'over_shoulder'
+  | 'handheld_push'
+  | 'product_macro'
+  | 'wide_establishing'
+  | 'fast_cut_montage';
+
+export type CreativeIntentSelection<T extends string = string> = {
+  id: T;
+  weight?: number;
+  priority?: 1 | 2 | 3;
+};
+
+export type CreativeIntentPayload = {
+  effectGoals: Array<CreativeIntentSelection<CreativeEffectGoal>>;
+  narrativeFormats: Array<CreativeIntentSelection<CreativeNarrativeFormat>>;
+  energyMode?: 'auto' | 'high' | 'calm';
+  shotStyles?: Array<CreativeIntentSelection<ShotStyleTag>>;
+};
+
+export type StoryboardBeatPayload = {
+  beatId: string;
+  order: number;
+  action: string;
+  visualHint?: string;
+  dialogueHint?: string;
+  onScreenTextHint?: string;
+};
+
+export type StoryboardLightPayload = {
+  beats: StoryboardBeatPayload[];
+  hookHint?: string;
+  ctaHint?: string;
+  pacingHint?: string;
+};
+
 export type StartFrameUploadPayload = {
   assetId: string;
   objectPath: string;
@@ -117,6 +170,13 @@ export type JobPayload = {
       createdAt: string;
       note?: string;
     }>;
+  };
+  explainability?: {
+    intentRules: string[];
+    hookRule: string | null;
+    shotStyleSet: ShotStyleTag[];
+    safetyConstraints: string[];
+    calmExceptionApplied: boolean;
   };
 };
 
@@ -214,7 +274,8 @@ export const createScriptDraft = (
   payload: {
     topic: string;
     variantType: 'SHORT_15' | 'MASTER_30';
-    moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+    moodPreset: MoodPreset;
+    creativeIntent?: CreativeIntentPayload;
   }
 ) =>
   requestJson<ScriptDraftPayload>('/v1/script/draft', {
@@ -243,7 +304,8 @@ export const createStartFrameCandidates = (
   payload: {
     topic: string;
     conceptId: string;
-    moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+    moodPreset: MoodPreset;
+    creativeIntent?: CreativeIntentPayload;
     limit?: number;
   }
 ) =>
@@ -259,7 +321,9 @@ export const selectConcept = (
   payload: {
     variantType: 'SHORT_15' | 'MASTER_30';
     conceptId: string;
-    moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+    moodPreset: MoodPreset;
+    creativeIntent?: CreativeIntentPayload;
+    storyboardLight?: StoryboardLightPayload;
     approvedScript: string;
     startFrameCandidateId?: string;
     startFrameStyle?:
@@ -281,6 +345,8 @@ export const selectConcept = (
     body: {
       conceptId: payload.conceptId,
       moodPreset: payload.moodPreset,
+      creativeIntent: payload.creativeIntent,
+      storyboardLight: payload.storyboardLight,
       approvedScript: payload.approvedScript,
       startFrameCandidateId: payload.startFrameCandidateId,
       startFrameStyle: payload.startFrameStyle,

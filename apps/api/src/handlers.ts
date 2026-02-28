@@ -33,7 +33,14 @@ import {
   generateStartFrameThumbnail
 } from './providers/live-provider-runtime.ts';
 import { buildStartFrameCandidates, resolveSelectedStartFrame } from './services/startframe-candidates.ts';
-import { normalizeUserControlProfile, validateCreativeConsistency } from './services/creative-consistency.ts';
+import {
+  normalizeUserControlProfile,
+  normalizeCreativeIntent,
+  deriveLegacyMoodPresetFromIntent,
+  normalizeStoryboardLight,
+  validateCreativeConsistency,
+  type ShotStyleTag
+} from './services/creative-consistency.ts';
 
 const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
@@ -72,6 +79,52 @@ const buildBillingLifecycle = (jobId: string, organizationId?: string) => {
       createdAt: entry.createdAt,
       note: entry.note
     }))
+  };
+};
+
+const parseTimelineDetail = (detail: string | undefined) => {
+  if (!detail) return null;
+  try {
+    return JSON.parse(detail) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const buildExplainability = (timeline: Array<{ at: string; event: string; detail?: string }>) => {
+  const compilerEvent = [...timeline].reverse().find((event) => event.event === 'PROMPT_COMPILER_V2_APPLIED');
+  const compilerDetail = parseTimelineDetail(compilerEvent?.detail);
+
+  const intentRules = Array.isArray(compilerDetail?.intentRules)
+    ? compilerDetail.intentRules.map((value) => String(value))
+    : [];
+  const shotStyleSet = Array.isArray(compilerDetail?.shotStyleSet)
+    ? compilerDetail.shotStyleSet.map((value) => String(value) as ShotStyleTag)
+    : [];
+  const safetyConstraints = Array.isArray(compilerDetail?.safetyConstraints)
+    ? compilerDetail.safetyConstraints.map((value) => String(value))
+    : [];
+
+  const hookRule =
+    typeof compilerDetail?.hookRule === 'string'
+      ? compilerDetail.hookRule
+      : timeline.some((event) => event.event === 'HOOK_ENHANCER_APPLIED')
+        ? 'hook_enhancer_default'
+        : null;
+
+  const calmExceptionApplied =
+    Boolean(compilerDetail?.calmExceptionApplied) || timeline.some((event) => event.event === 'CALM_MODE_EXCEPTION_APPLIED');
+
+  if (!intentRules.length && !hookRule && !shotStyleSet.length && !safetyConstraints.length && !calmExceptionApplied) {
+    return undefined;
+  }
+
+  return {
+    intentRules,
+    hookRule,
+    shotStyleSet,
+    safetyConstraints,
+    calmExceptionApplied
   };
 };
 
@@ -128,7 +181,11 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   }
 
   const variantType = normalizeVariantType(payload.variantType);
-  const moodPreset = payload.moodPreset ?? 'commercial_cta';
+  const fallbackMoodPreset = payload.moodPreset ?? 'commercial_cta';
+  const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId);
+  const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId);
+  const storyboardLight = normalizeStoryboardLight(payload.storyboardLight);
+
   const approvedScript = String(payload.approvedScript ?? '').trim();
   if (!approvedScript) {
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
@@ -156,6 +213,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
           topic: project.topic,
           conceptId: payload.conceptId,
           moodPreset,
+          creativeIntent,
           startFrameCandidateId: payload.startFrameCandidateId,
           startFrameStyle: payload.startFrameStyle
         });
@@ -164,13 +222,16 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     throw new Error('STARTFRAME_SELECTION_REQUIRED');
   }
 
+  const legacyUserControlsProvided = Boolean(payload.userControls);
   const userControls = normalizeUserControlProfile(payload.userControls);
   const consistency = validateCreativeConsistency({
     script: approvedScript,
     conceptId: payload.conceptId,
     moodPreset,
     startFrameStyle: selectedStartFrame.style,
-    userControls
+    userControls: legacyUserControlsProvided ? userControls : undefined,
+    creativeIntent: payload.creativeIntent ? creativeIntent : undefined,
+    storyboardLight
   });
 
   if (!consistency.ok) {
@@ -206,9 +267,43 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       startFrameMode: hasUploadedReference ? 'uploaded_asset' : customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate',
       startFrameReferenceHint: customReferenceHint || undefined,
       startFrameReferenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined,
-      userControls
+      creativeIntent,
+      storyboardLight,
+      userControls: legacyUserControlsProvided ? userControls : undefined
     })
   });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'CREATIVE_INTENT_SELECTED',
+    detail: JSON.stringify(creativeIntent)
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'CREATIVE_INTENT_NORMALIZED',
+    detail: JSON.stringify({
+      fallbackMoodPreset,
+      effectiveMoodPreset: moodPreset,
+      effectGoals: creativeIntent.effectGoals.length,
+      narrativeFormats: creativeIntent.narrativeFormats.length,
+      shotStyles: creativeIntent.shotStyles?.length ?? 0,
+      energyMode: creativeIntent.energyMode ?? 'auto'
+    })
+  });
+
+  if (storyboardLight) {
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'STORYBOARD_LIGHT_APPLIED',
+      detail: JSON.stringify({
+        beats: storyboardLight.beats,
+        hookHint: storyboardLight.hookHint,
+        ctaHint: storyboardLight.ctaHint,
+        pacingHint: storyboardLight.pacingHint
+      })
+    });
+  }
 
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
@@ -221,9 +316,49 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
 
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
-    event: 'USER_CONTROLS_APPLIED',
-    detail: JSON.stringify(userControls)
+    event: 'CONSISTENCY_V2_PASSED',
+    detail: JSON.stringify({
+      score: consistency.score,
+      checks: consistency.checks
+    })
   });
+
+  const hookCheck = consistency.checks.find((check) => check.id === 'HOOK_FIRST_SECOND_QUALITY');
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'HOOK_QUALITY_GATE_PASSED',
+    detail: JSON.stringify({ ok: hookCheck?.ok ?? true, detail: hookCheck?.detail ?? 'n/a' })
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'INTENT_ALIGNMENT_SCORE',
+    detail: JSON.stringify({
+      score: consistency.score,
+      alignmentCheck:
+        consistency.checks.find((check) => check.id === 'INTENT_SCRIPT_ALIGNMENT_SCORE_MIN')?.detail ?? 'n/a'
+    })
+  });
+
+  if (legacyUserControlsProvided) {
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'LEGACY_USER_CONTROLS_DEPRECATED',
+      detail: JSON.stringify({ provided: true })
+    });
+
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'LEGACY_USER_CONTROLS_MAPPED_TO_INTENT',
+      detail: JSON.stringify(userControls)
+    });
+
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'USER_CONTROLS_APPLIED',
+      detail: JSON.stringify(userControls)
+    });
+  }
 
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
@@ -262,10 +397,15 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
   if (!topic) throw new Error('TOPIC_REQUIRED');
 
   const variantType = normalizeVariantType(payload.variantType);
+  const fallbackMoodPreset = payload.moodPreset ?? 'commercial_cta';
+  const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, 'concept_web_vertical_slice');
+  const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, 'concept_web_vertical_slice');
+
   const draft = await generateScriptDraft({
     topic,
     variantType,
-    moodPreset: payload.moodPreset
+    moodPreset,
+    creativeIntent
   });
 
   return {
@@ -283,16 +423,15 @@ export const createStartFrameCandidatesHandler = async (
   const topic = String(payload.topic ?? '').trim();
   if (!topic) throw new Error('TOPIC_REQUIRED');
 
-  const moodPreset = (payload.moodPreset ?? 'commercial_cta') as
-    | 'commercial_cta'
-    | 'problem_solution'
-    | 'testimonial'
-    | 'humor_light';
+  const fallbackMoodPreset = payload.moodPreset ?? 'commercial_cta';
+  const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId ?? 'concept_web_vertical_slice');
+  const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId ?? 'concept_web_vertical_slice');
 
   const baseCandidates = buildStartFrameCandidates({
     topic,
     conceptId: payload.conceptId,
     moodPreset,
+    creativeIntent,
     limit: payload.limit
   });
 
@@ -329,7 +468,8 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
       jobId: existing.id,
       status: existing.status as JobStatusResponse['status'],
       timeline: existing.timeline,
-      billing: buildBillingLifecycle(existing.id, project?.organizationId)
+      billing: buildBillingLifecycle(existing.id, project?.organizationId),
+      explainability: buildExplainability(existing.timeline)
     };
   }
 
@@ -338,7 +478,9 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
   }
 
-  const consistencyChecked = existing.timeline.some((event) => event.event === 'CONSISTENCY_CHECK_PASSED');
+  const consistencyChecked = existing.timeline.some(
+    (event) => event.event === 'CONSISTENCY_CHECK_PASSED' || event.event === 'CONSISTENCY_V2_PASSED'
+  );
   if (!consistencyChecked) {
     throw new Error('CREATIVE_CONSISTENCY_REQUIRED');
   }
@@ -355,7 +497,8 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
     jobId: updated.id,
     status: updated.status as JobStatusResponse['status'],
     timeline: updated.timeline,
-    billing: buildBillingLifecycle(updated.id, project?.organizationId)
+    billing: buildBillingLifecycle(updated.id, project?.organizationId),
+    explainability: buildExplainability(updated.timeline)
   };
 };
 
@@ -393,7 +536,8 @@ export const getJobHandler = (jobId: string): JobStatusResponse => {
     jobId: job.id,
     status: job.status as JobStatusResponse['status'],
     timeline: job.timeline,
-    billing: buildBillingLifecycle(job.id, project?.organizationId)
+    billing: buildBillingLifecycle(job.id, project?.organizationId),
+    explainability: buildExplainability(job.timeline)
   };
 };
 

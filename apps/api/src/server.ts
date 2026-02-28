@@ -112,8 +112,137 @@ const parseMoodPreset = (raw: unknown): 'commercial_cta' | 'problem_solution' | 
   return 'commercial_cta';
 };
 
-const parseUserControls = (raw: unknown) => {
+const parseWeightedSelections = <T extends string>(raw: unknown, allowed: readonly T[]) => {
+  if (!Array.isArray(raw)) return [] as Array<{ id: T; weight?: number; priority?: 1 | 2 | 3 }>;
+
+  return raw
+    .slice(0, 12)
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const id = String(entry.id ?? '').trim() as T;
+      if (!(allowed as readonly string[]).includes(id)) return null;
+
+      const rawWeight = Number(entry.weight ?? 1);
+      const weight = Number.isFinite(rawWeight) ? Math.max(0.1, Math.min(1, rawWeight)) : 1;
+      const rawPriority = Number(entry.priority);
+      const priority = [1, 2, 3].includes(rawPriority) ? (rawPriority as 1 | 2 | 3) : undefined;
+
+      return {
+        id,
+        weight,
+        priority
+      };
+    })
+    .filter((entry): entry is { id: T; weight?: number; priority?: 1 | 2 | 3 } => Boolean(entry));
+};
+
+const parseCreativeIntent = (raw: unknown) => {
   const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+
+  const effectGoals = parseWeightedSelections(input.effectGoals, [
+    'sell_conversion',
+    'funny',
+    'cringe_hook',
+    'testimonial_trust',
+    'urgency_offer'
+  ] as const);
+  const narrativeFormats = parseWeightedSelections(input.narrativeFormats, [
+    'before_after',
+    'dialog',
+    'offer_focus',
+    'commercial',
+    'problem_solution'
+  ] as const);
+  const shotStyles = parseWeightedSelections(input.shotStyles, [
+    'cinematic_closeup',
+    'over_shoulder',
+    'handheld_push',
+    'product_macro',
+    'wide_establishing',
+    'fast_cut_montage'
+  ] as const);
+
+  const energyModeRaw = String(input.energyMode ?? 'auto').trim().toLowerCase();
+  const energyMode = ['auto', 'high', 'calm'].includes(energyModeRaw)
+    ? (energyModeRaw as 'auto' | 'high' | 'calm')
+    : 'auto';
+
+  if (!effectGoals.length && !narrativeFormats.length && !shotStyles.length && energyMode === 'auto') {
+    return undefined;
+  }
+
+  return {
+    effectGoals,
+    narrativeFormats,
+    shotStyles,
+    energyMode
+  };
+};
+
+const parseStoryboardLight = (raw: unknown) => {
+  const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const beatsRaw = Array.isArray(input.beats) ? input.beats : [];
+
+  const beats = beatsRaw
+    .slice(0, 8)
+    .map((entry, index) => (entry && typeof entry === 'object' ? ({ ...(entry as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const action = String(entry.action ?? '')
+        .trim()
+        .slice(0, 240);
+      if (!action) return null;
+
+      const orderRaw = Number(entry.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(entry.index) + 1;
+
+      return {
+        beatId:
+          String(entry.beatId ?? '')
+            .trim()
+            .slice(0, 40) || `beat_${order}`,
+        order,
+        action,
+        visualHint: String(entry.visualHint ?? '')
+          .trim()
+          .slice(0, 180) || undefined,
+        dialogueHint: String(entry.dialogueHint ?? '')
+          .trim()
+          .slice(0, 180) || undefined,
+        onScreenTextHint: String(entry.onScreenTextHint ?? '')
+          .trim()
+          .slice(0, 120) || undefined
+      };
+    })
+    .filter((entry): entry is {
+      beatId: string;
+      order: number;
+      action: string;
+      visualHint?: string;
+      dialogueHint?: string;
+      onScreenTextHint?: string;
+    } => Boolean(entry));
+
+  if (!beats.length) return undefined;
+
+  return {
+    beats,
+    hookHint: String(input.hookHint ?? '')
+      .trim()
+      .slice(0, 180) || undefined,
+    ctaHint: String(input.ctaHint ?? '')
+      .trim()
+      .slice(0, 180) || undefined,
+    pacingHint: String(input.pacingHint ?? '')
+      .trim()
+      .slice(0, 120) || undefined
+  };
+};
+
+const parseUserControls = (raw: unknown) => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
 
   const parseEnum = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T => {
     const normalized = String(value ?? '').trim().toLowerCase();
@@ -274,7 +403,8 @@ export const buildApiServer = () =>
         const draft = await createScriptDraftHandler({
           topic: String(body.topic ?? ''),
           variantType: parseVariantType(body.variantType),
-          moodPreset: parseMoodPreset(body.moodPreset)
+          moodPreset: parseMoodPreset(body.moodPreset),
+          creativeIntent: parseCreativeIntent(body.creativeIntent)
         });
         return sendJson(res, 200, draft);
       }
@@ -301,6 +431,7 @@ export const buildApiServer = () =>
           topic: String(body.topic ?? ''),
           conceptId: String(body.conceptId ?? '').trim() || undefined,
           moodPreset: parseMoodPreset(body.moodPreset),
+          creativeIntent: parseCreativeIntent(body.creativeIntent),
           limit: Number(body.limit ?? 3)
         });
         return sendJson(res, 200, candidates);
@@ -315,6 +446,8 @@ export const buildApiServer = () =>
           projectId,
           conceptId: String(body.conceptId ?? 'concept_1'),
           moodPreset: parseMoodPreset(body.moodPreset),
+          creativeIntent: parseCreativeIntent(body.creativeIntent),
+          storyboardLight: parseStoryboardLight(body.storyboardLight),
           approvedScript: String(body.approvedScript ?? ''),
           startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
           startFrameStyle: String(body.startFrameStyle ?? '').trim()

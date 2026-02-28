@@ -2,6 +2,58 @@ export type VariantType = 'SHORT_15' | 'MASTER_30' | 'CUTDOWN_15_FROM_30';
 
 export type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
 
+export type CreativeEffectGoal =
+  | 'sell_conversion'
+  | 'funny'
+  | 'cringe_hook'
+  | 'testimonial_trust'
+  | 'urgency_offer';
+
+export type CreativeNarrativeFormat =
+  | 'before_after'
+  | 'dialog'
+  | 'offer_focus'
+  | 'commercial'
+  | 'problem_solution';
+
+export type ShotStyleTag =
+  | 'cinematic_closeup'
+  | 'over_shoulder'
+  | 'handheld_push'
+  | 'product_macro'
+  | 'wide_establishing'
+  | 'fast_cut_montage';
+
+export type CreativeIntentSelection<T extends string = string> = {
+  id: T;
+  weight?: number;
+  priority?: 1 | 2 | 3;
+};
+
+export type CreativeIntentMatrix = {
+  effectGoals: Array<CreativeIntentSelection<CreativeEffectGoal>>;
+  narrativeFormats: Array<CreativeIntentSelection<CreativeNarrativeFormat>>;
+  energyMode?: 'auto' | 'high' | 'calm';
+  shotStyles?: Array<CreativeIntentSelection<ShotStyleTag>>;
+};
+
+export type StoryboardBeat = {
+  beatId: string;
+  order: number;
+  action: string;
+  visualHint?: string;
+  dialogueHint?: string;
+  onScreenTextHint?: string;
+};
+
+export type StoryboardLight = {
+  beats: StoryboardBeat[];
+  hookHint?: string;
+  ctaHint?: string;
+  pacingHint?: string;
+};
+
+/** @deprecated legacy controls; replaced by creativeIntent + storyboardLight */
 export type UserControlProfile = {
   ctaStrength?: 'soft' | 'balanced' | 'strong';
   motionIntensity?: 'low' | 'medium' | 'high';
@@ -27,6 +79,8 @@ export type SelectConceptRequest = {
   projectId: string;
   conceptId: string;
   moodPreset?: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
+  storyboardLight?: StoryboardLight;
   approvedScript?: string;
   startFrameCandidateId?: string;
   startFrameStyle?:
@@ -53,6 +107,7 @@ export type ScriptDraftRequest = {
   topic: string;
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
   moodPreset?: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
 };
 
 export type ScriptDraftResponse = {
@@ -82,6 +137,7 @@ export type StartFrameCandidatesRequest = {
   topic: string;
   conceptId?: string;
   moodPreset?: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
   limit?: number;
 };
 
@@ -132,6 +188,13 @@ export type JobStatusResponse = {
       createdAt: string;
       note?: string;
     }>;
+  };
+  explainability?: {
+    intentRules: string[];
+    hookRule: string | null;
+    shotStyleSet: ShotStyleTag[];
+    safetyConstraints: string[];
+    calmExceptionApplied: boolean;
   };
 };
 

@@ -11,8 +11,11 @@ import {
   selectConcept,
   triggerGenerate,
   type ApiError,
+  type CreativeIntentPayload,
+  type MoodPreset,
+  type ShotStyleTag,
   type StartFrameCandidatePayload,
-  type UserControlsPayload
+  type StoryboardLightPayload
 } from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
 
@@ -61,7 +64,30 @@ const defaultStyleByConcept: Record<ConceptId, 'storefront_hero' | 'product_macr
   concept_testimonial: 'owner_portrait'
 };
 
-type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+const effectGoalOptions: Array<{ id: CreativeIntentPayload['effectGoals'][number]['id']; label: string; description: string }> = [
+  { id: 'sell_conversion', label: 'Verkaufen', description: 'Klarer Conversion-Fokus mit starker Handlungsorientierung.' },
+  { id: 'funny', label: 'Humorvoll', description: 'Leichter, sympathischer Humor ohne billig zu wirken.' },
+  { id: 'cringe_hook', label: 'Cringe-Hook', description: 'Absichtlich auffälliger Hook für Stop-Scroll-Moment.' },
+  { id: 'testimonial_trust', label: 'Vertrauen', description: 'Social Proof / Kundenstimme und Glaubwürdigkeit.' },
+  { id: 'urgency_offer', label: 'Dringlichkeit', description: 'Zeitdruck/Angebotsdruck, aber markenkonform.' }
+];
+
+const narrativeFormatOptions: Array<{ id: CreativeIntentPayload['narrativeFormats'][number]['id']; label: string; description: string }> = [
+  { id: 'commercial', label: 'Commercial', description: 'Klassischer Werbefluss mit CTA-Finale.' },
+  { id: 'offer_focus', label: 'Offer Focus', description: 'Angebot und Mehrwert stehen im Zentrum.' },
+  { id: 'problem_solution', label: 'Problem → Lösung', description: 'Schmerzpunkt und direkte Lösung in kurzer Sequenz.' },
+  { id: 'before_after', label: 'Before / After', description: 'Vorher/Nachher-Kontrast als Story-Rückgrat.' },
+  { id: 'dialog', label: 'Dialog', description: 'Szenische Gesprächsstruktur statt Monolog.' }
+];
+
+const shotStyleOptions: Array<{ id: ShotStyleTag; label: string }> = [
+  { id: 'cinematic_closeup', label: 'Cinematic Closeup' },
+  { id: 'over_shoulder', label: 'Over-Shoulder' },
+  { id: 'handheld_push', label: 'Handheld Push' },
+  { id: 'product_macro', label: 'Product Macro' },
+  { id: 'wide_establishing', label: 'Wide Establishing' },
+  { id: 'fast_cut_montage', label: 'Fast-Cut Montage' }
+];
 
 const moodOptions: Array<{ id: MoodPreset; label: string; description: string }> = [
   {
@@ -85,6 +111,40 @@ const moodOptions: Array<{ id: MoodPreset; label: string; description: string }>
     description: 'Leicht humorvoll, aber markenkonform und mit CTA.'
   }
 ];
+
+const deriveMoodFromIntent = (intent: CreativeIntentPayload): MoodPreset => {
+  const effectIds = intent.effectGoals.map((entry) => entry.id);
+  const narrativeIds = intent.narrativeFormats.map((entry) => entry.id);
+
+  if (effectIds.includes('funny')) return 'humor_light';
+  if (effectIds.includes('testimonial_trust') || narrativeIds.includes('dialog')) return 'testimonial';
+  if (narrativeIds.includes('problem_solution') || narrativeIds.includes('before_after')) return 'problem_solution';
+  return 'commercial_cta';
+};
+
+const buildStoryboardFromScript = (script: string): StoryboardLightPayload => {
+  const sentences = script
+    .split(/(?<=[.!?…])\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const beats = (sentences.slice(0, 4).length ? sentences.slice(0, 4) : ['Hook eröffnen', 'Kernnutzen zeigen', 'CTA Abschluss'])
+    .map((sentence, index) => ({
+      beatId: `beat_${index + 1}`,
+      order: index + 1,
+      action: sentence,
+      visualHint: index === 0 ? 'Schneller visueller Einstieg' : undefined,
+      dialogueHint: undefined,
+      onScreenTextHint: undefined
+    }));
+
+  return {
+    beats,
+    hookHint: beats[0]?.action,
+    ctaHint: beats[beats.length - 1]?.action,
+    pacingHint: 'dynamic'
+  };
+};
 
 const asApiMessage = (error: unknown) => {
   const api = error as Partial<ApiError>;
@@ -111,7 +171,10 @@ export function ReviewLiveActions() {
   const router = useRouter();
   const [topic, setTopic] = useState('Sommerangebot für lokale Bäckerei in Berlin');
   const [variantType, setVariantType] = useState<'SHORT_15' | 'MASTER_30'>('SHORT_15');
-  const [moodPreset, setMoodPreset] = useState<MoodPreset>('commercial_cta');
+  const [effectGoals, setEffectGoals] = useState<Array<CreativeIntentPayload['effectGoals'][number]['id']>>(['sell_conversion']);
+  const [narrativeFormats, setNarrativeFormats] = useState<Array<CreativeIntentPayload['narrativeFormats'][number]['id']>>(['commercial']);
+  const [energyMode, setEnergyMode] = useState<'auto' | 'high' | 'calm'>('auto');
+  const [shotStyles, setShotStyles] = useState<ShotStyleTag[]>(['cinematic_closeup', 'product_macro']);
   const [conceptId, setConceptId] = useState<ConceptId>('concept_web_vertical_slice');
   const [startFrameCandidates, setStartFrameCandidates] = useState<StartFrameCandidatePayload[]>([]);
   const [selectedStartFrameCandidateId, setSelectedStartFrameCandidateId] = useState('');
@@ -126,13 +189,18 @@ export function ReviewLiveActions() {
       }
     | null
   >(null);
-  const [userControls, setUserControls] = useState<UserControlsPayload>({
-    ctaStrength: 'balanced',
-    motionIntensity: 'medium',
-    shotPace: 'balanced',
-    visualStyle: 'clean'
-  });
+  // legacy userControls removed in P1 (T26)
   const [scriptDraft, setScriptDraft] = useState('');
+  const [storyboardLight, setStoryboardLight] = useState<StoryboardLightPayload>({
+    beats: [
+      { beatId: 'beat_1', order: 1, action: 'Hook in Sekunde 1', visualHint: 'Stop-scroll Moment' },
+      { beatId: 'beat_2', order: 2, action: 'Kernnutzen visuell zeigen' },
+      { beatId: 'beat_3', order: 3, action: 'Klarer CTA mit next step' }
+    ],
+    hookHint: 'Knalliger Einstieg',
+    ctaHint: 'Jetzt testen/anfragen',
+    pacingHint: 'dynamic'
+  });
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -144,6 +212,21 @@ export function ReviewLiveActions() {
 
   const selectedConcept = useMemo(() => conceptOptions.find((option) => option.id === conceptId) ?? conceptOptions[0], [conceptId]);
 
+  const creativeIntent = useMemo<CreativeIntentPayload>(
+    () => ({
+      effectGoals: effectGoals.map((id, index) => ({ id, weight: Math.max(0.2, 1 - index * 0.15), priority: (index < 3 ? index + 1 : 3) as 1 | 2 | 3 })),
+      narrativeFormats: narrativeFormats.map((id, index) => ({
+        id,
+        weight: Math.max(0.2, 1 - index * 0.15),
+        priority: (index < 3 ? index + 1 : 3) as 1 | 2 | 3
+      })),
+      shotStyles: shotStyles.map((id, index) => ({ id, weight: Math.max(0.2, 1 - index * 0.1), priority: (index < 3 ? index + 1 : 3) as 1 | 2 | 3 })),
+      energyMode
+    }),
+    [effectGoals, narrativeFormats, shotStyles, energyMode]
+  );
+
+  const moodPreset = useMemo(() => deriveMoodFromIntent(creativeIntent), [creativeIntent]);
   const selectedMoodLabel = useMemo(
     () => moodOptions.find((option) => option.id === moodPreset)?.label ?? moodPreset,
     [moodPreset]
@@ -157,10 +240,12 @@ export function ReviewLiveActions() {
   const organizationId = 'org_web_mvp';
 
   const generationBlocker = useMemo(() => {
+    if (!effectGoals.length) return 'Bitte mindestens ein Effect Goal wählen.';
+    if (!narrativeFormats.length) return 'Bitte mindestens ein Narrative Format wählen.';
     if (!scriptAccepted || !scriptDraft.trim()) return 'Script prüfen und akzeptieren.';
     if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Startframe wählen oder eigenes Bild hochladen.';
     return null;
-  }, [scriptAccepted, scriptDraft, selectedStartFrameCandidate, uploadedStartFrame]);
+  }, [effectGoals.length, narrativeFormats.length, scriptAccepted, scriptDraft, selectedStartFrameCandidate, uploadedStartFrame]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
@@ -169,6 +254,15 @@ export function ReviewLiveActions() {
 
   const resetUploadedReference = () => {
     setUploadedStartFrame(null);
+  };
+
+  const toggleFromList = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
+
+  const updateStoryboardBeat = (beatId: string, field: 'action' | 'visualHint' | 'dialogueHint' | 'onScreenTextHint', value: string) => {
+    setStoryboardLight((prev) => ({
+      ...prev,
+      beats: prev.beats.map((beat) => (beat.beatId === beatId ? { ...beat, [field]: value } : beat))
+    }));
   };
 
   const prepareScript = async () => {
@@ -181,8 +275,9 @@ export function ReviewLiveActions() {
     setBusy(true);
     setStatus('Erzeuge Script-Entwurf ...');
     try {
-      const draft = await createScriptDraft(token, { topic, variantType, moodPreset });
+      const draft = await createScriptDraft(token, { topic, variantType, moodPreset, creativeIntent });
       setScriptDraft(draft.script);
+      setStoryboardLight(buildStoryboardFromScript(draft.script));
       setScriptAccepted(false);
       setScriptMeta({
         targetSeconds: draft.targetSeconds,
@@ -232,6 +327,7 @@ export function ReviewLiveActions() {
         topic,
         conceptId,
         moodPreset,
+        creativeIntent,
         limit: 3
       });
 
@@ -336,14 +432,15 @@ export function ReviewLiveActions() {
         variantType,
         conceptId,
         moodPreset,
+        creativeIntent,
+        storyboardLight,
         approvedScript: scriptDraft.trim(),
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
         startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
         startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
         startFrameCustomPrompt: customPrompt,
         startFrameReferenceHint: uploadedStartFrame?.fileName,
-        startFrameUploadObjectPath: uploadedStartFrame?.objectPath,
-        userControls
+        startFrameUploadObjectPath: uploadedStartFrame?.objectPath
       });
 
       setStatus('Starte Generierung ...');
@@ -414,29 +511,71 @@ export function ReviewLiveActions() {
       </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Mood / Grundstimmung
+        Creative Intent Matrix
       </h3>
-      <div className="chip-wrap" role="list" aria-label="Mood Auswahl">
-        {moodOptions.map((option) => (
+      <fieldset className="section-card" style={{ marginTop: 8 }}>
+        <legend className="section-copy" style={{ marginBottom: 8 }}>Effect Goal (multi-select)</legend>
+        <div className="chip-wrap" role="list" aria-label="Effect Goal Auswahl">
+          {effectGoalOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`state-toggle ${effectGoals.includes(option.id) ? 'active' : ''}`}
+              onClick={() => {
+                setEffectGoals((prev) => toggleFromList(prev, option.id));
+                setScriptAccepted(false);
+                resetStartFrameCandidates();
+                resetUploadedReference();
+              }}
+              aria-pressed={effectGoals.includes(option.id)}
+              title={option.description}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <fieldset className="section-card" style={{ marginTop: 0 }}>
+        <legend className="section-copy" style={{ marginBottom: 8 }}>Narrative Format (multi-select)</legend>
+        <div className="chip-wrap" role="list" aria-label="Narrative Format Auswahl">
+          {narrativeFormatOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`state-toggle ${narrativeFormats.includes(option.id) ? 'active' : ''}`}
+              onClick={() => {
+                setNarrativeFormats((prev) => toggleFromList(prev, option.id));
+                setScriptAccepted(false);
+                resetStartFrameCandidates();
+                resetUploadedReference();
+              }}
+              aria-pressed={narrativeFormats.includes(option.id)}
+              title={option.description}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className="action-row" style={{ marginTop: 0 }}>
+        <span className="chip chip-neutral">Energy</span>
+        {(['auto', 'high', 'calm'] as const).map((mode) => (
           <button
-            key={option.id}
+            key={mode}
             type="button"
-            className={`state-toggle ${moodPreset === option.id ? 'active' : ''}`}
-            onClick={() => {
-              setMoodPreset(option.id);
-              setScriptAccepted(false);
-              resetStartFrameCandidates();
-              resetUploadedReference();
-            }}
-            aria-pressed={moodPreset === option.id}
-            title={option.description}
+            className={`state-toggle ${energyMode === mode ? 'active' : ''}`}
+            onClick={() => setEnergyMode(mode)}
+            aria-pressed={energyMode === mode}
           >
-            {option.label}
+            {mode}
           </button>
         ))}
       </div>
+
       <p className="section-copy" style={{ marginTop: 0 }}>
-        {moodOptions.find((option) => option.id === moodPreset)?.description}
+        Legacy-Mood (abgeleitet): {selectedMoodLabel}. Primary steering erfolgt über Intent + Storyboard.
       </p>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
@@ -474,6 +613,43 @@ export function ReviewLiveActions() {
           </span>
         </div>
       ) : null}
+
+      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+        Storyboard Light (editierbar)
+      </h3>
+      <p className="section-copy" style={{ marginTop: 0 }}>
+        Bearbeite hier kurz, was im Video passiert. Diese Beats fließen direkt in den Prompt-Compiler.
+      </p>
+      <div className="section-card" style={{ marginTop: 0 }}>
+        {storyboardLight.beats.map((beat) => (
+          <div key={beat.beatId} className="auth-form-grid" style={{ gridTemplateColumns: '1fr', marginBottom: 8 }}>
+            <label className="auth-field">
+              <span>Beat {beat.order} – Action</span>
+              <input
+                value={beat.action}
+                onChange={(event) => updateStoryboardBeat(beat.beatId, 'action', event.target.value)}
+                placeholder="Was passiert in diesem Beat?"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Visual Hint (optional)</span>
+              <input
+                value={beat.visualHint ?? ''}
+                onChange={(event) => updateStoryboardBeat(beat.beatId, 'visualHint', event.target.value)}
+                placeholder="z. B. schneller Push-in auf Produkt"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Dialog Hint (optional)</span>
+              <input
+                value={beat.dialogueHint ?? ''}
+                onChange={(event) => updateStoryboardBeat(beat.beatId, 'dialogueHint', event.target.value)}
+                placeholder="Optionaler Dialog-Satz"
+              />
+            </label>
+          </div>
+        ))}
+      </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
         Storyboard / Concept (Primary)
@@ -595,56 +771,24 @@ export function ReviewLiveActions() {
       ) : null}
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        User-Steuerparameter (gegen Randomness)
+        Shot Style Library (kuratiert)
       </h3>
-      <div className="chip-wrap" role="list" aria-label="CTA Stärke">
-        {(['soft', 'balanced', 'strong'] as const).map((value) => (
+      <div className="chip-wrap" role="list" aria-label="Shot-Style Auswahl">
+        {shotStyleOptions.map((style) => (
           <button
-            key={value}
+            key={style.id}
             type="button"
-            className={`state-toggle ${userControls.ctaStrength === value ? 'active' : ''}`}
-            onClick={() => setUserControls((prev) => ({ ...prev, ctaStrength: value }))}
+            className={`state-toggle ${shotStyles.includes(style.id) ? 'active' : ''}`}
+            onClick={() => setShotStyles((prev) => toggleFromList(prev, style.id))}
+            aria-pressed={shotStyles.includes(style.id)}
           >
-            CTA: {value}
+            {style.label}
           </button>
         ))}
       </div>
-      <div className="chip-wrap" role="list" aria-label="Motion Intensität">
-        {(['low', 'medium', 'high'] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            className={`state-toggle ${userControls.motionIntensity === value ? 'active' : ''}`}
-            onClick={() => setUserControls((prev) => ({ ...prev, motionIntensity: value }))}
-          >
-            Motion: {value}
-          </button>
-        ))}
-      </div>
-      <div className="chip-wrap" role="list" aria-label="Shot Pace">
-        {(['relaxed', 'balanced', 'fast'] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            className={`state-toggle ${userControls.shotPace === value ? 'active' : ''}`}
-            onClick={() => setUserControls((prev) => ({ ...prev, shotPace: value }))}
-          >
-            Pace: {value}
-          </button>
-        ))}
-      </div>
-      <div className="chip-wrap" role="list" aria-label="Visual Style">
-        {(['clean', 'cinematic', 'ugc'] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            className={`state-toggle ${userControls.visualStyle === value ? 'active' : ''}`}
-            onClick={() => setUserControls((prev) => ({ ...prev, visualStyle: value }))}
-          >
-            Style: {value}
-          </button>
-        ))}
-      </div>
+      <p className="section-copy" style={{ marginTop: 0 }}>
+        Technische User-Controls wurden entfernt. Creative-Steuerung läuft über Intent, Storyboard und Shot-Styles.
+      </p>
 
       <div className="action-row">
         <button
@@ -662,9 +806,10 @@ export function ReviewLiveActions() {
       {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
 
       <div className="action-row" style={{ marginTop: 0 }}>
-        <span className="chip chip-neutral">Mood: {selectedMoodLabel}</span>
+        <span className="chip chip-neutral">Legacy-Mood: {selectedMoodLabel}</span>
         <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
-        <span className="chip chip-neutral">Controls: {userControls.ctaStrength}/{userControls.motionIntensity}/{userControls.shotPace}/{userControls.visualStyle}</span>
+        <span className="chip chip-neutral">Intent: {effectGoals.length} Goals / {narrativeFormats.length} Formats</span>
+        <span className="chip chip-neutral">Shot-Styles: {shotStyles.length}</span>
         <span className={`chip ${selectedStartFrameCandidate || uploadedStartFrame ? 'chip-success' : 'chip-warning'}`}>
           {selectedStartFrameCandidate || uploadedStartFrame ? 'Startframe gewählt' : 'Startframe fehlt'}
         </span>

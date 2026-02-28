@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 
 type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
 
+type CreativeIntent = {
+  effectGoals?: Array<{ id?: string; weight?: number }>;
+  narrativeFormats?: Array<{ id?: string; weight?: number }>;
+};
+
 type StartFrameStyle =
   | 'storefront_hero'
   | 'product_macro'
@@ -94,7 +99,7 @@ const makeCandidateId = (input: { topic: string; conceptId?: string; moodPreset:
   return `sfc_${input.style}_${hash}`;
 };
 
-const rankStyles = (input: { topic: string; conceptId?: string; moodPreset: MoodPreset }) => {
+const rankStyles = (input: { topic: string; conceptId?: string; moodPreset: MoodPreset; creativeIntent?: CreativeIntent }) => {
   const base = [...moodToStylePriority[input.moodPreset]];
   const conceptKey = String(input.conceptId ?? '').toLowerCase();
 
@@ -104,6 +109,23 @@ const rankStyles = (input: { topic: string; conceptId?: string; moodPreset: Mood
     if (idx > 0) {
       base.splice(idx, 1);
       base.unshift(boost.style);
+    }
+  }
+
+  const narrativeIds = (input.creativeIntent?.narrativeFormats ?? []).map((entry) => String(entry.id ?? ''));
+  if (narrativeIds.includes('before_after')) {
+    const idx = base.indexOf('before_after_split');
+    if (idx > 0) {
+      base.splice(idx, 1);
+      base.unshift('before_after_split');
+    }
+  }
+
+  if (narrativeIds.includes('offer_focus')) {
+    const idx = base.indexOf('product_macro');
+    if (idx > 0) {
+      base.splice(idx, 1);
+      base.unshift('product_macro');
     }
   }
 
@@ -146,6 +168,7 @@ export const buildStartFrameCandidates = (input: {
   topic: string;
   conceptId?: string;
   moodPreset?: string;
+  creativeIntent?: CreativeIntent;
   limit?: number;
 }): StartFrameCandidate[] => {
   const topic = String(input.topic ?? '').trim();
@@ -153,7 +176,12 @@ export const buildStartFrameCandidates = (input: {
 
   const moodPreset = normalizeMood(input.moodPreset);
   const limit = normalizeLimit(input.limit);
-  const styles = rankStyles({ topic, conceptId: input.conceptId, moodPreset }).slice(0, limit);
+  const styles = rankStyles({
+    topic,
+    conceptId: input.conceptId,
+    moodPreset,
+    creativeIntent: input.creativeIntent
+  }).slice(0, limit);
 
   return styles.map((style) => {
     const entry = styleCatalog[style];
@@ -172,6 +200,7 @@ export const resolveSelectedStartFrame = (input: {
   topic: string;
   conceptId?: string;
   moodPreset?: string;
+  creativeIntent?: CreativeIntent;
   startFrameCandidateId?: string;
   startFrameStyle?: string;
 }) => {
@@ -179,6 +208,7 @@ export const resolveSelectedStartFrame = (input: {
     topic: input.topic,
     conceptId: input.conceptId,
     moodPreset: input.moodPreset,
+    creativeIntent: input.creativeIntent,
     limit: 5
   });
 

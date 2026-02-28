@@ -182,30 +182,6 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     }
   }, [job]);
 
-  const userControlsMeta = useMemo(() => {
-    const event = [...(job?.timeline ?? [])]
-      .reverse()
-      .find((entry) => entry.event === 'USER_CONTROLS_ENFORCED' && entry.detail);
-    if (!event?.detail) return null;
-
-    try {
-      const parsed = JSON.parse(event.detail) as {
-        ctaStrength?: string;
-        motionIntensity?: string;
-        shotPace?: string;
-        visualStyle?: string;
-      };
-      return {
-        ctaStrength: parsed.ctaStrength ?? 'balanced',
-        motionIntensity: parsed.motionIntensity ?? 'medium',
-        shotPace: parsed.shotPace ?? 'balanced',
-        visualStyle: parsed.visualStyle ?? 'clean'
-      };
-    } catch {
-      return null;
-    }
-  }, [job]);
-
   const motionMeta = useMemo(() => {
     const enforced = [...(job?.timeline ?? [])]
       .reverse()
@@ -440,16 +416,6 @@ export function JobRuntimePanel({ initialJobId }: Props) {
             <span className="chip chip-neutral">Concept: {storyboardMeta.conceptId}</span>
             <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameLabel}</span>
             <span className="chip chip-neutral">Candidate: {storyboardMeta.startFrameCandidateId}</span>
-          </div>
-        ) : null}
-
-        {userControlsMeta ? (
-          <div className="action-row" style={{ marginTop: 0 }}>
-            <span className="chip chip-neutral">Controls</span>
-            <span className="chip chip-neutral">CTA: {userControlsMeta.ctaStrength}</span>
-            <span className="chip chip-neutral">Motion: {userControlsMeta.motionIntensity}</span>
-            <span className="chip chip-neutral">Pace: {userControlsMeta.shotPace}</span>
-            <span className="chip chip-neutral">Style: {userControlsMeta.visualStyle}</span>
           </div>
         ) : null}
 

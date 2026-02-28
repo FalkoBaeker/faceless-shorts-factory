@@ -4,7 +4,16 @@ import { extname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadEnvFiles } from '../config/env-loader.ts';
-import { normalizeUserControlProfile, type UserControlProfile } from '../services/creative-consistency.ts';
+import {
+  normalizeUserControlProfile,
+  normalizeCreativeIntent,
+  deriveLegacyMoodPresetFromIntent,
+  normalizeStoryboardLight,
+  type UserControlProfile,
+  type CreativeIntentMatrix,
+  type StoryboardLight,
+  type ShotStyleTag
+} from '../services/creative-consistency.ts';
 import { logEvent } from '../utils/app-logger.ts';
 
 loadEnvFiles();
@@ -248,6 +257,15 @@ const motionBoostByControl: Record<UserControlProfile['motionIntensity'], number
   high: 2
 };
 
+const shotStylePromptLibrary: Record<ShotStyleTag, string> = {
+  cinematic_closeup: 'Shot style: cinematic close-up with controlled depth and eye-level confidence framing.',
+  over_shoulder: 'Shot style: over-shoulder perspective to increase narrative immersion.',
+  handheld_push: 'Shot style: subtle handheld push-ins for perceived momentum and urgency.',
+  product_macro: 'Shot style: detailed product macro inserts for tactile emphasis.',
+  wide_establishing: 'Shot style: concise wide establishing shots for context before close action.',
+  fast_cut_montage: 'Shot style: short dynamic montage cuts with clear visual progression.'
+};
+
 const parsePositiveInt = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -306,23 +324,179 @@ const resolveMoodPreset = (mood?: string): MoodPreset => {
   return 'commercial_cta';
 };
 
+type PromptCompilerMeta = {
+  intentRules: string[];
+  hookRule: string | null;
+  shotStyleSet: ShotStyleTag[];
+  safetyConstraints: string[];
+  calmExceptionApplied: boolean;
+  appliedRules: string[];
+  suppressedRules: string[];
+};
+
+const selectShotStyleSet = (intent: CreativeIntentMatrix): ShotStyleTag[] => {
+  const explicit = (intent.shotStyles ?? [])
+    .slice()
+    .sort((a, b) => Number(b.weight ?? 0) - Number(a.weight ?? 0))
+    .map((entry) => entry.id as ShotStyleTag)
+    .slice(0, 4);
+
+  if (explicit.length) return explicit;
+
+  const byNarrative = new Set<ShotStyleTag>();
+  for (const format of intent.narrativeFormats) {
+    if (format.id === 'before_after') byNarrative.add('wide_establishing');
+    if (format.id === 'dialog') byNarrative.add('over_shoulder');
+    if (format.id === 'offer_focus') byNarrative.add('product_macro');
+    if (format.id === 'commercial') byNarrative.add('cinematic_closeup');
+    if (format.id === 'problem_solution') byNarrative.add('handheld_push');
+  }
+
+  byNarrative.add('fast_cut_montage');
+  return [...byNarrative].slice(0, 4);
+};
+
+const resolveEffectiveIntent = (
+  creativeIntent: CreativeIntentMatrix | undefined,
+  moodPreset: MoodPreset,
+  conceptId: string
+): CreativeIntentMatrix => normalizeCreativeIntent(creativeIntent, moodPreset, conceptId);
+
+const isLegacyControlProfileProvided = (raw: Partial<UserControlProfile> | undefined) =>
+  Boolean(raw && Object.keys(raw).length > 0);
+
 const resolveMotionRequirement = (
   variantType: VariantType,
-  controls: UserControlProfile
+  controls: UserControlProfile,
+  intent?: CreativeIntentMatrix
 ): { minPhases: number; maxStaticSeconds: number } => {
   const baseMin = variantType === 'MASTER_30' ? 8 : 5;
-  const minPhases = Math.max(4, baseMin + motionBoostByControl[controls.motionIntensity]);
+  const intentBoost =
+    intent?.energyMode === 'high' ||
+    (intent?.effectGoals ?? []).some((entry) => ['sell_conversion', 'urgency_offer', 'cringe_hook'].includes(entry.id))
+      ? 1
+      : 0;
+
+  const minPhases = Math.max(4, baseMin + motionBoostByControl[controls.motionIntensity] + intentBoost);
   const maxStaticSeconds = controls.shotPace === 'fast' ? 2 : controls.shotPace === 'relaxed' ? 3 : 2.5;
   return { minPhases, maxStaticSeconds };
 };
 
-const renderUserControlPrompt = (controls: UserControlProfile) =>
+const renderLegacyUserControlPrompt = (controls: UserControlProfile) =>
   [
     `User-Control CTA: ${ctaDirectnessByControl[controls.ctaStrength]}`,
     `User-Control Motion: Intensität=${controls.motionIntensity}.`,
     `User-Control Pace: ${shotPaceByControl[controls.shotPace]}`,
     `User-Control Visual: ${visualStyleByControl[controls.visualStyle]}`
   ].join(' ');
+
+const renderIntentPrompt = (intent: CreativeIntentMatrix) => {
+  const effectLine = intent.effectGoals
+    .map((entry) => `${entry.id}(w=${Number(entry.weight ?? 1).toFixed(1)})`)
+    .join(', ');
+  const narrativeLine = intent.narrativeFormats
+    .map((entry) => `${entry.id}(w=${Number(entry.weight ?? 1).toFixed(1)})`)
+    .join(', ');
+  const shotStyleSet = selectShotStyleSet(intent);
+
+  return {
+    text: [
+      `Creative Intent Effect Goals: ${effectLine || 'default'}.`,
+      `Creative Intent Narrative Formats: ${narrativeLine || 'default'}.`,
+      `Creative Intent Energy Mode: ${intent.energyMode ?? 'auto'}.`,
+      `Shot style library: ${shotStyleSet.map((tag) => shotStylePromptLibrary[tag]).join(' ')}`
+    ].join(' '),
+    shotStyleSet
+  };
+};
+
+const renderStoryboardLightPrompt = (storyboardLight?: StoryboardLight) => {
+  if (!storyboardLight?.beats?.length) return '';
+
+  const beatLines = storyboardLight.beats
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((beat) => {
+      const fragments = [
+        `Beat ${beat.order}: ${beat.action}`,
+        beat.visualHint ? `Visual: ${beat.visualHint}` : '',
+        beat.dialogueHint ? `Dialog: ${beat.dialogueHint}` : '',
+        beat.onScreenTextHint ? `On-screen: ${beat.onScreenTextHint}` : ''
+      ].filter(Boolean);
+      return fragments.join(' | ');
+    });
+
+  return [
+    'Storyboard Light (user-edited beats):',
+    ...beatLines,
+    storyboardLight.hookHint ? `Hook hint: ${storyboardLight.hookHint}` : '',
+    storyboardLight.ctaHint ? `CTA hint: ${storyboardLight.ctaHint}` : '',
+    storyboardLight.pacingHint ? `Pacing hint: ${storyboardLight.pacingHint}` : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
+};
+
+const compilePromptV2 = (input: {
+  baseSegments: string[];
+  intent: CreativeIntentMatrix;
+  safetyConstraints: string[];
+  includeLegacyControls: boolean;
+  legacyControls: UserControlProfile;
+}) => {
+  const promptParts = [...input.baseSegments];
+  const appliedRules: string[] = [];
+  const suppressedRules: string[] = [];
+
+  const intentPrompt = renderIntentPrompt(input.intent);
+  promptParts.push(intentPrompt.text);
+
+  let hookRule: string | null = 'HOOK_ENHANCER_DEFAULT';
+  if (input.intent.energyMode === 'calm') {
+    hookRule = null;
+    suppressedRules.push('HOOK_ENHANCER_SUPPRESSED_CALM_MODE');
+  } else {
+    promptParts.push('Hook enhancer: first second must open with a sharp visual trigger and immediate narrative tension.');
+    appliedRules.push('HOOK_ENHANCER_APPLIED');
+  }
+
+  if (input.intent.energyMode === 'calm') {
+    suppressedRules.push('MOTION_VARIATION_ENHANCER_SUPPRESSED_CALM_MODE');
+  } else {
+    promptParts.push('Motion/variation enhancer: avoid repetitive loop-like framing, force visual progression every 1-2 beats.');
+    appliedRules.push('MOTION_VARIATION_ENHANCER_APPLIED');
+  }
+
+  promptParts.push('Shot diversity enhancer: rotate shot types across beats and avoid repeating the same camera pattern in sequence.');
+  appliedRules.push('SHOT_DIVERSITY_ENHANCER_APPLIED');
+
+  if (input.includeLegacyControls) {
+    promptParts.push(renderLegacyUserControlPrompt(input.legacyControls));
+    appliedRules.push('LEGACY_USER_CONTROLS_MAPPED_TO_INTENT');
+  }
+
+  for (const constraint of input.safetyConstraints) {
+    promptParts.push(constraint);
+  }
+
+  const prompt = promptParts.filter(Boolean).join(' ');
+
+  const meta: PromptCompilerMeta = {
+    intentRules: [
+      ...input.intent.effectGoals.map((entry) => `effect:${entry.id}`),
+      ...input.intent.narrativeFormats.map((entry) => `narrative:${entry.id}`),
+      `energy:${input.intent.energyMode ?? 'auto'}`
+    ],
+    hookRule,
+    shotStyleSet: intentPrompt.shotStyleSet,
+    safetyConstraints: input.safetyConstraints,
+    calmExceptionApplied: input.intent.energyMode === 'calm',
+    appliedRules,
+    suppressedRules
+  };
+
+  return { prompt, meta };
+};
 
 const FRAME_WIDTH = 720;
 const FRAME_HEIGHT = 1280;
@@ -672,13 +846,19 @@ const ensureSentenceEnding = (text: string) => {
   return `${trimmed}.`;
 };
 
-const createScriptFromLlm = async (topic: string, variantType: VariantType, moodPreset: MoodPreset) => {
+const createScriptFromLlm = async (
+  topic: string,
+  variantType: VariantType,
+  moodPreset: MoodPreset,
+  creativeIntent?: CreativeIntentMatrix
+) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.01, 'llm-script');
 
   const { targetSeconds } = resolveVariantDurations(variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
   const moodPrompt = moodPromptMap[moodPreset];
+  const intentPrompt = creativeIntent ? renderIntentPrompt(creativeIntent).text : '';
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
@@ -686,7 +866,9 @@ const createScriptFromLlm = async (topic: string, variantType: VariantType, mood
       `Erstelle ein deutsches Voiceover-Skript für ein Kurzvideo zum Thema: "${topic}". ` +
       `Ziel-Länge: ca. ${targetSeconds} Sekunden, etwa ${targetWords} Wörter. ` +
       `${moodPrompt} ` +
+      `${intentPrompt} ` +
       'Das Skript muss mit einem vollständigen, abgeschlossenen Satz enden. ' +
+      'In der ersten Sekunde muss der Hook spürbar sein, außer im calm-mode. ' +
       'Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints.',
     max_output_tokens: Math.max(220, Math.round(targetWords * 2.4))
   });
@@ -701,16 +883,20 @@ const condenseScriptToTarget = async (
   script: string,
   targetSeconds: number,
   targetWords: number,
-  moodPreset: MoodPreset
+  moodPreset: MoodPreset,
+  creativeIntent?: CreativeIntentMatrix
 ) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.008, 'llm-script-condense');
+
+  const intentPrompt = creativeIntent ? renderIntentPrompt(creativeIntent).text : '';
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
     input:
       `Kürze dieses deutsche Voiceover-Skript auf maximal ${targetWords} Wörter (ca. ${targetSeconds} Sekunden). ` +
       `${moodPromptMap[moodPreset]} ` +
+      `${intentPrompt} ` +
       'Bewahre den roten Faden und einen klaren CTA. Der letzte Satz muss vollständig sein. ' +
       `Text: """${script}""". Gib nur den finalen gesprochenen Text aus.`,
     max_output_tokens: Math.max(180, Math.round(targetWords * 2.2))
@@ -725,20 +911,22 @@ export const generateScriptDraft = async (input: {
   topic: string;
   variantType: VariantType;
   moodPreset?: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
   regenerate?: boolean;
 }) => {
   await runProviderHealthchecks();
 
   const moodPreset = resolveMoodPreset(input.moodPreset);
+  const effectiveIntent = resolveEffectiveIntent(input.creativeIntent, moodPreset, 'concept_web_vertical_slice');
   const { targetSeconds } = resolveVariantDurations(input.variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
 
-  let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset);
+  let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset, effectiveIntent);
   let estimatedSeconds = estimateSpeechSeconds(script);
   let condensed = false;
 
   if (estimatedSeconds > targetSeconds * 1.08) {
-    script = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset);
+    script = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset, effectiveIntent);
     estimatedSeconds = estimateSpeechSeconds(script);
     condensed = true;
   }
@@ -748,6 +936,7 @@ export const generateScriptDraft = async (input: {
   return {
     script,
     moodPreset,
+    creativeIntent: effectiveIntent,
     targetSeconds,
     suggestedWords: targetWords,
     estimatedSeconds,
@@ -1414,6 +1603,8 @@ export const runVideoStage = async (input: {
   startFramePromptOverride?: string;
   startFrameReferenceObjectPath?: string;
   moodPreset?: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
+  storyboardLight?: StoryboardLight;
   approvedScript?: string;
   userControls?: Partial<UserControlProfile>;
 }) => {
@@ -1421,9 +1612,14 @@ export const runVideoStage = async (input: {
 
   const concept = resolveStoryboardConcept(input.conceptId);
   const startFrameStyle = resolveStartFrameStyle(input.startFrameStyle);
-  const moodPreset = resolveMoodPreset(input.moodPreset);
-  const userControls = normalizeUserControlProfile(input.userControls);
-  const motionRequirement = resolveMotionRequirement(input.variantType, userControls);
+  const fallbackMoodPreset = resolveMoodPreset(input.moodPreset);
+  const moodPreset = deriveLegacyMoodPresetFromIntent(input.creativeIntent, fallbackMoodPreset, concept.id);
+  const effectiveIntent = resolveEffectiveIntent(input.creativeIntent, moodPreset, concept.id);
+  const storyboardLight = normalizeStoryboardLight(input.storyboardLight);
+
+  const legacyUserControlsProvided = isLegacyControlProfileProvided(input.userControls);
+  const legacyUserControls = normalizeUserControlProfile(input.userControls);
+  const motionRequirement = resolveMotionRequirement(input.variantType, legacyUserControls, effectiveIntent);
 
   const durationConfig = resolveVariantDurations(input.variantType);
   const captionSafeArea = resolveCaptionSafeArea();
@@ -1467,13 +1663,15 @@ export const runVideoStage = async (input: {
           withinTarget: estimatedSeconds <= durationConfig.targetSeconds * 1.08,
           suggestedWords: Math.round(durationConfig.targetSeconds * 2.35),
           condensed: false,
-          moodPreset
+          moodPreset,
+          creativeIntent: effectiveIntent
         };
       })()
     : await generateScriptDraft({
         topic: input.topic,
         variantType: input.variantType,
-        moodPreset
+        moodPreset,
+        creativeIntent: effectiveIntent
       });
 
   if (!draft.withinTarget) {
@@ -1484,34 +1682,49 @@ export const runVideoStage = async (input: {
   }
 
   const llmText = draft.script;
-  const controlPrompt = renderUserControlPrompt(userControls);
+  const storyboardPrompt = renderStoryboardLightPrompt(storyboardLight);
 
-  const imagePrompt = [
-    `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
-    `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
-    `Mood: ${moodPromptMap[moodPreset]}`,
-    controlPrompt,
-    startFramePrompt,
-    `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
-    `Narration context: ${llmText}`
-  ].join(' ');
-
-  const videoPrompt = [
-    `Create a vertical social video about: ${input.topic}.`,
-    `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
-    `Mood: ${moodPromptMap[moodPreset]}`,
-    controlPrompt,
-    motionGuardByVariant[input.variantType],
-    `Hard motion target: minimum ${motionRequirement.minPhases} movement phases, max static shot ${motionRequirement.maxStaticSeconds} seconds.`,
-    startFramePrompt,
-    `Narration text: ${llmText}`,
+  const safetyConstraints = [
     `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
     'No caption text should touch the frame border.'
-  ].join(' ');
+  ];
 
-  const imageBytes = await createImage(imagePrompt);
+  const imageCompiled = compilePromptV2({
+    baseSegments: [
+      `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
+      `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
+      `Mood: ${moodPromptMap[moodPreset]}`,
+      startFramePrompt,
+      storyboardPrompt,
+      `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
+      `Narration context: ${llmText}`
+    ],
+    intent: effectiveIntent,
+    safetyConstraints,
+    includeLegacyControls: legacyUserControlsProvided,
+    legacyControls: legacyUserControls
+  });
+
+  const videoCompiled = compilePromptV2({
+    baseSegments: [
+      `Create a vertical social video about: ${input.topic}.`,
+      `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
+      `Mood: ${moodPromptMap[moodPreset]}`,
+      motionGuardByVariant[input.variantType],
+      `Hard motion target: minimum ${motionRequirement.minPhases} movement phases, max static shot ${motionRequirement.maxStaticSeconds} seconds.`,
+      startFramePrompt,
+      storyboardPrompt,
+      `Narration text: ${llmText}`
+    ],
+    intent: effectiveIntent,
+    safetyConstraints,
+    includeLegacyControls: legacyUserControlsProvided,
+    legacyControls: legacyUserControls
+  });
+
+  const imageBytes = await createImage(imageCompiled.prompt);
   const motionVideo = await createVideoWithMotionEnforcement({
-    prompt: videoPrompt,
+    prompt: videoCompiled.prompt,
     variantType: input.variantType,
     requirement: motionRequirement
   });
@@ -1531,7 +1744,10 @@ export const runVideoStage = async (input: {
     startFrameCandidateId: input.startFrameCandidateId,
     startFrameLabel,
     moodPreset,
-    userControls,
+    creativeIntent: effectiveIntent,
+    storyboardLight,
+    userControls: legacyUserControlsProvided ? legacyUserControls : undefined,
+    promptCompiler: videoCompiled.meta,
     motionEnforcement: motionVideo.enforcement,
     scriptValidation: {
       targetSeconds: draft.targetSeconds,

@@ -29,15 +29,44 @@ type StagePayload = {
   replayCount?: number;
 };
 
+type WeightedSelection<T extends string> = {
+  id: T;
+  weight?: number;
+  priority?: 1 | 2 | 3;
+};
+
+type CreativeIntent = {
+  effectGoals: Array<WeightedSelection<'sell_conversion' | 'funny' | 'cringe_hook' | 'testimonial_trust' | 'urgency_offer'>>;
+  narrativeFormats: Array<WeightedSelection<'before_after' | 'dialog' | 'offer_focus' | 'commercial' | 'problem_solution'>>;
+  shotStyles?: Array<WeightedSelection<'cinematic_closeup' | 'over_shoulder' | 'handheld_push' | 'product_macro' | 'wide_establishing' | 'fast_cut_montage'>>;
+  energyMode?: 'auto' | 'high' | 'calm';
+};
+
+type StoryboardLight = {
+  beats: Array<{
+    beatId: string;
+    order: number;
+    action: string;
+    visualHint?: string;
+    dialogueHint?: string;
+    onScreenTextHint?: string;
+  }>;
+  hookHint?: string;
+  ctaHint?: string;
+  pacingHint?: string;
+};
+
 type StoryboardSelection = {
   conceptId: string;
   moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
+  creativeIntent?: CreativeIntent;
+  storyboardLight?: StoryboardLight;
   approvedScript?: string;
   startFrameCandidateId?: string;
   startFrameLabel?: string;
   startFramePrompt?: string;
   startFrameReferenceObjectPath?: string;
-  userControls: {
+  userControls?: {
     ctaStrength: 'soft' | 'balanced' | 'strong';
     motionIntensity: 'low' | 'medium' | 'high';
     shotPace: 'relaxed' | 'balanced' | 'fast';
@@ -222,6 +251,135 @@ const buildAssetDetail = (kind: string, asset: StoredAsset) =>
     provider: asset.provider
   });
 
+const parseWeightedSelections = <T extends string>(raw: unknown, allowed: readonly T[]) => {
+  if (!Array.isArray(raw)) return [] as Array<WeightedSelection<T>>;
+
+  return raw
+    .slice(0, 12)
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const id = String(entry.id ?? '').trim() as T;
+      if (!(allowed as readonly string[]).includes(id)) return null;
+
+      const rawWeight = Number(entry.weight ?? 1);
+      const weight = Number.isFinite(rawWeight) ? Math.max(0.1, Math.min(1, rawWeight)) : 1;
+      const rawPriority = Number(entry.priority);
+      const priority = [1, 2, 3].includes(rawPriority) ? (rawPriority as 1 | 2 | 3) : undefined;
+
+      return { id, weight, priority };
+    })
+    .filter((entry): entry is WeightedSelection<T> => Boolean(entry));
+};
+
+const parseCreativeIntent = (raw: unknown): CreativeIntent | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+
+  const effectGoals = parseWeightedSelections(input.effectGoals, [
+    'sell_conversion',
+    'funny',
+    'cringe_hook',
+    'testimonial_trust',
+    'urgency_offer'
+  ] as const);
+
+  const narrativeFormats = parseWeightedSelections(input.narrativeFormats, [
+    'before_after',
+    'dialog',
+    'offer_focus',
+    'commercial',
+    'problem_solution'
+  ] as const);
+
+  const shotStyles = parseWeightedSelections(input.shotStyles, [
+    'cinematic_closeup',
+    'over_shoulder',
+    'handheld_push',
+    'product_macro',
+    'wide_establishing',
+    'fast_cut_montage'
+  ] as const);
+
+  const energyRaw = String(input.energyMode ?? 'auto').trim().toLowerCase();
+  const energyMode = ['auto', 'high', 'calm'].includes(energyRaw) ? (energyRaw as 'auto' | 'high' | 'calm') : 'auto';
+
+  if (!effectGoals.length && !narrativeFormats.length && !shotStyles.length && energyMode === 'auto') {
+    return undefined;
+  }
+
+  return {
+    effectGoals,
+    narrativeFormats,
+    shotStyles,
+    energyMode
+  };
+};
+
+const parseStoryboardLight = (raw: unknown): StoryboardLight | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+  const beatsRaw = Array.isArray(input.beats) ? input.beats : [];
+
+  const beats = beatsRaw
+    .slice(0, 8)
+    .map((entry, index) => (entry && typeof entry === 'object' ? ({ ...(entry as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const action = String(entry.action ?? '')
+        .trim()
+        .slice(0, 240);
+      if (!action) return null;
+
+      const orderRaw = Number(entry.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(entry.index) + 1;
+
+      return {
+        beatId:
+          String(entry.beatId ?? '')
+            .trim()
+            .slice(0, 40) || `beat_${order}`,
+        order,
+        action,
+        visualHint: String(entry.visualHint ?? '')
+          .trim()
+          .slice(0, 180) || undefined,
+        dialogueHint: String(entry.dialogueHint ?? '')
+          .trim()
+          .slice(0, 180) || undefined,
+        onScreenTextHint: String(entry.onScreenTextHint ?? '')
+          .trim()
+          .slice(0, 120) || undefined
+      };
+    })
+    .filter(
+      (entry): entry is {
+        beatId: string;
+        order: number;
+        action: string;
+        visualHint?: string;
+        dialogueHint?: string;
+        onScreenTextHint?: string;
+      } => Boolean(entry)
+    )
+    .sort((a, b) => a.order - b.order);
+
+  if (!beats.length) return undefined;
+
+  return {
+    beats,
+    hookHint: String(input.hookHint ?? '')
+      .trim()
+      .slice(0, 180) || undefined,
+    ctaHint: String(input.ctaHint ?? '')
+      .trim()
+      .slice(0, 180) || undefined,
+    pacingHint: String(input.pacingHint ?? '')
+      .trim()
+      .slice(0, 120) || undefined
+  };
+};
+
 const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   const fallback: StoryboardSelection = {
     conceptId: 'concept_web_vertical_slice',
@@ -231,12 +389,7 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
     startFrameLabel: undefined,
     startFramePrompt: undefined,
     startFrameReferenceObjectPath: undefined,
-    userControls: {
-      ctaStrength: 'balanced',
-      motionIntensity: 'medium',
-      shotPace: 'balanced',
-      visualStyle: 'clean'
-    },
+    userControls: undefined,
     startFrameStyle: 'storefront_hero'
   };
 
@@ -250,7 +403,12 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   if (!selected?.detail) return fallback;
 
   try {
-    const parsed = JSON.parse(selected.detail) as Partial<StoryboardSelection>;
+    const parsed = JSON.parse(selected.detail) as Partial<StoryboardSelection> & {
+      creativeIntent?: unknown;
+      storyboardLight?: unknown;
+      userControls?: unknown;
+    };
+
     const startFrameStyle =
       parsed.startFrameStyle &&
       ['storefront_hero', 'product_macro', 'owner_portrait', 'hands_at_work', 'before_after_split'].includes(parsed.startFrameStyle)
@@ -262,34 +420,38 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
         ? parsed.moodPreset
         : fallback.moodPreset;
 
-    const rawControls = parsed.userControls && typeof parsed.userControls === 'object' ? parsed.userControls : {};
+    const rawControls = parsed.userControls && typeof parsed.userControls === 'object' ? parsed.userControls : null;
 
-    const userControls = {
-      ctaStrength:
-        typeof (rawControls as { ctaStrength?: unknown }).ctaStrength === 'string' &&
-        ['soft', 'balanced', 'strong'].includes((rawControls as { ctaStrength?: string }).ctaStrength ?? '')
-          ? ((rawControls as { ctaStrength?: string }).ctaStrength as 'soft' | 'balanced' | 'strong')
-          : fallback.userControls.ctaStrength,
-      motionIntensity:
-        typeof (rawControls as { motionIntensity?: unknown }).motionIntensity === 'string' &&
-        ['low', 'medium', 'high'].includes((rawControls as { motionIntensity?: string }).motionIntensity ?? '')
-          ? ((rawControls as { motionIntensity?: string }).motionIntensity as 'low' | 'medium' | 'high')
-          : fallback.userControls.motionIntensity,
-      shotPace:
-        typeof (rawControls as { shotPace?: unknown }).shotPace === 'string' &&
-        ['relaxed', 'balanced', 'fast'].includes((rawControls as { shotPace?: string }).shotPace ?? '')
-          ? ((rawControls as { shotPace?: string }).shotPace as 'relaxed' | 'balanced' | 'fast')
-          : fallback.userControls.shotPace,
-      visualStyle:
-        typeof (rawControls as { visualStyle?: unknown }).visualStyle === 'string' &&
-        ['clean', 'cinematic', 'ugc'].includes((rawControls as { visualStyle?: string }).visualStyle ?? '')
-          ? ((rawControls as { visualStyle?: string }).visualStyle as 'clean' | 'cinematic' | 'ugc')
-          : fallback.userControls.visualStyle
-    };
+    const userControls = rawControls
+      ? {
+          ctaStrength:
+            typeof (rawControls as { ctaStrength?: unknown }).ctaStrength === 'string' &&
+            ['soft', 'balanced', 'strong'].includes((rawControls as { ctaStrength?: string }).ctaStrength ?? '')
+              ? ((rawControls as { ctaStrength?: string }).ctaStrength as 'soft' | 'balanced' | 'strong')
+              : 'balanced',
+          motionIntensity:
+            typeof (rawControls as { motionIntensity?: unknown }).motionIntensity === 'string' &&
+            ['low', 'medium', 'high'].includes((rawControls as { motionIntensity?: string }).motionIntensity ?? '')
+              ? ((rawControls as { motionIntensity?: string }).motionIntensity as 'low' | 'medium' | 'high')
+              : 'medium',
+          shotPace:
+            typeof (rawControls as { shotPace?: unknown }).shotPace === 'string' &&
+            ['relaxed', 'balanced', 'fast'].includes((rawControls as { shotPace?: string }).shotPace ?? '')
+              ? ((rawControls as { shotPace?: string }).shotPace as 'relaxed' | 'balanced' | 'fast')
+              : 'balanced',
+          visualStyle:
+            typeof (rawControls as { visualStyle?: unknown }).visualStyle === 'string' &&
+            ['clean', 'cinematic', 'ugc'].includes((rawControls as { visualStyle?: string }).visualStyle ?? '')
+              ? ((rawControls as { visualStyle?: string }).visualStyle as 'clean' | 'cinematic' | 'ugc')
+              : 'clean'
+        }
+      : undefined;
 
     return {
       conceptId: String(parsed.conceptId ?? fallback.conceptId),
       moodPreset,
+      creativeIntent: parseCreativeIntent(parsed.creativeIntent),
+      storyboardLight: parseStoryboardLight(parsed.storyboardLight),
       approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
       startFrameCandidateId:
         typeof parsed.startFrameCandidateId === 'string' && parsed.startFrameCandidateId.trim()
@@ -303,7 +465,7 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
           : undefined,
       userControls,
       startFrameStyle
-    } as StoryboardSelection;
+    };
   } catch {
     return fallback;
   }
@@ -583,6 +745,8 @@ const processVideo = async (job: Job<StagePayload>) => {
         variantType,
         conceptId: storyboard.conceptId,
         moodPreset: storyboard.moodPreset,
+        creativeIntent: storyboard.creativeIntent,
+        storyboardLight: storyboard.storyboardLight,
         approvedScript: storyboard.approvedScript,
         startFrameStyle: storyboard.startFrameStyle,
         startFrameCandidateId: storyboard.startFrameCandidateId,
@@ -606,7 +770,9 @@ const processVideo = async (job: Job<StagePayload>) => {
         moodPreset: result.moodPreset,
         startFrameStyle: result.startFrameStyle,
         startFrameCandidateId: result.startFrameCandidateId ?? null,
-        startFrameLabel: result.startFrameLabel ?? null
+        startFrameLabel: result.startFrameLabel ?? null,
+        creativeIntent: result.creativeIntent,
+        storyboardLightBeatCount: result.storyboardLight?.beats?.length ?? 0
       })
     );
     await insertTimeline(
@@ -626,7 +792,43 @@ const processVideo = async (job: Job<StagePayload>) => {
     if (result.referenceAsset) {
       await insertTimeline(jobId, 'ASSET_STARTFRAME_REFERENCE_STORED', buildAssetDetail('startframe_reference', result.referenceAsset));
     }
-    await insertTimeline(jobId, 'USER_CONTROLS_ENFORCED', JSON.stringify(result.userControls));
+
+    if (result.creativeIntent) {
+      await insertTimeline(jobId, 'CREATIVE_INTENT_APPLIED', JSON.stringify(result.creativeIntent));
+    }
+
+    if (result.storyboardLight) {
+      await insertTimeline(
+        jobId,
+        'STORYBOARD_LIGHT_NORMALIZED',
+        JSON.stringify({
+          beats: result.storyboardLight.beats,
+          hookHint: result.storyboardLight.hookHint,
+          ctaHint: result.storyboardLight.ctaHint,
+          pacingHint: result.storyboardLight.pacingHint
+        })
+      );
+    }
+
+    await insertTimeline(jobId, 'PROMPT_COMPILER_V2_APPLIED', JSON.stringify(result.promptCompiler));
+    await insertTimeline(jobId, 'HOOK_ENHANCER_APPLIED', JSON.stringify({ rule: result.promptCompiler.hookRule ?? null }));
+    await insertTimeline(
+      jobId,
+      'SHOT_STYLE_LIBRARY_APPLIED',
+      JSON.stringify({
+        shotStyleSet: result.promptCompiler.shotStyleSet,
+        intentRules: result.promptCompiler.intentRules
+      })
+    );
+
+    if (result.promptCompiler.calmExceptionApplied) {
+      await insertTimeline(jobId, 'CALM_MODE_EXCEPTION_APPLIED', JSON.stringify({ applied: true }));
+    }
+
+    if (result.userControls) {
+      await insertTimeline(jobId, 'USER_CONTROLS_ENFORCED', JSON.stringify(result.userControls));
+    }
+
     await insertTimeline(jobId, 'MOTION_ENFORCED', JSON.stringify(result.motionEnforcement));
 
     await enqueueAudio(job.data);
