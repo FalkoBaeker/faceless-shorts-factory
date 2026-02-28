@@ -439,6 +439,7 @@ const markFailedFinal = async (jobId: string, stage: Stage, reason: string) => {
   }
 
   await upsertLedgerFinalState(context.organization_id, jobId, 'RELEASED', +1, `released after ${stage} failure`);
+  await insertTimeline(jobId, 'BILLING_CREDIT_RELEASED', `amount=+1 stage=${stage} reason=${reason}`);
 
   await deadLetterQueue.add(
     'failed',
@@ -461,10 +462,15 @@ const markFailedFinal = async (jobId: string, stage: Stage, reason: string) => {
 const recoverStaleActiveJobs = async () => {
   for (const binding of stageQueues) {
     const activeJobs = await binding.queue.getJobs(['active'], 0, 199, true);
+    const sortedActiveJobs = activeJobs
+      .map((active) => ({
+        active,
+        queueJobId: String(active.id ?? '')
+      }))
+      .filter((entry) => entry.queueJobId)
+      .sort((a, b) => a.queueJobId.localeCompare(b.queueJobId));
 
-    for (const active of activeJobs) {
-      const queueJobId = String(active.id ?? '');
-      if (!queueJobId) continue;
+    for (const { active, queueJobId } of sortedActiveJobs) {
 
       const lockKey = binding.queue.toKey(`${queueJobId}:lock`);
       const lockExists = (await redis.exists(lockKey)) === 1;
@@ -739,6 +745,7 @@ const processAssembly = async (job: Job<StagePayload>) => {
 
     await transitionStatus(jobId, 'READY', 'render complete');
     await upsertLedgerFinalState(context.organization_id, jobId, 'COMMITTED', 0, 'reserved credit committed on READY');
+    await insertTimeline(jobId, 'BILLING_CREDIT_COMMITTED', 'amount=0 status=READY');
 
     return { stage: 'assembly', status: 'READY', finalObjectPath: final.finalVideo.objectPath };
   } catch (error) {

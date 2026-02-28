@@ -114,6 +114,25 @@ export type JobStatusResponse = {
     | 'PUBLISHED'
     | 'FAILED';
   timeline: Array<{ at: string; event: string; detail?: string }>;
+  billing?: {
+    reservation: {
+      reserved: boolean;
+      at: string | null;
+    };
+    finalization: {
+      state: 'PENDING' | 'COMMITTED' | 'RELEASED';
+      at: string | null;
+      note: string | null;
+    };
+    entries: Array<{
+      id: string;
+      type: 'TOPUP' | 'RESERVED' | 'COMMITTED' | 'RELEASED' | 'MANUAL_ADJUSTMENT';
+      amount: number;
+      jobId?: string;
+      createdAt: string;
+      note?: string;
+    }>;
+  };
 };
 
 export type LedgerResponse = {

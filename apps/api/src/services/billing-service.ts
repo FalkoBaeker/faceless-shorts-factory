@@ -55,6 +55,17 @@ export const listLedger = (organizationId?: string) => {
   return organizationId ? ledgerEntries.filter((e) => e.organizationId === organizationId) : ledgerEntries;
 };
 
+export const listLedgerForJob = (jobId: string, organizationId?: string) => {
+  if (getPersistenceBackend() === 'postgres') {
+    return postgresLedgerRepo.listByJob(jobId);
+  }
+
+  return ledgerEntries
+    .filter((entry) => entry.jobId === jobId)
+    .filter((entry) => (organizationId ? entry.organizationId === organizationId : true))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+};
+
 export const getLedgerBalance = (organizationId: string) => {
   return calculateBalance(listLedger(organizationId));
 };

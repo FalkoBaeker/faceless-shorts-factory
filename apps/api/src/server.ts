@@ -16,6 +16,7 @@ import {
   replayDeadLetterHandler
 } from './handlers.ts';
 import { loadEnvFiles } from './config/env-loader.ts';
+import { ensureQueueRuntime } from './orchestration/queue-runtime.ts';
 import {
   authRequired,
   requireRequestUser,
@@ -419,11 +420,14 @@ export const buildApiServer = () =>
     }
   });
 
-export const startApiServer = (port = 3001) => {
+export const startApiServer = async (port = 3001) => {
+  await ensureQueueRuntime();
   const server = buildApiServer();
 
-  return new Promise<{ server: ReturnType<typeof buildApiServer>; port: number }>((resolve) => {
+  return new Promise<{ server: ReturnType<typeof buildApiServer>; port: number }>((resolve, reject) => {
+    server.once('error', reject);
     server.listen(port, () => {
+      server.off('error', reject);
       const address = server.address();
       const resolvedPort = typeof address === 'object' && address ? address.port : port;
       resolve({ server, port: resolvedPort });

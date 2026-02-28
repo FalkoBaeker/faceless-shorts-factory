@@ -17,7 +17,7 @@ import type {
 import { createProject, getProject, setProjectStatus } from './project-store.ts';
 import { startJob } from './services/job-service.ts';
 import { getJob, appendTimelineEvent } from './job-store.ts';
-import { reserveCredit, listLedger, getLedgerBalance } from './services/billing-service.ts';
+import { reserveCredit, listLedger, listLedgerForJob, getLedgerBalance } from './services/billing-service.ts';
 import { getPublishPosts } from './services/publish-service.ts';
 import { getAdminSnapshot } from './services/admin-service.ts';
 import {
@@ -46,6 +46,34 @@ const normalizeVariantType = (variantType: 'SHORT_15' | 'MASTER_30'): 'SHORT_15'
 
 const estimatedSecondsForVariant = (variantType: 'SHORT_15' | 'MASTER_30') =>
   variantType === 'MASTER_30' && premium60Enabled() ? 60 : 30;
+
+const buildBillingLifecycle = (jobId: string, organizationId?: string) => {
+  const entries = listLedgerForJob(jobId, organizationId);
+  const reserved = entries.find((entry) => entry.type === 'RESERVED') ?? null;
+  const finalized = [...entries]
+    .reverse()
+    .find((entry) => entry.type === 'COMMITTED' || entry.type === 'RELEASED') ?? null;
+
+  return {
+    reservation: {
+      reserved: Boolean(reserved),
+      at: reserved?.createdAt ?? null
+    },
+    finalization: {
+      state: finalized?.type ?? 'PENDING',
+      at: finalized?.createdAt ?? null,
+      note: finalized?.note ?? null
+    },
+    entries: entries.map((entry) => ({
+      id: entry.id,
+      type: entry.type,
+      amount: entry.amount,
+      jobId: entry.jobId,
+      createdAt: entry.createdAt,
+      note: entry.note
+    }))
+  };
+};
 
 export const createProjectHandler = (payload: CreateProjectRequest): CreateProjectResponse => {
   const project = createProject({
@@ -157,6 +185,12 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   });
 
   reserveCredit(project.organizationId, job.id);
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'BILLING_CREDIT_RESERVED',
+    detail: 'amount=-1 type=RESERVED'
+  });
 
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
@@ -289,10 +323,13 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
   if (!existing) throw new Error(`JOB_NOT_FOUND:${jobId}`);
 
   if (existing.status === 'READY' || existing.status === 'FAILED') {
+    const project = getProject(existing.projectId);
+
     return {
       jobId: existing.id,
       status: existing.status as JobStatusResponse['status'],
-      timeline: existing.timeline
+      timeline: existing.timeline,
+      billing: buildBillingLifecycle(existing.id, project?.organizationId)
     };
   }
 
@@ -312,10 +349,13 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
   const updated = getJob(jobId);
   if (!updated) throw new Error(`JOB_NOT_FOUND:${jobId}`);
 
+  const project = getProject(updated.projectId);
+
   return {
     jobId: updated.id,
     status: updated.status as JobStatusResponse['status'],
-    timeline: updated.timeline
+    timeline: updated.timeline,
+    billing: buildBillingLifecycle(updated.id, project?.organizationId)
   };
 };
 
@@ -347,10 +387,13 @@ export const getJobHandler = (jobId: string): JobStatusResponse => {
   const job = getJob(jobId);
   if (!job) throw new Error(`JOB_NOT_FOUND:${jobId}`);
 
+  const project = getProject(job.projectId);
+
   return {
     jobId: job.id,
     status: job.status as JobStatusResponse['status'],
-    timeline: job.timeline
+    timeline: job.timeline,
+    billing: buildBillingLifecycle(job.id, project?.organizationId)
   };
 };
 

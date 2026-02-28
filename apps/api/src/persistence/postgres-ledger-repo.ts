@@ -61,5 +61,9 @@ export const postgresLedgerRepo = {
     const query = organizationId ? sqlTemplates.creditLedger.listByOrg : sqlTemplates.creditLedger.listAll;
     const params = organizationId ? [organizationId] : [];
     return executor.query<DbLedgerRow>(query, params).rows.map(mapLedgerRowToDomain);
+  },
+
+  listByJob: (jobId: string): CreditLedgerEntry[] => {
+    return listForJobRows(jobId).map(mapLedgerRowToDomain);
   }
 };

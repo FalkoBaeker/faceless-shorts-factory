@@ -147,8 +147,13 @@ Expected:
 - **Queue stalls**
   - verify Redis health
   - inspect `logs/app.log`
+  - if restart happened mid-job: confirm `queue_stale_active_detected` in logs
+  - verify job timeline has `QUEUE_STALE_ACTIVE_RECOVERED` and terminal `STATUS_FAILED`/`FAILED_FINAL`
   - inspect DLQ: `GET /v1/dlq`
-  - if restart happened mid-job: check for `queue_stale_active_detected` / `QUEUE_STALE_ACTIVE_RECOVERED` timeline events
+  - replay specific failed entry when applicable: `POST /v1/dlq/:id/replay`
+  - billing expectation after stale/failure recovery:
+    - timeline contains `BILLING_CREDIT_RELEASED`
+    - ledger shows `RESERVED` + `RELEASED` for failed job (no stuck reservation)
 - **`EADDRINUSE :3001` when starting API**
   - another API process is already running
   - run: `pkill -f "node --experimental-strip-types apps/api/src/main.ts" || true`

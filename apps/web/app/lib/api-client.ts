@@ -79,10 +79,45 @@ export type StartFrameUploadPayload = {
   mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
 };
 
+export type JobStatus =
+  | 'DRAFT'
+  | 'IDEATION_PENDING'
+  | 'IDEATION_READY'
+  | 'STORYBOARD_PENDING'
+  | 'STORYBOARD_READY'
+  | 'SELECTED'
+  | 'VIDEO_PENDING'
+  | 'AUDIO_PENDING'
+  | 'ASSEMBLY_PENDING'
+  | 'RENDERING'
+  | 'READY'
+  | 'PUBLISH_PENDING'
+  | 'PUBLISHED'
+  | 'FAILED';
+
 export type JobPayload = {
   jobId: string;
-  status: string;
+  status: JobStatus;
   timeline: Array<{ at: string; event: string; detail?: string }>;
+  billing?: {
+    reservation: {
+      reserved: boolean;
+      at: string | null;
+    };
+    finalization: {
+      state: 'PENDING' | 'COMMITTED' | 'RELEASED';
+      at: string | null;
+      note: string | null;
+    };
+    entries: Array<{
+      id: string;
+      type: 'TOPUP' | 'RESERVED' | 'COMMITTED' | 'RELEASED' | 'MANUAL_ADJUSTMENT';
+      amount: number;
+      jobId?: string;
+      createdAt: string;
+      note?: string;
+    }>;
+  };
 };
 
 export type JobAssetsPayload = {

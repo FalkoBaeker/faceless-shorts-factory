@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { fetchMe, login, signUp, type ApiError, type AuthMePayload } from '../lib/api-client';
 import { readStoredToken, storeToken } from '../lib/session-store';
 
@@ -62,7 +62,9 @@ export function AuthPanel() {
     return `Eingeloggt als ${me.user?.email ?? 'unknown'} · plan=${me.user?.plan ?? 'n/a'} · canRunJob=${me.canRunJob}`;
   }, [me]);
 
-  const submit = async () => {
+  const submit = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+
     if (!email || password.length < 8) {
       setMessage('Bitte gültige Email und Passwort (>=8 Zeichen) eingeben.');
       return;
@@ -82,6 +84,8 @@ export function AuthPanel() {
       } else {
         setMessage(`Auth ok · canRunJob=${payload.canRunJob} · reason=${payload.reason}`);
       }
+
+      setPassword('');
     } catch (error) {
       setMessage(`Auth failed: ${toErrorMessage(error)}`);
     } finally {
@@ -109,49 +113,62 @@ export function AuthPanel() {
 
       <p className="section-copy">{authSummary}</p>
 
-      <div className="auth-form-grid">
-        <label className="auth-field">
-          <span>Email</span>
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-            autoComplete="email"
-          />
-        </label>
+      <form onSubmit={submit}>
+        <fieldset style={{ border: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }} disabled={busy}>
+          <div className="auth-form-grid">
+            <label className="auth-field">
+              <span>Email</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+              />
+            </label>
 
-        <label className="auth-field">
-          <span>Passwort</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="Mindestens 8 Zeichen"
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-          />
-        </label>
-      </div>
+            <label className="auth-field">
+              <span>Passwort</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Mindestens 8 Zeichen"
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              />
+            </label>
+          </div>
 
-      <div className="state-toggle-row">
-        <button type="button" className={`state-toggle ${mode === 'login' ? 'active' : ''}`} onClick={() => setMode('login')}>
-          Login
-        </button>
-        <button type="button" className={`state-toggle ${mode === 'signup' ? 'active' : ''}`} onClick={() => setMode('signup')}>
-          Signup
-        </button>
-      </div>
+          <div className="state-toggle-row">
+            <button type="button" className={`state-toggle ${mode === 'login' ? 'active' : ''}`} onClick={() => setMode('login')} disabled={busy}>
+              Login
+            </button>
+            <button type="button" className={`state-toggle ${mode === 'signup' ? 'active' : ''}`} onClick={() => setMode('signup')} disabled={busy}>
+              Signup
+            </button>
+          </div>
 
-      <div className="action-row">
-        <button className="button" type="button" onClick={submit} disabled={busy}>
-          {busy ? 'Läuft ...' : mode === 'signup' ? 'Signup starten' : 'Login starten'}
-        </button>
-        <button className="button-ghost" type="button" onClick={logout}>
-          Logout
-        </button>
-      </div>
+          <div className="action-row">
+            <button className="button" type="submit" disabled={busy}>
+              {busy ? 'Läuft ...' : mode === 'signup' ? 'Signup starten' : 'Login starten'}
+            </button>
+            <button className="button-ghost" type="button" onClick={logout} disabled={busy}>
+              Logout
+            </button>
+          </div>
+        </fieldset>
+      </form>
 
-      {message ? <p className="section-copy" style={{ marginTop: 0 }}>{message}</p> : null}
+      {message ? (
+        <p
+          className="section-copy"
+          style={{ marginTop: 0 }}
+          role={message.toLowerCase().includes('failed') || message.toLowerCase().includes('invalid') ? 'alert' : 'status'}
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      ) : null}
     </section>
   );
 }

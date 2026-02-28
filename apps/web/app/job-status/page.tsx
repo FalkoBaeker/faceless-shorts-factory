@@ -86,8 +86,8 @@ function ReadyState() {
       <h2 className="section-title">Job abgeschlossen</h2>
       <p className="section-copy">Asset ist bereit für Download/Export (MVP ohne Auto-Publish).</p>
       <div className="action-row">
-        <button className="button" type="button" aria-label="Download Demo Asset">
-          Download final.mp4
+        <button className="button-ghost" type="button" aria-label="Download Demo Asset (Mock)">
+          Demo-Download (Mock)
         </button>
         <button className="button-ghost" type="button" aria-label="Open export checklist">
           Export prüfen

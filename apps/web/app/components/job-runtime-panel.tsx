@@ -1,7 +1,15 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { fetchJob, fetchJobAssets, triggerAlertTest, type ApiError, type JobAssetsPayload, type JobPayload } from '../lib/api-client';
+import {
+  fetchJob,
+  fetchJobAssets,
+  triggerAlertTest,
+  type ApiError,
+  type JobAssetsPayload,
+  type JobPayload,
+  type JobStatus
+} from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
 
 type Props = {
@@ -13,6 +21,58 @@ const asApiMessage = (error: unknown) => {
   return api?.message ?? String(error);
 };
 
+const pendingStatuses: JobStatus[] = [
+  'DRAFT',
+  'IDEATION_PENDING',
+  'IDEATION_READY',
+  'STORYBOARD_PENDING',
+  'STORYBOARD_READY',
+  'SELECTED',
+  'VIDEO_PENDING',
+  'AUDIO_PENDING',
+  'ASSEMBLY_PENDING',
+  'RENDERING',
+  'PUBLISH_PENDING'
+];
+
+const isPendingStatus = (status?: JobStatus | null) => Boolean(status && pendingStatuses.includes(status));
+
+const userFacingStatus = (status?: JobStatus | null) => {
+  if (!status) {
+    return {
+      title: 'Warte auf Job-Status',
+      copy: 'Sobald eine Job-ID vorhanden ist, wird der Laufzeitstatus geladen.',
+      chip: 'WARTET',
+      tone: 'chip-neutral'
+    };
+  }
+
+  if (status === 'READY' || status === 'PUBLISHED') {
+    return {
+      title: 'Video ist bereit',
+      copy: 'Dein Render ist abgeschlossen. Du kannst jetzt direkt die MP4 herunterladen.',
+      chip: status,
+      tone: 'chip-success'
+    };
+  }
+
+  if (status === 'FAILED') {
+    return {
+      title: 'Erstellung fehlgeschlagen',
+      copy: 'Der Job ist in einen Fehler gelaufen. Prüfe unten die Diagnose und starte bei Bedarf neu.',
+      chip: status,
+      tone: 'chip-danger'
+    };
+  }
+
+  return {
+    title: 'Video wird erstellt ...',
+    copy: 'Typisch 2–4 Minuten. Du kannst die technischen Details bei Bedarf aufklappen.',
+    chip: 'IN PROGRESS',
+    tone: 'chip-warning'
+  };
+};
+
 export function JobRuntimePanel({ initialJobId }: Props) {
   const [jobId, setJobId] = useState(initialJobId);
   const [job, setJob] = useState<JobPayload | null>(null);
@@ -20,6 +80,8 @@ export function JobRuntimePanel({ initialJobId }: Props) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const [alertResult, setAlertResult] = useState('');
+  const [downloadState, setDownloadState] = useState<'idle' | 'success' | 'error'>('idle');
+  const [downloadMessage, setDownloadMessage] = useState('');
 
   useEffect(() => {
     setJobId(initialJobId);
@@ -40,7 +102,7 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     try {
       const current = await fetchJob(token, jobId);
       setJob(current);
-      setStatus(`Job geladen: ${current.status}`);
+      setStatus(userFacingStatus(current.status).copy);
 
       if (current.status === 'READY' || current.status === 'PUBLISHED') {
         const listed = await fetchJobAssets(token, jobId);
@@ -226,6 +288,59 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     }
   }, [job]);
 
+  const currentStatus = (job?.status ?? null) as JobStatus | null;
+  const primaryStatus = useMemo(() => userFacingStatus(currentStatus), [currentStatus]);
+  const isPending = isPendingStatus(currentStatus);
+
+  const billingMeta = useMemo(() => {
+    if (job?.billing) {
+      return {
+        reserved: job.billing.reservation.reserved,
+        reservationAt: job.billing.reservation.at,
+        finalState: job.billing.finalization.state,
+        finalAt: job.billing.finalization.at,
+        note: job.billing.finalization.note,
+        entries: job.billing.entries
+      };
+    }
+
+    const timeline = job?.timeline ?? [];
+    const reservedEvent = timeline.find((entry) => entry.event === 'BILLING_CREDIT_RESERVED');
+    const releasedEvent = [...timeline].reverse().find((entry) => entry.event === 'BILLING_CREDIT_RELEASED');
+    const committedEvent = [...timeline].reverse().find((entry) => entry.event === 'BILLING_CREDIT_COMMITTED');
+
+    return {
+      reserved: Boolean(reservedEvent),
+      reservationAt: reservedEvent?.at ?? null,
+      finalState: committedEvent ? 'COMMITTED' : releasedEvent ? 'RELEASED' : 'PENDING',
+      finalAt: committedEvent?.at ?? releasedEvent?.at ?? null,
+      note: committedEvent?.detail ?? releasedEvent?.detail ?? null,
+      entries: []
+    };
+  }, [job]);
+
+  const handleDownload = async () => {
+    if (!finalVideo?.signedUrl) {
+      setDownloadState('error');
+      setDownloadMessage('Kein Download-Link gefunden.');
+      return;
+    }
+
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = finalVideo.signedUrl;
+      anchor.target = '_blank';
+      anchor.rel = 'noreferrer';
+      anchor.download = `${jobId || 'faceless-short'}.mp4`;
+      anchor.click();
+      setDownloadState('success');
+      setDownloadMessage('Download gestartet.');
+    } catch (error) {
+      setDownloadState('error');
+      setDownloadMessage(`Download fehlgeschlagen: ${asApiMessage(error)}`);
+    }
+  };
+
   const sendAlert = async () => {
     const token = readStoredToken();
     if (!token) {
@@ -246,7 +361,7 @@ export function JobRuntimePanel({ initialJobId }: Props) {
       <h2 id="runtime-title" className="section-title">
         Real Runtime Status (API, kein Mock)
       </h2>
-      <p className="section-copy">Mit Job-ID werden echte API-Daten abgefragt. Hier siehst du die echte Statuskette bis READY und den echten Export-Download.</p>
+      <p className="section-copy">Mit Job-ID werden echte API-Daten abgefragt. Hier siehst du den Live-Status, Download und Billing-Transparenz.</p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
         <label className="auth-field">
@@ -264,101 +379,151 @@ export function JobRuntimePanel({ initialJobId }: Props) {
         </button>
       </div>
 
-      {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
-      {alertResult ? <p className="section-copy" style={{ marginTop: 0 }}>{alertResult}</p> : null}
-
-      {storyboardMeta ? (
+      <section className="section-card" aria-live="polite" aria-busy={isPending}>
         <div className="action-row" style={{ marginTop: 0 }}>
-          <span className="chip chip-neutral">Mood: {storyboardMeta.moodPreset}</span>
-          <span className="chip chip-neutral">Concept: {storyboardMeta.conceptId}</span>
-          <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameLabel}</span>
-          <span className="chip chip-neutral">Candidate: {storyboardMeta.startFrameCandidateId}</span>
+          <h3 className="section-title" style={{ margin: 0, fontSize: '1rem' }}>
+            {primaryStatus.title}
+          </h3>
+          <span className={`chip ${primaryStatus.tone}`}>{primaryStatus.chip}</span>
         </div>
-      ) : null}
+        <p className="section-copy" style={{ marginTop: 0 }}>{primaryStatus.copy}</p>
 
-      {userControlsMeta ? (
-        <div className="action-row" style={{ marginTop: 0 }}>
-          <span className="chip chip-neutral">Controls</span>
-          <span className="chip chip-neutral">CTA: {userControlsMeta.ctaStrength}</span>
-          <span className="chip chip-neutral">Motion: {userControlsMeta.motionIntensity}</span>
-          <span className="chip chip-neutral">Pace: {userControlsMeta.shotPace}</span>
-          <span className="chip chip-neutral">Style: {userControlsMeta.visualStyle}</span>
-        </div>
-      ) : null}
+        {isPending ? (
+          <div className="pending-indicator" aria-hidden="true">
+            <div className="pending-indicator-bar" />
+          </div>
+        ) : null}
 
-      {finalSyncMeta ? (
         <div className="action-row" style={{ marginTop: 0 }}>
-          <span className="chip chip-success">Final Sync: {finalSyncMeta.avDeltaSeconds.toFixed(3)}s Drift</span>
-          <span className="chip chip-neutral">Mode: {finalSyncMeta.mode}</span>
-          <span className="chip chip-neutral">Tempo: {finalSyncMeta.tempo.toFixed(3)}x</span>
-          <span className="chip chip-neutral">
-            Dauer: {finalSyncMeta.outputSeconds.toFixed(2)}s / Ziel {finalSyncMeta.targetSeconds.toFixed(2)}s
+          <span className={`chip ${billingMeta.reserved ? 'chip-success' : 'chip-warning'}`}>
+            Credit reserviert: {billingMeta.reserved ? 'ja' : 'nein'}
           </span>
+          <span className="chip chip-neutral">Finalisierung: {billingMeta.finalState}</span>
+          {billingMeta.finalAt ? <span className="chip chip-neutral">Zeit: {billingMeta.finalAt}</span> : null}
         </div>
-      ) : null}
-
-      {motionMeta.enforced || motionMeta.final ? (
-        <div className="action-row" style={{ marginTop: 0 }}>
-          {motionMeta.enforced ? (
-            <span className={`chip ${motionMeta.enforced.withinThreshold ? 'chip-success' : 'chip-warning'}`}>
-              Motion Guard: {motionMeta.enforced.motionPhases ?? 0}/{motionMeta.enforced.minPhasesRequired ?? 0} Phasen
-            </span>
-          ) : null}
-          {motionMeta.enforced ? (
-            <span className="chip chip-neutral">
-              Statisch max: {(motionMeta.enforced.longestStaticSeconds ?? 0).toFixed(2)}s / {(motionMeta.enforced.maxStaticSecondsAllowed ?? 0).toFixed(2)}s
-            </span>
-          ) : null}
-          {motionMeta.enforced ? (
-            <span className="chip chip-neutral">Attempts: {motionMeta.enforced.attempts ?? 1}</span>
-          ) : null}
-          {motionMeta.final ? (
-            <span className="chip chip-success">Final Motion checked</span>
-          ) : null}
-        </div>
-      ) : null}
-
-      {captionSafeAreaMeta ? (
-        <div className="action-row" style={{ marginTop: 0 }}>
-          <span className="chip chip-success">Caption Safe Area angewendet</span>
-          <span className="chip chip-neutral">Scale: {captionSafeAreaMeta.scale.toFixed(3)}</span>
-          <span className="chip chip-neutral">
-            Ränder: {captionSafeAreaMeta.marginX}px / {captionSafeAreaMeta.marginY}px
-          </span>
-          <span className="chip chip-neutral">
-            Fläche: {captionSafeAreaMeta.safeWidth}×{captionSafeAreaMeta.safeHeight}
-          </span>
-        </div>
-      ) : null}
-
-      <ul className="list-clean" aria-label="Runtime timeline">
-        {(job?.timeline ?? []).slice(-10).reverse().map((event) => (
-          <li className="step-item" key={`${event.at}-${event.event}`}>
-            <div>
-              <p className="step-name">{event.event}</p>
-              <p className="step-sub">{event.at}</p>
-            </div>
-            <span className="badge">{job?.status ?? 'unknown'}</span>
-          </li>
-        ))}
-      </ul>
+      </section>
 
       {finalVideo ? (
-        <div className="section-card" style={{ marginTop: 4 }}>
+        <section className="section-card" style={{ marginTop: 4 }} aria-live="polite">
           <h3 className="section-title" style={{ margin: 0, fontSize: '1rem' }}>
             Export bereit
           </h3>
           <p className="section-copy">Finales Asset liegt vor und kann heruntergeladen werden.</p>
           <div className="action-row">
-            <a className="button" href={finalVideo.signedUrl} target="_blank" rel="noreferrer">
-              Export herunterladen
+            <button className="button" type="button" aria-label="Download MP4" onClick={() => void handleDownload()}>
+              Download MP4
+            </button>
+            <a className="button-ghost" href={finalVideo.signedUrl} target="_blank" rel="noreferrer">
+              In neuem Tab öffnen
             </a>
           </div>
+          {downloadMessage ? (
+            <p className={`section-copy ${downloadState === 'error' ? 'status-error' : 'status-success'}`} style={{ marginTop: 0 }}>
+              {downloadMessage}
+            </p>
+          ) : null}
           <p className="section-copy" style={{ marginTop: 0 }}>
             {finalVideo.objectPath}
           </p>
-        </div>
+        </section>
       ) : null}
+
+      {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
+      {alertResult ? <p className="section-copy" style={{ marginTop: 0 }}>{alertResult}</p> : null}
+
+      <details className="section-card" style={{ marginTop: 0 }}>
+        <summary className="section-title" style={{ cursor: 'pointer' }}>Technische Details / Diagnose</summary>
+
+        {storyboardMeta ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-neutral">Mood: {storyboardMeta.moodPreset}</span>
+            <span className="chip chip-neutral">Concept: {storyboardMeta.conceptId}</span>
+            <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameLabel}</span>
+            <span className="chip chip-neutral">Candidate: {storyboardMeta.startFrameCandidateId}</span>
+          </div>
+        ) : null}
+
+        {userControlsMeta ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-neutral">Controls</span>
+            <span className="chip chip-neutral">CTA: {userControlsMeta.ctaStrength}</span>
+            <span className="chip chip-neutral">Motion: {userControlsMeta.motionIntensity}</span>
+            <span className="chip chip-neutral">Pace: {userControlsMeta.shotPace}</span>
+            <span className="chip chip-neutral">Style: {userControlsMeta.visualStyle}</span>
+          </div>
+        ) : null}
+
+        {finalSyncMeta ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-success">Final Sync: {finalSyncMeta.avDeltaSeconds.toFixed(3)}s Drift</span>
+            <span className="chip chip-neutral">Mode: {finalSyncMeta.mode}</span>
+            <span className="chip chip-neutral">Tempo: {finalSyncMeta.tempo.toFixed(3)}x</span>
+            <span className="chip chip-neutral">
+              Dauer: {finalSyncMeta.outputSeconds.toFixed(2)}s / Ziel {finalSyncMeta.targetSeconds.toFixed(2)}s
+            </span>
+          </div>
+        ) : null}
+
+        {motionMeta.enforced || motionMeta.final ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            {motionMeta.enforced ? (
+              <span className={`chip ${motionMeta.enforced.withinThreshold ? 'chip-success' : 'chip-warning'}`}>
+                Motion Guard: {motionMeta.enforced.motionPhases ?? 0}/{motionMeta.enforced.minPhasesRequired ?? 0} Phasen
+              </span>
+            ) : null}
+            {motionMeta.enforced ? (
+              <span className="chip chip-neutral">
+                Statisch max: {(motionMeta.enforced.longestStaticSeconds ?? 0).toFixed(2)}s / {(motionMeta.enforced.maxStaticSecondsAllowed ?? 0).toFixed(2)}s
+              </span>
+            ) : null}
+            {motionMeta.enforced ? (
+              <span className="chip chip-neutral">Attempts: {motionMeta.enforced.attempts ?? 1}</span>
+            ) : null}
+            {motionMeta.final ? (
+              <span className="chip chip-success">Final Motion checked</span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {captionSafeAreaMeta ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-success">Caption Safe Area angewendet</span>
+            <span className="chip chip-neutral">Scale: {captionSafeAreaMeta.scale.toFixed(3)}</span>
+            <span className="chip chip-neutral">
+              Ränder: {captionSafeAreaMeta.marginX}px / {captionSafeAreaMeta.marginY}px
+            </span>
+            <span className="chip chip-neutral">
+              Fläche: {captionSafeAreaMeta.safeWidth}×{captionSafeAreaMeta.safeHeight}
+            </span>
+          </div>
+        ) : null}
+
+        {billingMeta.entries.length ? (
+          <ul className="list-clean" aria-label="Billing entries">
+            {billingMeta.entries.slice(-5).reverse().map((entry) => (
+              <li className="step-item" key={entry.id}>
+                <div>
+                  <p className="step-name">BILLING_{entry.type}</p>
+                  <p className="step-sub">{entry.createdAt}</p>
+                </div>
+                <span className="badge">{entry.amount}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        <ul className="list-clean" aria-label="Runtime timeline">
+          {(job?.timeline ?? []).slice(-10).reverse().map((event) => (
+            <li className="step-item" key={`${event.at}-${event.event}`}>
+              <div>
+                <p className="step-name">{event.event}</p>
+                <p className="step-sub">{event.at}</p>
+              </div>
+              <span className="badge">{job?.status ?? 'unknown'}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
     </article>
   );
 }
