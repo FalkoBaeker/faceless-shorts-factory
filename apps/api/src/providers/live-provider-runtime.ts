@@ -70,7 +70,9 @@ const cfg = {
   dailyBudgetEur: Number(process.env.DAILY_BUDGET_EUR ?? 10),
   maxRpmLlm: Number(process.env.MAX_RPM_LLM ?? 30),
   maxRpmTts: Number(process.env.MAX_RPM_TTS ?? 10),
-  maxRpmVideo: Number(process.env.MAX_RPM_VIDEO ?? 3)
+  maxRpmVideo: Number(process.env.MAX_RPM_VIDEO ?? 3),
+  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1',
+  openaiImageModelFallback: process.env.OPENAI_IMAGE_MODEL_FALLBACK ?? 'gpt-image-1'
 };
 
 type VariantType = 'SHORT_15' | 'MASTER_30';
@@ -256,6 +258,12 @@ const parseRangeFloat = (value: unknown, fallback: number, min: number, max: num
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+};
+
+const resolveImageModelOrder = () => {
+  const primary = String(cfg.openaiImageModel ?? 'gpt-image-1').trim() || 'gpt-image-1';
+  const fallback = String(cfg.openaiImageModelFallback ?? 'gpt-image-1').trim() || 'gpt-image-1';
+  return primary === fallback ? [primary] : [primary, fallback];
 };
 
 const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
@@ -617,7 +625,8 @@ export const runProviderHealthchecks = async () => {
     await openAiGet('/v1/models/gpt-4o-mini');
   });
   await probeWithRetry('openai-image', async () => {
-    await openAiGet('/v1/models/gpt-image-1');
+    const [primaryModel] = resolveImageModelOrder();
+    await openAiGet(`/v1/models/${primaryModel}`);
   });
   await probeWithRetry('openai-video', async () => {
     await openAiGet('/v1/models/sora-2');
@@ -749,17 +758,41 @@ export const generateScriptDraft = async (input: {
 
 const createImage = async (prompt: string) => {
   reserveBudget(0.04, 'image-generation');
-  const response = await openAiPostJson('/v1/images/generations', {
-    model: 'gpt-image-1',
-    prompt,
-    size: '1024x1024'
-  });
-  const data = Array.isArray(response.data) ? (response.data[0] as Record<string, unknown> | undefined) : undefined;
-  const b64 = data?.b64_json;
-  if (typeof b64 !== 'string' || !b64.length) {
-    throw new ProviderRuntimeError('IMAGE_B64_MISSING', { provider: 'openai', fatal: true });
+
+  const models = resolveImageModelOrder();
+  let lastError: unknown = null;
+
+  for (const model of models) {
+    try {
+      const response = await openAiPostJson('/v1/images/generations', {
+        model,
+        prompt,
+        size: '1024x1024'
+      });
+      const data = Array.isArray(response.data) ? (response.data[0] as Record<string, unknown> | undefined) : undefined;
+      const b64 = data?.b64_json;
+      if (typeof b64 !== 'string' || !b64.length) {
+        throw new ProviderRuntimeError(`IMAGE_B64_MISSING:${model}`, { provider: 'openai', fatal: true });
+      }
+      return Buffer.from(b64, 'base64');
+    } catch (error) {
+      lastError = error;
+      const message = String((error as Error)?.message ?? error);
+      const canFallback = model !== models[models.length - 1];
+      if (canFallback && /model|not found|unsupported|does not exist|invalid/i.test(message)) {
+        logEvent({
+          event: 'image_model_fallback',
+          level: 'WARN',
+          provider: 'openai',
+          detail: `primary=${model} fallback=${models[models.length - 1]} reason=${message.slice(0, 180)}`
+        });
+        continue;
+      }
+      throw error;
+    }
   }
-  return Buffer.from(b64, 'base64');
+
+  throw lastError instanceof Error ? lastError : new ProviderRuntimeError('IMAGE_GENERATION_FAILED', { provider: 'openai', fatal: true });
 };
 
 const createVideo = async (prompt: string, variantType: VariantType) => {
