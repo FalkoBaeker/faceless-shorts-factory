@@ -7,7 +7,7 @@
 ## 0) Preconditions
 1. `docker` running (`openclaw-pg`, `openclaw-redis` healthy)
 2. `.env` and `.env.providers` present (local only, never commit)
-   - API loader resolves env files from current dir **or parent dirs** (helps when start command runs from subfolders)
+   - API loader resolves env files from current dir/parents **and** repo-root fallback (helps when start command runs outside repo root)
 3. `AUTH_REQUIRED=true` for real auth test
 4. `ENABLE_AUTO_PUBLISH=false` for MVP mode
 5. `ENABLE_FREE_PLAN_MVP=true` (default) so free customer can run end-to-end flow
@@ -148,6 +148,11 @@ Expected:
   - verify Redis health
   - inspect `logs/app.log`
   - inspect DLQ: `GET /v1/dlq`
+  - if restart happened mid-job: check for `queue_stale_active_detected` / `QUEUE_STALE_ACTIVE_RECOVERED` timeline events
+- **`EADDRINUSE :3001` when starting API**
+  - another API process is already running
+  - run: `pkill -f "node --experimental-strip-types apps/api/src/main.ts" || true`
+  - restart once from repo root
 
 ## 9) Security hygiene reminders
 - never paste API keys in chat/logs

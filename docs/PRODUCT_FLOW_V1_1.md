@@ -177,3 +177,15 @@ Ein externer Free-Kunde kann:
 ---
 
 Dieses Dokument ist die Entscheidungs- und Umsetzungsbasis für den nächsten Implementierungspass.
+
+## 10) v1.4 Delta (geplant, 2026-02-28)
+
+Aus aktuellem User-Feedback (18 Punkte) wird der Flow in v1.4 erweitert:
+
+1. **Mood/Format → Creative Intent Matrix** (Mehrfachauswahl, stärkere Wirkungskontrolle)
+2. **Storyboard Light (editierbar)** statt technischer Prompt-Ansicht
+3. **Prompt Compiler v2 mit Background-Safeguard** (Hook/Motion/Shot-Diversity), außer explizit ruhigem Intent
+4. **Vereinfachte Pending-UX + klare Download-CTA + Login-UX-Fixes**
+5. **Caption/Audio/Hook-Qualität** als eigener Qualitätsblock
+
+Referenz-Tickets: `docs/IMPLEMENTATION_TICKETS_V1_4.md`
