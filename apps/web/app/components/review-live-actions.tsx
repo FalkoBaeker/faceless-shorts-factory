@@ -7,14 +7,17 @@ import {
   createProject,
   createScriptDraft,
   createStartFrameCandidates,
+  preflightStartFrame,
   uploadStartFrameReference,
   selectConcept,
   triggerGenerate,
   type ApiError,
+  type AudioMode,
   type CreativeIntentPayload,
   type MoodPreset,
   type ShotStyleTag,
   type StartFrameCandidatePayload,
+  type StartFramePreflightPayload,
   type StoryboardLightPayload
 } from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
@@ -171,6 +174,7 @@ export function ReviewLiveActions() {
   const router = useRouter();
   const [topic, setTopic] = useState('Sommerangebot für lokale Bäckerei in Berlin');
   const [variantType, setVariantType] = useState<'SHORT_15' | 'MASTER_30'>('SHORT_15');
+  const [audioMode, setAudioMode] = useState<AudioMode>('voiceover');
   const [effectGoals, setEffectGoals] = useState<Array<CreativeIntentPayload['effectGoals'][number]['id']>>(['sell_conversion']);
   const [narrativeFormats, setNarrativeFormats] = useState<Array<CreativeIntentPayload['narrativeFormats'][number]['id']>>(['commercial']);
   const [energyMode, setEnergyMode] = useState<'auto' | 'high' | 'calm'>('auto');
@@ -205,6 +209,7 @@ export function ReviewLiveActions() {
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [startFrameBusy, setStartFrameBusy] = useState(false);
+  const [startFramePolicy, setStartFramePolicy] = useState<StartFramePreflightPayload | null>(null);
   const [status, setStatus] = useState('');
 
   const primaryConceptOptions = useMemo(() => conceptOptions.filter((option) => option.primary), []);
@@ -237,6 +242,30 @@ export function ReviewLiveActions() {
     [startFrameCandidates, selectedStartFrameCandidateId]
   );
 
+  const activeStartframe = useMemo(() => {
+    if (uploadedStartFrame) {
+      return {
+        source: 'uploaded_asset' as const,
+        label: uploadedStartFrame.fileName,
+        detail: 'Upload aktiv — Upload gewinnt gegenüber Kandidatenauswahl.'
+      };
+    }
+
+    if (selectedStartFrameCandidate) {
+      return {
+        source: 'generated_candidate' as const,
+        label: selectedStartFrameCandidate.label,
+        detail: 'Kein Upload aktiv — ausgewählter Kandidat ist wirksam.'
+      };
+    }
+
+    return {
+      source: 'none' as const,
+      label: 'Kein Startframe gewählt',
+      detail: 'Bitte Kandidat auswählen oder Bild hochladen.'
+    };
+  }, [uploadedStartFrame, selectedStartFrameCandidate]);
+
   const organizationId = 'org_web_mvp';
 
   const generationBlocker = useMemo(() => {
@@ -244,16 +273,29 @@ export function ReviewLiveActions() {
     if (!narrativeFormats.length) return 'Bitte mindestens ein Narrative Format wählen.';
     if (!scriptAccepted || !scriptDraft.trim()) return 'Script prüfen und akzeptieren.';
     if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Startframe wählen oder eigenes Bild hochladen.';
+    if (startFramePolicy?.decision === 'block') {
+      return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
+    }
     return null;
-  }, [effectGoals.length, narrativeFormats.length, scriptAccepted, scriptDraft, selectedStartFrameCandidate, uploadedStartFrame]);
+  }, [
+    effectGoals.length,
+    narrativeFormats.length,
+    scriptAccepted,
+    scriptDraft,
+    selectedStartFrameCandidate,
+    uploadedStartFrame,
+    startFramePolicy
+  ]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
     setSelectedStartFrameCandidateId('');
+    setStartFramePolicy(null);
   };
 
   const resetUploadedReference = () => {
     setUploadedStartFrame(null);
+    setStartFramePolicy(null);
   };
 
   const toggleFromList = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
@@ -263,6 +305,49 @@ export function ReviewLiveActions() {
       ...prev,
       beats: prev.beats.map((beat) => (beat.beatId === beatId ? { ...beat, [field]: value } : beat))
     }));
+  };
+
+  const runStartFramePolicyPreflight = async (input: {
+    candidateId?: string;
+    style?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+    uploadObjectPath?: string;
+    referenceHint?: string;
+    customPrompt?: string;
+    sourceLabel?: string;
+  }) => {
+    const token = readStoredToken();
+    if (!token) return;
+
+    try {
+      const preflight = await preflightStartFrame(token, {
+        topic,
+        conceptId,
+        startFrameCandidateId: input.candidateId,
+        startFrameStyle: input.style,
+        startFrameUploadObjectPath: input.uploadObjectPath,
+        startFrameReferenceHint: input.referenceHint,
+        startFrameCustomPrompt: input.customPrompt
+      });
+
+      setStartFramePolicy(preflight);
+
+      if (preflight.decision === 'block') {
+        setStatus(`Startframe-Policy blockiert: ${preflight.userMessage} (${preflight.reasonCode}). ${preflight.remediation}`);
+      } else if (preflight.decision === 'fallback') {
+        setStatus(
+          `Startframe-Policy Fallback aktiv (${preflight.reasonCode}). Effektiv: ${preflight.effectiveStartFrameLabel ?? preflight.effectiveStartFrameStyle}.`
+        );
+      } else {
+        setStatus(
+          input.sourceLabel
+            ? `Startframe aktiv (${input.sourceLabel}). Policy-Preflight bestanden.`
+            : 'Startframe-Policy-Preflight bestanden.'
+        );
+      }
+    } catch (error) {
+      setStartFramePolicy(null);
+      setStatus(`Startframe-Preflight fehlgeschlagen: ${asApiMessage(error)}`);
+    }
   };
 
   const prepareScript = async () => {
@@ -334,6 +419,7 @@ export function ReviewLiveActions() {
       setStartFrameCandidates(response.candidates);
       setSelectedStartFrameCandidateId('');
       setUploadedStartFrame(null);
+      setStartFramePolicy(null);
       setStatus('Startframe-Kandidaten bereit. Bitte visuell auswählen oder eigenes Bild nutzen.');
     } catch (error) {
       setStatus(`Startframe-Kandidaten fehlgeschlagen: ${asApiMessage(error)}`);
@@ -387,7 +473,14 @@ export function ReviewLiveActions() {
         mimeType: uploaded.mimeType
       });
       setSelectedStartFrameCandidateId('');
-      setStatus('Eigenes Referenzbild hochgeladen und aktiv. Es wird direkt in die Generierung eingespeist.');
+
+      await runStartFramePolicyPreflight({
+        style: 'owner_portrait',
+        uploadObjectPath: uploaded.objectPath,
+        referenceHint: file.name,
+        customPrompt: `Nutzer-Referenzbild (${file.name}) hochgeladen.`,
+        sourceLabel: 'Upload aktiv'
+      });
     } catch (error) {
       setStatus(`Upload fehlgeschlagen: ${asApiMessage(error)}`);
     } finally {
@@ -408,19 +501,36 @@ export function ReviewLiveActions() {
     }
 
     setBusy(true);
-    setStatus('Erstelle Projekt ...');
+    setStatus('Prüfe Startframe-Policy ...');
     try {
-      const project = await createProject(token, {
-        organizationId,
-        topic,
-        variantType
-      });
-
       const customPrompt = uploadedStartFrame
         ? `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) ist hochgeladen: ${uploadedStartFrame.objectPath}. Nutze dieses Motiv als Startframe und als visuelle Leitplanke.`
         : undefined;
 
       const fallbackStyle = defaultStyleByConcept[conceptId];
+
+      const preflight = await preflightStartFrame(token, {
+        topic,
+        conceptId,
+        startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
+        startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
+        startFrameCustomPrompt: customPrompt,
+        startFrameReferenceHint: uploadedStartFrame?.fileName,
+        startFrameUploadObjectPath: uploadedStartFrame?.objectPath
+      });
+      setStartFramePolicy(preflight);
+
+      if (preflight.decision === 'block') {
+        setStatus(`Startframe blockiert: ${preflight.userMessage} ${preflight.remediation}`);
+        return;
+      }
+
+      setStatus('Erstelle Projekt ...');
+      const project = await createProject(token, {
+        organizationId,
+        topic,
+        variantType
+      });
 
       setStatus(
         uploadedStartFrame
@@ -440,7 +550,8 @@ export function ReviewLiveActions() {
         startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
         startFrameCustomPrompt: customPrompt,
         startFrameReferenceHint: uploadedStartFrame?.fileName,
-        startFrameUploadObjectPath: uploadedStartFrame?.objectPath
+        startFrameUploadObjectPath: uploadedStartFrame?.objectPath,
+        audioMode
       });
 
       setStatus('Starte Generierung ...');
@@ -509,6 +620,30 @@ export function ReviewLiveActions() {
           </button>
         ) : null}
       </div>
+
+      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+        Audio-Strategie
+      </h3>
+      <div className="chip-wrap" role="list" aria-label="Audio Mode Auswahl">
+        {([
+          { id: 'voiceover', label: 'Voiceover (stabil)' },
+          { id: 'scene', label: 'Scene Audio (experimentell)' },
+          { id: 'hybrid', label: 'Hybrid VO+Scene (experimentell)' }
+        ] as const).map((mode) => (
+          <button
+            key={mode.id}
+            type="button"
+            className={`state-toggle ${audioMode === mode.id ? 'active' : ''}`}
+            onClick={() => setAudioMode(mode.id)}
+            aria-pressed={audioMode === mode.id}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+      <p className="section-copy" style={{ marginTop: 0 }}>
+        Scene/Hybrid können bei fehlender Szenen-Audiospur automatisch auf Voiceover zurückfallen.
+      </p>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
         Creative Intent Matrix
@@ -703,6 +838,24 @@ export function ReviewLiveActions() {
         Startframe-Kandidaten (Pflicht)
       </h3>
       <div className="action-row" style={{ marginTop: 8 }}>
+        <span className={`chip ${activeStartframe.source === 'none' ? 'chip-warning' : 'chip-success'}`}>
+          Aktiv: {activeStartframe.label}
+        </span>
+        <span className="chip chip-neutral">Rule: Upload gewinnt über Kandidat</span>
+        <span className="chip chip-neutral">Source: {activeStartframe.source}</span>
+        {startFramePolicy ? (
+          <span className={`chip ${startFramePolicy.decision === 'block' ? 'chip-danger' : startFramePolicy.decision === 'fallback' ? 'chip-warning' : 'chip-success'}`}>
+            Policy: {startFramePolicy.decision} ({startFramePolicy.reasonCode})
+          </span>
+        ) : null}
+      </div>
+      <p className="section-copy" style={{ marginTop: 0 }}>{activeStartframe.detail}</p>
+      {startFramePolicy ? (
+        <p className="section-copy" style={{ marginTop: 0 }}>
+          {startFramePolicy.userMessage} {startFramePolicy.remediation}
+        </p>
+      ) : null}
+      <div className="action-row" style={{ marginTop: 8 }}>
         <button className="button-ghost" type="button" disabled={busy || startFrameBusy || !scriptAccepted} onClick={prepareStartFrames}>
           {startFrameBusy ? 'Erzeuge Kandidaten ...' : '3 Startframe-Kandidaten erzeugen'}
         </button>
@@ -720,6 +873,11 @@ export function ReviewLiveActions() {
                 onClick={() => {
                   setSelectedStartFrameCandidateId(candidate.candidateId);
                   setUploadedStartFrame(null);
+                  void runStartFramePolicyPreflight({
+                    candidateId: candidate.candidateId,
+                    style: candidate.style,
+                    sourceLabel: `Kandidat aktiv (${candidate.label})`
+                  });
                 }}
                 aria-pressed={selected}
                 title={candidate.description}
@@ -808,11 +966,17 @@ export function ReviewLiveActions() {
       <div className="action-row" style={{ marginTop: 0 }}>
         <span className="chip chip-neutral">Legacy-Mood: {selectedMoodLabel}</span>
         <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
+        <span className="chip chip-neutral">Audio: {audioMode}</span>
         <span className="chip chip-neutral">Intent: {effectGoals.length} Goals / {narrativeFormats.length} Formats</span>
         <span className="chip chip-neutral">Shot-Styles: {shotStyles.length}</span>
-        <span className={`chip ${selectedStartFrameCandidate || uploadedStartFrame ? 'chip-success' : 'chip-warning'}`}>
-          {selectedStartFrameCandidate || uploadedStartFrame ? 'Startframe gewählt' : 'Startframe fehlt'}
+        <span className={`chip ${activeStartframe.source === 'none' ? 'chip-warning' : 'chip-success'}`}>
+          {activeStartframe.source === 'none' ? 'Startframe fehlt' : `Startframe aktiv (${activeStartframe.source})`}
         </span>
+        {startFramePolicy ? (
+          <span className={`chip ${startFramePolicy.decision === 'block' ? 'chip-danger' : startFramePolicy.decision === 'fallback' ? 'chip-warning' : 'chip-success'}`}>
+            Policy {startFramePolicy.decision}
+          </span>
+        ) : null}
       </div>
     </article>
   );

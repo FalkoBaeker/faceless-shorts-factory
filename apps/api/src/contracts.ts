@@ -24,6 +24,8 @@ export type ShotStyleTag =
   | 'wide_establishing'
   | 'fast_cut_montage';
 
+export type AudioMode = 'voiceover' | 'scene' | 'hybrid';
+
 export type CreativeIntentSelection<T extends string = string> = {
   id: T;
   weight?: number;
@@ -51,6 +53,28 @@ export type StoryboardLight = {
   hookHint?: string;
   ctaHint?: string;
   pacingHint?: string;
+};
+
+export type ScriptDialogLine = {
+  speaker: string;
+  text: string;
+  tone?: string;
+  startHintSeconds?: number;
+  endHintSeconds?: number;
+};
+
+export type ScriptSceneBlock = {
+  order: number;
+  action: string;
+  lines?: ScriptDialogLine[];
+  onScreenText?: string;
+};
+
+export type ScriptV2 = {
+  language?: string;
+  openingHook?: string;
+  narration?: string;
+  scenes: ScriptSceneBlock[];
 };
 
 /** @deprecated legacy controls; replaced by creativeIntent + storyboardLight */
@@ -82,6 +106,7 @@ export type SelectConceptRequest = {
   creativeIntent?: CreativeIntentMatrix;
   storyboardLight?: StoryboardLight;
   approvedScript?: string;
+  approvedScriptV2?: ScriptV2;
   startFrameCandidateId?: string;
   startFrameStyle?:
     | 'storefront_hero'
@@ -93,6 +118,7 @@ export type SelectConceptRequest = {
   startFrameCustomPrompt?: string;
   startFrameReferenceHint?: string;
   startFrameUploadObjectPath?: string;
+  audioMode?: AudioMode;
   userControls?: UserControlProfile;
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
 };
@@ -112,6 +138,7 @@ export type ScriptDraftRequest = {
 
 export type ScriptDraftResponse = {
   script: string;
+  scriptV2?: ScriptV2;
   targetSeconds: number;
   estimatedSeconds: number;
   withinTarget: boolean;
@@ -150,6 +177,28 @@ export type StartFrameCandidatesResponse = {
     prompt: string;
     thumbnailUrl: string;
   }>;
+};
+
+export type StartFramePreflightRequest = {
+  topic: string;
+  conceptId?: string;
+  startFrameCandidateId?: string;
+  startFrameStyle?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+  startFrameCustomPrompt?: string;
+  startFrameReferenceHint?: string;
+  startFrameUploadObjectPath?: string;
+};
+
+export type StartFramePreflightResponse = {
+  decision: 'allow' | 'fallback' | 'block';
+  reasonCode: string;
+  userMessage: string;
+  remediation: string;
+  source: 'uploaded_asset' | 'generated_candidate' | 'none';
+  precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE';
+  effectiveStartFrameStyle?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+  effectiveStartFrameLabel?: string;
+  matchedSignals: string[];
 };
 
 export type JobStatusResponse = {
@@ -192,9 +241,18 @@ export type JobStatusResponse = {
   explainability?: {
     intentRules: string[];
     hookRule: string | null;
+    hookTemplateId?: string | null;
+    firstSecondQualityThreshold?: 'strict' | 'relaxed' | null;
     shotStyleSet: ShotStyleTag[];
     safetyConstraints: string[];
     calmExceptionApplied: boolean;
+    imageModel?: {
+      configuredPrimaryModel: string | null;
+      configuredFallbackModel: string | null;
+      attemptedModels: string[];
+      modelUsed: string | null;
+      fallbackUsed: boolean;
+    } | null;
   };
 };
 

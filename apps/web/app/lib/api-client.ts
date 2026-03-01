@@ -95,6 +95,8 @@ export type ShotStyleTag =
   | 'wide_establishing'
   | 'fast_cut_montage';
 
+export type AudioMode = 'voiceover' | 'scene' | 'hybrid';
+
 export type CreativeIntentSelection<T extends string = string> = {
   id: T;
   weight?: number;
@@ -130,6 +132,18 @@ export type StartFrameUploadPayload = {
   signedUrl: string;
   bytes: number;
   mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+};
+
+export type StartFramePreflightPayload = {
+  decision: 'allow' | 'fallback' | 'block';
+  reasonCode: string;
+  userMessage: string;
+  remediation: string;
+  source: 'uploaded_asset' | 'generated_candidate' | 'none';
+  precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE';
+  effectiveStartFrameStyle?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+  effectiveStartFrameLabel?: string;
+  matchedSignals: string[];
 };
 
 export type JobStatus =
@@ -174,9 +188,18 @@ export type JobPayload = {
   explainability?: {
     intentRules: string[];
     hookRule: string | null;
+    hookTemplateId?: string | null;
+    firstSecondQualityThreshold?: 'strict' | 'relaxed' | null;
     shotStyleSet: ShotStyleTag[];
     safetyConstraints: string[];
     calmExceptionApplied: boolean;
+    imageModel?: {
+      configuredPrimaryModel: string | null;
+      configuredFallbackModel: string | null;
+      attemptedModels: string[];
+      modelUsed: string | null;
+      fallbackUsed: boolean;
+    } | null;
   };
 };
 
@@ -315,6 +338,24 @@ export const createStartFrameCandidates = (
     body: payload
   });
 
+export const preflightStartFrame = (
+  token: string,
+  payload: {
+    topic: string;
+    conceptId: string;
+    startFrameCandidateId?: string;
+    startFrameStyle?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+    startFrameCustomPrompt?: string;
+    startFrameReferenceHint?: string;
+    startFrameUploadObjectPath?: string;
+  }
+) =>
+  requestJson<StartFramePreflightPayload>('/v1/startframes/preflight', {
+    method: 'POST',
+    token,
+    body: payload
+  });
+
 export const selectConcept = (
   token: string,
   projectId: string,
@@ -336,6 +377,7 @@ export const selectConcept = (
     startFrameCustomPrompt?: string;
     startFrameReferenceHint?: string;
     startFrameUploadObjectPath?: string;
+    audioMode?: AudioMode;
     userControls?: UserControlsPayload;
   }
 ) =>
@@ -354,6 +396,7 @@ export const selectConcept = (
       startFrameCustomPrompt: payload.startFrameCustomPrompt,
       startFrameReferenceHint: payload.startFrameReferenceHint,
       startFrameUploadObjectPath: payload.startFrameUploadObjectPath,
+      audioMode: payload.audioMode,
       userControls: payload.userControls,
       variantType: payload.variantType
     }

@@ -9,10 +9,12 @@ import {
   normalizeCreativeIntent,
   deriveLegacyMoodPresetFromIntent,
   normalizeStoryboardLight,
+  resolveHookTemplateId,
   type UserControlProfile,
   type CreativeIntentMatrix,
   type StoryboardLight,
-  type ShotStyleTag
+  type ShotStyleTag,
+  type HookTemplateId
 } from '../services/creative-consistency.ts';
 import { logEvent } from '../utils/app-logger.ts';
 
@@ -327,6 +329,8 @@ const resolveMoodPreset = (mood?: string): MoodPreset => {
 type PromptCompilerMeta = {
   intentRules: string[];
   hookRule: string | null;
+  hookTemplateId: HookTemplateId | null;
+  firstSecondQualityThreshold: 'strict' | 'relaxed';
   shotStyleSet: ShotStyleTag[];
   safetyConstraints: string[];
   calmExceptionApplied: boolean;
@@ -437,6 +441,33 @@ const renderStoryboardLightPrompt = (storyboardLight?: StoryboardLight) => {
     .join(' ');
 };
 
+const hookTemplateLibrary: Record<HookTemplateId, { ruleId: string; prompt: string }> = {
+  hook_offer_urgency: {
+    ruleId: 'HOOK_TEMPLATE_OFFER_URGENCY',
+    prompt: 'Hook template (offer/urgency): Open with immediate scarcity or time-bound value in second one.'
+  },
+  hook_problem_pain: {
+    ruleId: 'HOOK_TEMPLATE_PROBLEM_PAIN',
+    prompt: 'Hook template (problem/pain): Start with a painful relatable moment before any explanation.'
+  },
+  hook_social_proof: {
+    ruleId: 'HOOK_TEMPLATE_SOCIAL_PROOF',
+    prompt: 'Hook template (social proof): Open with a concrete customer signal or trust marker instantly.'
+  },
+  hook_curiosity: {
+    ruleId: 'HOOK_TEMPLATE_CURIOSITY',
+    prompt: 'Hook template (curiosity): Open with a provocative question or unexpected claim in first second.'
+  },
+  hook_fun_pattern_break: {
+    ruleId: 'HOOK_TEMPLATE_FUN_PATTERN_BREAK',
+    prompt: 'Hook template (fun/pattern-break): Start with an intentional pattern interrupt or playful surprise.'
+  },
+  hook_default: {
+    ruleId: 'HOOK_TEMPLATE_DEFAULT',
+    prompt: 'Hook template (default): First second must contain a concrete trigger and clear narrative pull.'
+  }
+};
+
 const compilePromptV2 = (input: {
   baseSegments: string[];
   intent: CreativeIntentMatrix;
@@ -451,13 +482,21 @@ const compilePromptV2 = (input: {
   const intentPrompt = renderIntentPrompt(input.intent);
   promptParts.push(intentPrompt.text);
 
-  let hookRule: string | null = 'HOOK_ENHANCER_DEFAULT';
+  const hookTemplateId = resolveHookTemplateId(input.intent);
+  const hookTemplate = hookTemplateLibrary[hookTemplateId] ?? hookTemplateLibrary.hook_default;
+
+  let hookRule: string | null = hookTemplate.ruleId;
   if (input.intent.energyMode === 'calm') {
     hookRule = null;
     suppressedRules.push('HOOK_ENHANCER_SUPPRESSED_CALM_MODE');
+    suppressedRules.push(hookTemplate.ruleId);
   } else {
     promptParts.push('Hook enhancer: first second must open with a sharp visual trigger and immediate narrative tension.');
+    promptParts.push(hookTemplate.prompt);
+    promptParts.push('Hook quality threshold: first line must be immediately concrete, high-contrast and scroll-stopping.');
     appliedRules.push('HOOK_ENHANCER_APPLIED');
+    appliedRules.push(hookTemplate.ruleId);
+    appliedRules.push('HOOK_FIRST_SECOND_QUALITY_THRESHOLD_STRICT');
   }
 
   if (input.intent.energyMode === 'calm') {
@@ -488,6 +527,8 @@ const compilePromptV2 = (input: {
       `energy:${input.intent.energyMode ?? 'auto'}`
     ],
     hookRule,
+    hookTemplateId: input.intent.energyMode === 'calm' ? null : hookTemplateId,
+    firstSecondQualityThreshold: input.intent.energyMode === 'calm' ? 'relaxed' : 'strict',
     shotStyleSet: intentPrompt.shotStyleSet,
     safetyConstraints: input.safetyConstraints,
     calmExceptionApplied: input.intent.energyMode === 'calm',
@@ -950,8 +991,10 @@ const createImage = async (prompt: string) => {
 
   const models = resolveImageModelOrder();
   let lastError: unknown = null;
+  const attemptedModels: string[] = [];
 
   for (const model of models) {
+    attemptedModels.push(model);
     try {
       const response = await openAiPostJson('/v1/images/generations', {
         model,
@@ -963,7 +1006,17 @@ const createImage = async (prompt: string) => {
       if (typeof b64 !== 'string' || !b64.length) {
         throw new ProviderRuntimeError(`IMAGE_B64_MISSING:${model}`, { provider: 'openai', fatal: true });
       }
-      return Buffer.from(b64, 'base64');
+
+      return {
+        bytes: Buffer.from(b64, 'base64'),
+        diagnostics: {
+          configuredPrimaryModel: models[0],
+          configuredFallbackModel: models.length > 1 ? models[models.length - 1] : null,
+          attemptedModels,
+          modelUsed: model,
+          fallbackUsed: model !== models[0]
+        }
+      };
     } catch (error) {
       lastError = error;
       const message = String((error as Error)?.message ?? error);
@@ -1606,6 +1659,23 @@ export const runVideoStage = async (input: {
   creativeIntent?: CreativeIntentMatrix;
   storyboardLight?: StoryboardLight;
   approvedScript?: string;
+  approvedScriptV2?: {
+    language?: string;
+    openingHook?: string;
+    narration?: string;
+    scenes: Array<{
+      order: number;
+      action: string;
+      lines?: Array<{
+        speaker: string;
+        text: string;
+        tone?: string;
+        startHintSeconds?: number;
+        endHintSeconds?: number;
+      }>;
+      onScreenText?: string;
+    }>;
+  };
   userControls?: Partial<UserControlProfile>;
 }) => {
   await runProviderHealthchecks();
@@ -1652,9 +1722,41 @@ export const runVideoStage = async (input: {
     .filter(Boolean)
     .join(' ');
 
-  const draft = input.approvedScript?.trim()
+  const scriptFromV2 = (() => {
+    const v2 = input.approvedScriptV2;
+    if (!v2 || !Array.isArray(v2.scenes) || !v2.scenes.length) return '';
+
+    const parts: string[] = [];
+    if (v2.openingHook?.trim()) parts.push(v2.openingHook.trim());
+    if (v2.narration?.trim()) parts.push(v2.narration.trim());
+
+    for (const scene of v2.scenes
+      .slice()
+      .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))) {
+      if (scene.action?.trim()) parts.push(scene.action.trim());
+      for (const line of scene.lines ?? []) {
+        const speaker = String(line.speaker ?? '').trim();
+        const text = String(line.text ?? '').trim();
+        if (speaker && text) parts.push(`${speaker}: ${text}`);
+      }
+      if (scene.onScreenText?.trim()) parts.push(scene.onScreenText.trim());
+    }
+
+    const joined = parts
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return joined ? ensureSentenceEnding(joined) : '';
+  })();
+
+  const approvedScript = input.approvedScript?.trim() || scriptFromV2;
+
+  const draft = approvedScript
     ? (() => {
-        const script = ensureSentenceEnding(input.approvedScript.trim());
+        const script = ensureSentenceEnding(approvedScript);
         const estimatedSeconds = estimateSpeechSeconds(script);
         return {
           script,
@@ -1722,19 +1824,20 @@ export const runVideoStage = async (input: {
     legacyControls: legacyUserControls
   });
 
-  const imageBytes = await createImage(imageCompiled.prompt);
+  const imageResult = await createImage(imageCompiled.prompt);
   const motionVideo = await createVideoWithMotionEnforcement({
     prompt: videoCompiled.prompt,
     variantType: input.variantType,
     requirement: motionRequirement
   });
 
-  const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageBytes, 'image/png', 'openai-image');
+  const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');
   const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, motionVideo.video.bytes, 'video/mp4', 'openai-video');
 
   return {
     script: llmText,
     image: imageAsset,
+    imageDiagnostics: imageResult.diagnostics,
     video: videoAsset,
     referenceAsset,
     videoModel: motionVideo.video.model,
@@ -1759,16 +1862,272 @@ export const runVideoStage = async (input: {
   };
 };
 
-export const runAudioStage = async (input: { jobId: string; script: string }) => {
+const extractSceneAudioTrack = (videoBytes: Buffer): Buffer | null => {
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-scene-audio-'));
+  const inputVideo = join(dir, 'input.mp4');
+  const outputAudio = join(dir, 'scene.mp3');
+
+  try {
+    writeFileSync(inputVideo, videoBytes);
+
+    const run = spawnSync(
+      'ffmpeg',
+      ['-y', '-loglevel', 'error', '-i', inputVideo, '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'mp3', outputAudio],
+      { encoding: 'utf8' }
+    );
+
+    if (run.status !== 0) {
+      return null;
+    }
+
+    const bytes = readFileSync(outputAudio);
+    if (!bytes.length) return null;
+    return bytes;
+  } catch {
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const mixVoiceAndSceneAudio = (voiceBytes: Buffer, sceneBytes: Buffer): Buffer => {
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-hybrid-audio-'));
+  const inputVoice = join(dir, 'voice.mp3');
+  const inputScene = join(dir, 'scene.mp3');
+  const output = join(dir, 'hybrid.mp3');
+
+  try {
+    writeFileSync(inputVoice, voiceBytes);
+    writeFileSync(inputScene, sceneBytes);
+
+    const run = spawnSync(
+      'ffmpeg',
+      [
+        '-y',
+        '-loglevel',
+        'error',
+        '-i',
+        inputVoice,
+        '-i',
+        inputScene,
+        '-filter_complex',
+        '[1:a]volume=0.35[scene];[0:a][scene]amix=inputs=2:weights=1 0.8:normalize=0,alimiter=limit=0.95[a]',
+        '-map',
+        '[a]',
+        '-c:a',
+        'mp3',
+        '-b:a',
+        '160k',
+        output
+      ],
+      { encoding: 'utf8' }
+    );
+
+    if (run.status !== 0) {
+      throw new ProviderRuntimeError(`FFMPEG_HYBRID_AUDIO_MIX_FAILED:${run.stderr?.slice(0, 300) ?? 'unknown'}`, {
+        provider: 'ffmpeg',
+        fatal: false
+      });
+    }
+
+    const bytes = readFileSync(output);
+    if (!bytes.length) {
+      throw new ProviderRuntimeError('FFMPEG_HYBRID_AUDIO_EMPTY', {
+        provider: 'ffmpeg',
+        fatal: false
+      });
+    }
+
+    return bytes;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+export const runAudioStage = async (input: {
+  jobId: string;
+  script: string;
+  audioMode?: 'voiceover' | 'scene' | 'hybrid';
+  videoObjectPath?: string;
+}) => {
   await runProviderHealthchecks();
 
-  const audio = await createTts(input.script);
-  const audioAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/voice.mp3`, audio.bytes, 'audio/mpeg', audio.provider);
+  const selectedMode = input.audioMode ?? 'voiceover';
+  let effectiveMode: 'voiceover' | 'scene' | 'hybrid' = selectedMode;
+  let fallbackApplied = false;
+  let fallbackReason: string | null = null;
+  let sceneAudioDetected = false;
+  let ttsProvider: string | null = null;
 
-  return {
-    audio: audioAsset,
-    ttsProvider: audio.provider
+  const fallbackToVoiceover = async (reason: string) => {
+    fallbackApplied = true;
+    fallbackReason = reason;
+    effectiveMode = 'voiceover';
+    const tts = await createTts(input.script);
+    ttsProvider = tts.provider;
+    const audioAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/voice.mp3`, tts.bytes, 'audio/mpeg', tts.provider);
+    return audioAsset;
   };
+
+  if (selectedMode === 'voiceover') {
+    const tts = await createTts(input.script);
+    ttsProvider = tts.provider;
+    const audioAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/voice.mp3`, tts.bytes, 'audio/mpeg', tts.provider);
+    return {
+      audio: audioAsset,
+      ttsProvider: tts.provider,
+      audioStrategy: {
+        selectedMode,
+        effectiveMode,
+        fallbackApplied,
+        fallbackReason,
+        sceneAudioDetected,
+        ttsProvider,
+        modeCompatibility: {
+          voiceover: 'stable',
+          scene: 'experimental',
+          hybrid: 'experimental'
+        }
+      }
+    };
+  }
+
+  if (!input.videoObjectPath) {
+    const fallbackAsset = await fallbackToVoiceover('VIDEO_ASSET_MISSING');
+    return {
+      audio: fallbackAsset,
+      ttsProvider,
+      audioStrategy: {
+        selectedMode,
+        effectiveMode,
+        fallbackApplied,
+        fallbackReason,
+        sceneAudioDetected,
+        ttsProvider,
+        modeCompatibility: {
+          voiceover: 'stable',
+          scene: 'experimental',
+          hybrid: 'experimental'
+        }
+      }
+    };
+  }
+
+  const videoBytes = await supabaseDownload(input.videoObjectPath);
+  const sceneBytes = extractSceneAudioTrack(videoBytes);
+  sceneAudioDetected = Boolean(sceneBytes && sceneBytes.length > 0);
+
+  if (selectedMode === 'scene') {
+    if (!sceneBytes) {
+      const fallbackAsset = await fallbackToVoiceover('SCENE_AUDIO_NOT_AVAILABLE');
+      return {
+        audio: fallbackAsset,
+        ttsProvider,
+        audioStrategy: {
+          selectedMode,
+          effectiveMode,
+          fallbackApplied,
+          fallbackReason,
+          sceneAudioDetected,
+          ttsProvider,
+          modeCompatibility: {
+            voiceover: 'stable',
+            scene: 'experimental',
+            hybrid: 'experimental'
+          }
+        }
+      };
+    }
+
+    const audioAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/scene.mp3`, sceneBytes, 'audio/mpeg', 'scene-audio');
+    return {
+      audio: audioAsset,
+      ttsProvider,
+      audioStrategy: {
+        selectedMode,
+        effectiveMode,
+        fallbackApplied,
+        fallbackReason,
+        sceneAudioDetected,
+        ttsProvider,
+        modeCompatibility: {
+          voiceover: 'stable',
+          scene: 'experimental',
+          hybrid: 'experimental'
+        }
+      }
+    };
+  }
+
+  const tts = await createTts(input.script);
+  ttsProvider = tts.provider;
+
+  if (!sceneBytes) {
+    const voiceAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/voice.mp3`, tts.bytes, 'audio/mpeg', tts.provider);
+    fallbackApplied = true;
+    fallbackReason = 'HYBRID_SCENE_AUDIO_UNAVAILABLE';
+    effectiveMode = 'voiceover';
+
+    return {
+      audio: voiceAsset,
+      ttsProvider,
+      audioStrategy: {
+        selectedMode,
+        effectiveMode,
+        fallbackApplied,
+        fallbackReason,
+        sceneAudioDetected,
+        ttsProvider,
+        modeCompatibility: {
+          voiceover: 'stable',
+          scene: 'experimental',
+          hybrid: 'experimental'
+        }
+      }
+    };
+  }
+
+  try {
+    const hybridBytes = mixVoiceAndSceneAudio(tts.bytes, sceneBytes);
+    const hybridAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/hybrid.mp3`, hybridBytes, 'audio/mpeg', 'hybrid-mix');
+
+    return {
+      audio: hybridAsset,
+      ttsProvider,
+      audioStrategy: {
+        selectedMode,
+        effectiveMode,
+        fallbackApplied,
+        fallbackReason,
+        sceneAudioDetected,
+        ttsProvider,
+        modeCompatibility: {
+          voiceover: 'stable',
+          scene: 'experimental',
+          hybrid: 'experimental'
+        }
+      }
+    };
+  } catch {
+    const fallbackAsset = await fallbackToVoiceover('HYBRID_MIX_FAILED');
+    return {
+      audio: fallbackAsset,
+      ttsProvider,
+      audioStrategy: {
+        selectedMode,
+        effectiveMode,
+        fallbackApplied,
+        fallbackReason,
+        sceneAudioDetected,
+        ttsProvider,
+        modeCompatibility: {
+          voiceover: 'stable',
+          scene: 'experimental',
+          hybrid: 'experimental'
+        }
+      }
+    };
+  }
 };
 
 export const runAssemblyStage = async (input: {

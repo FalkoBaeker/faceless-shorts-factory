@@ -98,6 +98,35 @@ const testimonialPattern = /(ich|wir|kunde|kundin|erfahrung|bewertung|stimme|tes
 const offerPattern = /(angebot|rabatt|vorteil|preis|deal|aktion|bundle|spar|mehrwert)/i;
 const hookPattern = /(achtung|stop|stell dir vor|du kennst das|endlich|warum|in nur|sofort|so gewinnst|hier ist)/i;
 
+export type HookTemplateId =
+  | 'hook_offer_urgency'
+  | 'hook_problem_pain'
+  | 'hook_social_proof'
+  | 'hook_curiosity'
+  | 'hook_fun_pattern_break'
+  | 'hook_default';
+
+const hookTemplatePattern: Record<HookTemplateId, RegExp> = {
+  hook_offer_urgency: /(nur heute|jetzt sichern|limitierte|letzte chance|nur noch|angebot endet|sofort)/i,
+  hook_problem_pain: /(kennst du das|problem|nervt|frust|zu teuer|zu langsam|endlich loswerden|schluss mit)/i,
+  hook_social_proof: /(kund|bewertung|stimme|testimonial|vertrauen|empfehlen|erfahrung)/i,
+  hook_curiosity: /(stell dir vor|was wäre wenn|warum|so geht|hier ist|in nur|der trick)/i,
+  hook_fun_pattern_break: /(warte|plot twist|cringe|unexpected|du glaubst nicht|stop|achtung)/i,
+  hook_default: hookPattern
+};
+
+export const resolveHookTemplateId = (intent: CreativeIntentMatrix): HookTemplateId => {
+  const effectIds = intent.effectGoals.map((entry) => entry.id);
+  const narrativeIds = intent.narrativeFormats.map((entry) => entry.id);
+
+  if (effectIds.includes('urgency_offer') || narrativeIds.includes('offer_focus')) return 'hook_offer_urgency';
+  if (narrativeIds.includes('problem_solution') || narrativeIds.includes('before_after')) return 'hook_problem_pain';
+  if (effectIds.includes('testimonial_trust') || narrativeIds.includes('dialog')) return 'hook_social_proof';
+  if (effectIds.includes('funny') || effectIds.includes('cringe_hook')) return 'hook_fun_pattern_break';
+  if (effectIds.includes('sell_conversion') || narrativeIds.includes('commercial')) return 'hook_curiosity';
+  return 'hook_default';
+};
+
 const compatibleStyles: Record<StoryboardConceptId, StartFrameStyle[]> = {
   concept_web_vertical_slice: ['storefront_hero', 'product_macro', 'owner_portrait', 'hands_at_work', 'before_after_split'],
   concept_offer_focus: ['product_macro', 'storefront_hero', 'hands_at_work'],
@@ -328,6 +357,7 @@ export const validateCreativeConsistency = (input: CreativeConsistencyInput): Cr
   });
 
   const firstSentence = script.split(/[.!?…]/)[0]?.trim() ?? '';
+  const firstSentenceWords = firstSentence.split(/\s+/).filter(Boolean).length;
   const explicitIntentProvided =
     Boolean(input.creativeIntent?.effectGoals?.length) ||
     Boolean(input.creativeIntent?.narrativeFormats?.length) ||
@@ -339,10 +369,15 @@ export const validateCreativeConsistency = (input: CreativeConsistencyInput): Cr
     intent.effectGoals.some((entry) => ['sell_conversion', 'urgency_offer', 'cringe_hook'].includes(entry.id));
   const calmMode = intent.energyMode === 'calm';
 
+  const hookTemplateId = resolveHookTemplateId(intent);
+  const hookTemplateHit = hookTemplatePattern[hookTemplateId].test(firstSentence);
+  const hookFallbackHit = hookPattern.test(firstSentence);
+  const firstSentenceImpactEnough = firstSentence.length >= (highEnergyIntent ? 18 : 12) && firstSentenceWords <= 18;
+
   checks.push({
     id: 'HOOK_FIRST_SECOND_QUALITY',
-    ok: !explicitIntentProvided || calmMode || hookPattern.test(firstSentence),
-    detail: `strict=${explicitIntentProvided} calmMode=${calmMode} firstSentenceLength=${firstSentence.length}`
+    ok: !explicitIntentProvided || calmMode || ((hookTemplateHit || hookFallbackHit) && firstSentenceImpactEnough),
+    detail: `strict=${explicitIntentProvided} calmMode=${calmMode} template=${hookTemplateId} templateHit=${hookTemplateHit} fallbackHit=${hookFallbackHit} firstSentenceLength=${firstSentence.length} firstSentenceWords=${firstSentenceWords}`
   });
 
   const intentAlignmentSignals = [

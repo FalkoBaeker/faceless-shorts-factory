@@ -169,13 +169,21 @@ export function JobRuntimePanel({ initialJobId }: Props) {
         startFrameStyle?: string;
         startFrameCandidateId?: string;
         startFrameLabel?: string;
+        startFrameMode?: string;
+        effectiveStartFrameSource?: string;
+        precedenceRuleApplied?: string;
+        startFrameReferenceObjectPath?: string | null;
       };
       return {
         conceptId: parsed.conceptId ?? 'unknown',
         moodPreset: parsed.moodPreset ?? 'unknown',
         startFrameStyle: parsed.startFrameStyle ?? 'unknown',
         startFrameCandidateId: parsed.startFrameCandidateId ?? 'unknown',
-        startFrameLabel: parsed.startFrameLabel ?? parsed.startFrameStyle ?? 'unknown'
+        startFrameLabel: parsed.startFrameLabel ?? parsed.startFrameStyle ?? 'unknown',
+        startFrameMode: parsed.startFrameMode ?? 'unknown',
+        effectiveStartFrameSource: parsed.effectiveStartFrameSource ?? 'unknown',
+        precedenceRuleApplied: parsed.precedenceRuleApplied ?? 'UPLOAD_WINS_OVER_CANDIDATE',
+        startFrameReferenceObjectPath: parsed.startFrameReferenceObjectPath ?? null
       };
     } catch {
       return null;
@@ -210,6 +218,32 @@ export function JobRuntimePanel({ initialJobId }: Props) {
       enforced: parse(enforced?.detail),
       final: parse(finalMotion?.detail)
     };
+  }, [job]);
+
+  const audioModeMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'AUDIO_MODE_APPLIED' && entry.detail);
+    if (!event?.detail) return null;
+
+    try {
+      const parsed = JSON.parse(event.detail) as {
+        selectedMode?: string;
+        effectiveMode?: string;
+        fallbackApplied?: boolean;
+        fallbackReason?: string | null;
+        sceneAudioDetected?: boolean;
+      };
+      return {
+        selectedMode: parsed.selectedMode ?? 'voiceover',
+        effectiveMode: parsed.effectiveMode ?? 'voiceover',
+        fallbackApplied: Boolean(parsed.fallbackApplied),
+        fallbackReason: parsed.fallbackReason ?? null,
+        sceneAudioDetected: Boolean(parsed.sceneAudioDetected)
+      };
+    } catch {
+      return null;
+    }
   }, [job]);
 
   const finalSyncMeta = useMemo(() => {
@@ -263,6 +297,8 @@ export function JobRuntimePanel({ initialJobId }: Props) {
       return null;
     }
   }, [job]);
+
+  const explainabilityMeta = useMemo(() => job?.explainability ?? null, [job]);
 
   const currentStatus = (job?.status ?? null) as JobStatus | null;
   const primaryStatus = useMemo(() => userFacingStatus(currentStatus), [currentStatus]);
@@ -415,7 +451,45 @@ export function JobRuntimePanel({ initialJobId }: Props) {
             <span className="chip chip-neutral">Mood: {storyboardMeta.moodPreset}</span>
             <span className="chip chip-neutral">Concept: {storyboardMeta.conceptId}</span>
             <span className="chip chip-neutral">Startframe: {storyboardMeta.startFrameLabel}</span>
+            <span className="chip chip-neutral">Source: {storyboardMeta.effectiveStartFrameSource}</span>
+            <span className="chip chip-neutral">Mode: {storyboardMeta.startFrameMode}</span>
+            <span className="chip chip-neutral">Rule: {storyboardMeta.precedenceRuleApplied}</span>
             <span className="chip chip-neutral">Candidate: {storyboardMeta.startFrameCandidateId}</span>
+            {storyboardMeta.startFrameReferenceObjectPath ? (
+              <span className="chip chip-neutral">Reference: attached</span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {explainabilityMeta ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-neutral">Hook Rule: {explainabilityMeta.hookRule ?? 'none'}</span>
+            <span className="chip chip-neutral">Hook Template: {explainabilityMeta.hookTemplateId ?? 'none'}</span>
+            <span className="chip chip-neutral">
+              First-second threshold: {explainabilityMeta.firstSecondQualityThreshold ?? 'n/a'}
+            </span>
+            {explainabilityMeta.imageModel ? (
+              <>
+                <span className="chip chip-neutral">Image model used: {explainabilityMeta.imageModel.modelUsed ?? 'unknown'}</span>
+                <span className="chip chip-neutral">
+                  Primary/Fallback: {explainabilityMeta.imageModel.configuredPrimaryModel ?? 'n/a'} / {explainabilityMeta.imageModel.configuredFallbackModel ?? 'n/a'}
+                </span>
+                <span className={`chip ${explainabilityMeta.imageModel.fallbackUsed ? 'chip-warning' : 'chip-success'}`}>
+                  Image fallback: {explainabilityMeta.imageModel.fallbackUsed ? 'yes' : 'no'}
+                </span>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        {audioModeMeta ? (
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-neutral">Audio selected: {audioModeMeta.selectedMode}</span>
+            <span className="chip chip-neutral">Audio effective: {audioModeMeta.effectiveMode}</span>
+            <span className={`chip ${audioModeMeta.fallbackApplied ? 'chip-warning' : 'chip-success'}`}>
+              Fallback: {audioModeMeta.fallbackApplied ? 'yes' : 'no'}
+            </span>
+            {audioModeMeta.fallbackReason ? <span className="chip chip-neutral">Reason: {audioModeMeta.fallbackReason}</span> : null}
           </div>
         ) : null}
 

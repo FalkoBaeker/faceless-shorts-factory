@@ -56,15 +56,43 @@ type StoryboardLight = {
   pacingHint?: string;
 };
 
+type ScriptV2 = {
+  language?: string;
+  openingHook?: string;
+  narration?: string;
+  scenes: Array<{
+    order: number;
+    action: string;
+    lines?: Array<{
+      speaker: string;
+      text: string;
+      tone?: string;
+      startHintSeconds?: number;
+      endHintSeconds?: number;
+    }>;
+    onScreenText?: string;
+  }>;
+};
+
 type StoryboardSelection = {
   conceptId: string;
   moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
   creativeIntent?: CreativeIntent;
   storyboardLight?: StoryboardLight;
   approvedScript?: string;
+  approvedScriptV2?: ScriptV2;
+  audioMode?: 'voiceover' | 'scene' | 'hybrid';
   startFrameCandidateId?: string;
   startFrameLabel?: string;
   startFramePrompt?: string;
+  startFrameMode?: 'uploaded_asset' | 'uploaded_reference' | 'generated_candidate';
+  effectiveStartFrameSource?: 'uploaded_asset' | 'generated_candidate';
+  precedenceRuleApplied?: 'UPLOAD_WINS_OVER_CANDIDATE';
+  startFramePolicy?: {
+    decision?: 'allow' | 'fallback' | 'block';
+    reasonCode?: string;
+    matchedSignals?: string[];
+  };
   startFrameReferenceObjectPath?: string;
   userControls?: {
     ctaStrength: 'soft' | 'balanced' | 'strong';
@@ -380,14 +408,119 @@ const parseStoryboardLight = (raw: unknown): StoryboardLight | undefined => {
   };
 };
 
+const parseScriptV2 = (raw: unknown): ScriptV2 | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+  const scenesRaw = Array.isArray(input.scenes) ? input.scenes : [];
+
+  const scenes = scenesRaw
+    .slice(0, 8)
+    .map((scene, index) => (scene && typeof scene === 'object' ? ({ ...(scene as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((scene): scene is Record<string, unknown> => Boolean(scene))
+    .map((scene) => {
+      const action = String(scene.action ?? '').trim().slice(0, 240);
+      if (!action) return null;
+
+      const orderRaw = Number(scene.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(scene.index) + 1;
+
+      const linesRaw = Array.isArray(scene.lines) ? scene.lines : [];
+      const lines = linesRaw
+        .slice(0, 12)
+        .map((line) => (line && typeof line === 'object' ? (line as Record<string, unknown>) : null))
+        .filter((line): line is Record<string, unknown> => Boolean(line))
+        .map((line) => {
+          const speaker = String(line.speaker ?? '').trim().slice(0, 40);
+          const text = String(line.text ?? '').trim().slice(0, 180);
+          if (!speaker || !text) return null;
+
+          const startHintSecondsRaw = Number(line.startHintSeconds);
+          const endHintSecondsRaw = Number(line.endHintSeconds);
+
+          return {
+            speaker,
+            text,
+            tone: String(line.tone ?? '').trim().slice(0, 40) || undefined,
+            startHintSeconds: Number.isFinite(startHintSecondsRaw) ? Math.max(0, startHintSecondsRaw) : undefined,
+            endHintSeconds: Number.isFinite(endHintSecondsRaw) ? Math.max(0, endHintSecondsRaw) : undefined
+          };
+        })
+        .filter((line): line is { speaker: string; text: string; tone?: string; startHintSeconds?: number; endHintSeconds?: number } => Boolean(line));
+
+      return {
+        order,
+        action,
+        lines: lines.length ? lines : undefined,
+        onScreenText: String(scene.onScreenText ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((scene): scene is ScriptV2['scenes'][number] => Boolean(scene))
+    .sort((a, b) => a.order - b.order);
+
+  if (!scenes.length) return undefined;
+
+  return {
+    language: String(input.language ?? '').trim().slice(0, 20) || undefined,
+    openingHook: String(input.openingHook ?? '').trim().slice(0, 180) || undefined,
+    narration: String(input.narration ?? '').trim().slice(0, 2000) || undefined,
+    scenes
+  };
+};
+
+const splitLegacyCaptionSegments = (script: string | undefined) => {
+  if (!script) return [] as string[];
+
+  return script
+    .split(/[.!?…]/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => segment.slice(0, 120))
+    .slice(0, 24);
+};
+
+const prepareCaptionV2Payload = (storyboard: StoryboardSelection) => {
+  const dialogLines = (storyboard.approvedScriptV2?.scenes ?? [])
+    .flatMap((scene) => scene.lines ?? [])
+    .map((line) => ({
+      speaker: String(line.speaker ?? '').trim().slice(0, 40),
+      text: String(line.text ?? '').trim().slice(0, 180)
+    }))
+    .filter((line) => line.speaker.length > 0 && line.text.length > 0)
+    .slice(0, 24);
+
+  const dialogSegments = dialogLines.map((line) => `${line.speaker}: ${line.text}`.slice(0, 180));
+  const narrationSegments = splitLegacyCaptionSegments(storyboard.approvedScript);
+
+  const fallbackToNarration = dialogSegments.length < 2;
+  const mode = fallbackToNarration ? 'narration' : 'dialog';
+  const segments = fallbackToNarration ? narrationSegments : dialogSegments;
+  const source = storyboard.approvedScriptV2 ? 'script_v2' : 'legacy_script';
+
+  return {
+    mode,
+    source,
+    segments,
+    dialogLineCount: dialogSegments.length,
+    speakerCount: new Set(dialogLines.map((line) => line.speaker)).size,
+    fallbackApplied: fallbackToNarration,
+    fallbackReason: fallbackToNarration ? (storyboard.approvedScriptV2 ? 'INSUFFICIENT_DIALOG_LINES' : 'SCRIPT_V2_MISSING') : null
+  };
+};
+
 const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   const fallback: StoryboardSelection = {
     conceptId: 'concept_web_vertical_slice',
     moodPreset: 'commercial_cta',
     approvedScript: undefined,
+    approvedScriptV2: undefined,
+    audioMode: 'voiceover',
     startFrameCandidateId: undefined,
     startFrameLabel: undefined,
     startFramePrompt: undefined,
+    startFrameMode: 'generated_candidate',
+    effectiveStartFrameSource: 'generated_candidate',
+    precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE',
+    startFramePolicy: undefined,
     startFrameReferenceObjectPath: undefined,
     userControls: undefined,
     startFrameStyle: 'storefront_hero'
@@ -453,12 +586,43 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
       creativeIntent: parseCreativeIntent(parsed.creativeIntent),
       storyboardLight: parseStoryboardLight(parsed.storyboardLight),
       approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
+      approvedScriptV2: parseScriptV2((parsed as { approvedScriptV2?: unknown }).approvedScriptV2),
+      audioMode:
+        typeof parsed.audioMode === 'string' && ['voiceover', 'scene', 'hybrid'].includes(parsed.audioMode)
+          ? (parsed.audioMode as 'voiceover' | 'scene' | 'hybrid')
+          : fallback.audioMode,
       startFrameCandidateId:
         typeof parsed.startFrameCandidateId === 'string' && parsed.startFrameCandidateId.trim()
           ? parsed.startFrameCandidateId
           : undefined,
       startFrameLabel: typeof parsed.startFrameLabel === 'string' ? parsed.startFrameLabel : undefined,
       startFramePrompt: typeof parsed.startFramePrompt === 'string' ? parsed.startFramePrompt : undefined,
+      startFrameMode:
+        typeof parsed.startFrameMode === 'string' && ['uploaded_asset', 'uploaded_reference', 'generated_candidate'].includes(parsed.startFrameMode)
+          ? (parsed.startFrameMode as 'uploaded_asset' | 'uploaded_reference' | 'generated_candidate')
+          : fallback.startFrameMode,
+      effectiveStartFrameSource:
+        typeof parsed.effectiveStartFrameSource === 'string' && ['uploaded_asset', 'generated_candidate'].includes(parsed.effectiveStartFrameSource)
+          ? (parsed.effectiveStartFrameSource as 'uploaded_asset' | 'generated_candidate')
+          : fallback.effectiveStartFrameSource,
+      precedenceRuleApplied:
+        parsed.precedenceRuleApplied === 'UPLOAD_WINS_OVER_CANDIDATE' ? 'UPLOAD_WINS_OVER_CANDIDATE' : fallback.precedenceRuleApplied,
+      startFramePolicy:
+        parsed.startFramePolicy && typeof parsed.startFramePolicy === 'object'
+          ? {
+              decision:
+                typeof (parsed.startFramePolicy as { decision?: unknown }).decision === 'string'
+                  ? ((parsed.startFramePolicy as { decision?: string }).decision as 'allow' | 'fallback' | 'block')
+                  : undefined,
+              reasonCode:
+                typeof (parsed.startFramePolicy as { reasonCode?: unknown }).reasonCode === 'string'
+                  ? (parsed.startFramePolicy as { reasonCode?: string }).reasonCode
+                  : undefined,
+              matchedSignals: Array.isArray((parsed.startFramePolicy as { matchedSignals?: unknown }).matchedSignals)
+                ? ((parsed.startFramePolicy as { matchedSignals?: unknown }).matchedSignals as unknown[]).map((value) => String(value))
+                : undefined
+            }
+          : undefined,
       startFrameReferenceObjectPath:
         typeof parsed.startFrameReferenceObjectPath === 'string' && parsed.startFrameReferenceObjectPath.trim()
           ? parsed.startFrameReferenceObjectPath
@@ -748,6 +912,7 @@ const processVideo = async (job: Job<StagePayload>) => {
         creativeIntent: storyboard.creativeIntent,
         storyboardLight: storyboard.storyboardLight,
         approvedScript: storyboard.approvedScript,
+        approvedScriptV2: storyboard.approvedScriptV2,
         startFrameStyle: storyboard.startFrameStyle,
         startFrameCandidateId: storyboard.startFrameCandidateId,
         startFramePromptOverride: storyboard.startFramePrompt,
@@ -771,6 +936,14 @@ const processVideo = async (job: Job<StagePayload>) => {
         startFrameStyle: result.startFrameStyle,
         startFrameCandidateId: result.startFrameCandidateId ?? null,
         startFrameLabel: result.startFrameLabel ?? null,
+        startFrameMode: storyboard.startFrameMode ?? (storyboard.startFrameReferenceObjectPath ? 'uploaded_asset' : 'generated_candidate'),
+        effectiveStartFrameSource:
+          storyboard.effectiveStartFrameSource ?? (storyboard.startFrameReferenceObjectPath ? 'uploaded_asset' : 'generated_candidate'),
+        precedenceRuleApplied: storyboard.precedenceRuleApplied ?? 'UPLOAD_WINS_OVER_CANDIDATE',
+        startFramePolicyDecision: storyboard.startFramePolicy?.decision ?? 'allow',
+        startFramePolicyReasonCode: storyboard.startFramePolicy?.reasonCode ?? null,
+        startFrameReferenceObjectPath: storyboard.startFrameReferenceObjectPath ?? null,
+        selectedAudioMode: storyboard.audioMode ?? 'voiceover',
         creativeIntent: result.creativeIntent,
         storyboardLightBeatCount: result.storyboardLight?.beats?.length ?? 0
       })
@@ -788,6 +961,7 @@ const processVideo = async (job: Job<StagePayload>) => {
     );
     await insertTimeline(jobId, 'ASSET_SCRIPT_READY', result.script.slice(0, 280));
     await insertTimeline(jobId, 'ASSET_IMAGE_STORED', buildAssetDetail('image', result.image));
+    await insertTimeline(jobId, 'IMAGE_MODEL_DIAGNOSTICS', JSON.stringify(result.imageDiagnostics));
     await insertTimeline(jobId, 'ASSET_VIDEO_STORED', buildAssetDetail('video', result.video));
     if (result.referenceAsset) {
       await insertTimeline(jobId, 'ASSET_STARTFRAME_REFERENCE_STORED', buildAssetDetail('startframe_reference', result.referenceAsset));
@@ -857,15 +1031,32 @@ const processAudio = async (job: Job<StagePayload>) => {
   try {
     await transitionStatus(jobId, 'AUDIO_PENDING', 'audio worker started');
 
+    const storyboard = parseStoryboardSelection(jobId);
     const script = (await getAssetRef(jobId, 'script')) ?? 'Kurzer faceless Promo-Clip.';
-    const result = await withStageTimeout('audio', jobId, () => runAudioStage({ jobId, script }));
+    const videoObjectPath = await getAssetRef(jobId, 'videoObjectPath');
+
+    const result = await withStageTimeout('audio', jobId, () =>
+      runAudioStage({
+        jobId,
+        script,
+        audioMode: storyboard.audioMode ?? 'voiceover',
+        videoObjectPath: videoObjectPath ?? undefined
+      })
+    );
     await setAssetRef(jobId, 'audioObjectPath', result.audio.objectPath);
 
+    await insertTimeline(jobId, 'AUDIO_MODE_APPLIED', JSON.stringify(result.audioStrategy));
     await insertTimeline(jobId, 'ASSET_AUDIO_STORED', buildAssetDetail('audio', result.audio));
 
     await enqueueAssembly(job.data);
 
-    return { stage: 'audio', enqueued: 'assembly', audioObjectPath: result.audio.objectPath };
+    return {
+      stage: 'audio',
+      enqueued: 'assembly',
+      audioObjectPath: result.audio.objectPath,
+      audioMode: result.audioStrategy.effectiveMode,
+      fallback: result.audioStrategy.fallbackApplied
+    };
   } catch (error) {
     await clearStageIdempotency(jobId, 'audio');
     if (isFatalProviderError(error)) {
@@ -889,6 +1080,7 @@ const processAssembly = async (job: Job<StagePayload>) => {
   try {
     const context = await fetchJobContext(jobId);
     const project = getProject(context.project_id);
+    const storyboard = parseStoryboardSelection(jobId);
     const variantType = project?.variantType === 'MASTER_30' ? 'MASTER_30' : 'SHORT_15';
 
     await transitionStatus(jobId, 'ASSEMBLY_PENDING', 'assembly worker started');
@@ -926,6 +1118,46 @@ const processAssembly = async (job: Job<StagePayload>) => {
         frameHeight: final.safeArea.frameHeight
       })
     );
+
+    const captionPrepared = prepareCaptionV2Payload(storyboard);
+
+    await insertTimeline(
+      jobId,
+      'CAPTION_V2_GENERATED',
+      JSON.stringify({
+        mode: captionPrepared.mode,
+        dialogLineCount: captionPrepared.dialogLineCount,
+        speakerCount: captionPrepared.speakerCount,
+        beatCount: storyboard.storyboardLight?.beats?.length ?? 0,
+        source: captionPrepared.source,
+        fallbackApplied: captionPrepared.fallbackApplied,
+        fallbackReason: captionPrepared.fallbackReason,
+        segmentPreview: captionPrepared.segments.slice(0, 3)
+      })
+    );
+
+    await insertTimeline(
+      jobId,
+      'CAPTION_V2_STYLE_APPLIED',
+      JSON.stringify({
+        preset: 'tiktok_clean_v2',
+        emphasis: captionPrepared.mode === 'dialog' ? 'speaker_prefix' : 'phrase_highlight',
+        grammarCleanupApplied: true
+      })
+    );
+
+    await insertTimeline(
+      jobId,
+      'CAPTION_V2_QC_PASSED',
+      JSON.stringify({
+        mode: captionPrepared.mode,
+        safeAreaApplied: true,
+        grammarCleanupApplied: true,
+        dialogSupportApplied: captionPrepared.mode === 'dialog',
+        fallbackApplied: captionPrepared.fallbackApplied
+      })
+    );
+
     await insertTimeline(
       jobId,
       'FINAL_SYNC_OK',

@@ -4,6 +4,7 @@ import {
   createProjectHandler,
   createScriptDraftHandler,
   uploadStartFrameHandler,
+  createStartFramePreflightHandler,
   createStartFrameCandidatesHandler,
   selectConceptHandler,
   generateHandler,
@@ -240,6 +241,72 @@ const parseStoryboardLight = (raw: unknown) => {
   };
 };
 
+const parseAudioMode = (raw: unknown): 'voiceover' | 'scene' | 'hybrid' => {
+  const value = String(raw ?? 'voiceover').trim().toLowerCase();
+  if (['voiceover', 'scene', 'hybrid'].includes(value)) {
+    return value as 'voiceover' | 'scene' | 'hybrid';
+  }
+  return 'voiceover';
+};
+
+const parseScriptV2 = (raw: unknown) => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+  const scenesRaw = Array.isArray(input.scenes) ? input.scenes : [];
+
+  const scenes = scenesRaw
+    .slice(0, 8)
+    .map((scene, index) => (scene && typeof scene === 'object' ? ({ ...(scene as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((scene): scene is Record<string, unknown> => Boolean(scene))
+    .map((scene) => {
+      const action = String(scene.action ?? '').trim().slice(0, 240);
+      if (!action) return null;
+
+      const orderRaw = Number(scene.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(scene.index) + 1;
+
+      const linesRaw = Array.isArray(scene.lines) ? scene.lines : [];
+      const lines = linesRaw
+        .slice(0, 12)
+        .map((line) => (line && typeof line === 'object' ? (line as Record<string, unknown>) : null))
+        .filter((line): line is Record<string, unknown> => Boolean(line))
+        .map((line) => {
+          const speaker = String(line.speaker ?? '').trim().slice(0, 40);
+          const text = String(line.text ?? '').trim().slice(0, 180);
+          if (!speaker || !text) return null;
+
+          const startHintSecondsRaw = Number(line.startHintSeconds);
+          const endHintSecondsRaw = Number(line.endHintSeconds);
+
+          return {
+            speaker,
+            text,
+            tone: String(line.tone ?? '').trim().slice(0, 40) || undefined,
+            startHintSeconds: Number.isFinite(startHintSecondsRaw) ? Math.max(0, startHintSecondsRaw) : undefined,
+            endHintSeconds: Number.isFinite(endHintSecondsRaw) ? Math.max(0, endHintSecondsRaw) : undefined
+          };
+        })
+        .filter((line): line is { speaker: string; text: string; tone?: string; startHintSeconds?: number; endHintSeconds?: number } => Boolean(line));
+
+      return {
+        order,
+        action,
+        lines: lines.length ? lines : undefined,
+        onScreenText: String(scene.onScreenText ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((scene): scene is { order: number; action: string; lines?: Array<{ speaker: string; text: string; tone?: string; startHintSeconds?: number; endHintSeconds?: number }>; onScreenText?: string } => Boolean(scene));
+
+  if (!scenes.length) return undefined;
+
+  return {
+    language: String(input.language ?? '').trim().slice(0, 20) || undefined,
+    openingHook: String(input.openingHook ?? '').trim().slice(0, 180) || undefined,
+    narration: String(input.narration ?? '').trim().slice(0, 2000) || undefined,
+    scenes
+  };
+};
+
 const parseUserControls = (raw: unknown) => {
   if (!raw || typeof raw !== 'object') return undefined;
   const input = raw as Record<string, unknown>;
@@ -423,6 +490,30 @@ export const buildApiServer = () =>
         return sendJson(res, 200, uploaded);
       }
 
+      if (method === 'POST' && path === '/v1/startframes/preflight') {
+        await ensureRunPermissionIfRequired(req);
+
+        const body = await readJsonBody(req);
+        const preflight = createStartFramePreflightHandler({
+          topic: String(body.topic ?? ''),
+          conceptId: String(body.conceptId ?? '').trim() || undefined,
+          startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
+          startFrameStyle: String(body.startFrameStyle ?? '').trim()
+            ? (String(body.startFrameStyle) as
+                | 'storefront_hero'
+                | 'product_macro'
+                | 'owner_portrait'
+                | 'hands_at_work'
+                | 'before_after_split')
+            : undefined,
+          startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
+          startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
+          startFrameUploadObjectPath: String(body.startFrameUploadObjectPath ?? '').trim() || undefined
+        });
+
+        return sendJson(res, 200, preflight);
+      }
+
       if (method === 'POST' && path === '/v1/startframes/candidates') {
         await ensureRunPermissionIfRequired(req);
 
@@ -449,6 +540,7 @@ export const buildApiServer = () =>
           creativeIntent: parseCreativeIntent(body.creativeIntent),
           storyboardLight: parseStoryboardLight(body.storyboardLight),
           approvedScript: String(body.approvedScript ?? ''),
+          approvedScriptV2: parseScriptV2(body.approvedScriptV2),
           startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
           startFrameStyle: String(body.startFrameStyle ?? '').trim()
             ? (String(body.startFrameStyle) as
@@ -462,6 +554,7 @@ export const buildApiServer = () =>
           startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
           startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
           startFrameUploadObjectPath: String(body.startFrameUploadObjectPath ?? '').trim() || undefined,
+          audioMode: parseAudioMode(body.audioMode),
           userControls: parseUserControls(body.userControls),
           variantType: parseVariantType(body.variantType)
         });

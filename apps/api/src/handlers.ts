@@ -3,12 +3,15 @@ import type {
   CreateProjectResponse,
   SelectConceptRequest,
   SelectConceptResponse,
+  ScriptV2,
   ScriptDraftRequest,
   ScriptDraftResponse,
   StartFrameUploadRequest,
   StartFrameUploadResponse,
   StartFrameCandidatesRequest,
   StartFrameCandidatesResponse,
+  StartFramePreflightRequest,
+  StartFramePreflightResponse,
   JobStatusResponse,
   LedgerResponse,
   PublishResponse,
@@ -41,6 +44,11 @@ import {
   validateCreativeConsistency,
   type ShotStyleTag
 } from './services/creative-consistency.ts';
+import {
+  evaluateStartframePolicyPreflight,
+  startFrameLabelByStyle,
+  startFramePromptByStyle
+} from './services/startframe-policy.ts';
 
 const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
@@ -53,6 +61,95 @@ const normalizeVariantType = (variantType: 'SHORT_15' | 'MASTER_30'): 'SHORT_15'
 
 const estimatedSecondsForVariant = (variantType: 'SHORT_15' | 'MASTER_30') =>
   variantType === 'MASTER_30' && premium60Enabled() ? 60 : 30;
+
+const normalizeScriptV2 = (input: ScriptV2 | undefined): ScriptV2 | undefined => {
+  if (!input || !Array.isArray(input.scenes)) return undefined;
+
+  const scenes = input.scenes
+    .slice(0, 8)
+    .map((scene, index) => {
+      const action = String(scene?.action ?? '').trim().slice(0, 240);
+      if (!action) return null;
+
+      const lines = Array.isArray(scene?.lines)
+        ? scene.lines
+            .slice(0, 12)
+            .map((line) => {
+              const speaker = String(line?.speaker ?? '').trim().slice(0, 40);
+              const text = String(line?.text ?? '').trim().slice(0, 180);
+              if (!speaker || !text) return null;
+
+              return {
+                speaker,
+                text,
+                tone: String(line?.tone ?? '').trim().slice(0, 40) || undefined,
+                startHintSeconds:
+                  Number.isFinite(line?.startHintSeconds) && Number(line.startHintSeconds) >= 0
+                    ? Number(line.startHintSeconds)
+                    : undefined,
+                endHintSeconds:
+                  Number.isFinite(line?.endHintSeconds) && Number(line.endHintSeconds) >= 0
+                    ? Number(line.endHintSeconds)
+                    : undefined
+              };
+            })
+            .filter(
+              (line): line is {
+                speaker: string;
+                text: string;
+                tone?: string;
+                startHintSeconds?: number;
+                endHintSeconds?: number;
+              } => Boolean(line)
+            )
+        : undefined;
+
+      return {
+        order: Number.isFinite(scene?.order) ? Math.max(1, Math.floor(Number(scene.order))) : index + 1,
+        action,
+        lines: lines?.length ? lines : undefined,
+        onScreenText: String(scene?.onScreenText ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((scene): scene is ScriptV2['scenes'][number] => Boolean(scene))
+    .sort((a, b) => a.order - b.order);
+
+  if (!scenes.length) return undefined;
+
+  return {
+    language: String(input.language ?? '').trim().slice(0, 20) || undefined,
+    openingHook: String(input.openingHook ?? '').trim().slice(0, 180) || undefined,
+    narration: String(input.narration ?? '').trim().slice(0, 2000) || undefined,
+    scenes
+  };
+};
+
+const buildScriptFromV2 = (input: ScriptV2 | undefined): string => {
+  const normalized = normalizeScriptV2(input);
+  if (!normalized) return '';
+
+  const segments: string[] = [];
+  if (normalized.openingHook) segments.push(normalized.openingHook);
+  if (normalized.narration) segments.push(normalized.narration);
+
+  for (const scene of normalized.scenes) {
+    segments.push(scene.action);
+    for (const line of scene.lines ?? []) {
+      segments.push(`${line.speaker}: ${line.text}`);
+    }
+    if (scene.onScreenText) segments.push(scene.onScreenText);
+  }
+
+  const text = segments
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!text) return '';
+  return /[.!?…]$/.test(text) ? text : `${text}.`;
+};
 
 const buildBillingLifecycle = (jobId: string, organizationId?: string) => {
   const entries = listLedgerForJob(jobId, organizationId);
@@ -112,19 +209,57 @@ const buildExplainability = (timeline: Array<{ at: string; event: string; detail
         ? 'hook_enhancer_default'
         : null;
 
+  const hookTemplateId = typeof compilerDetail?.hookTemplateId === 'string' ? compilerDetail.hookTemplateId : null;
+  const firstSecondQualityThreshold =
+    compilerDetail?.firstSecondQualityThreshold === 'strict' || compilerDetail?.firstSecondQualityThreshold === 'relaxed'
+      ? compilerDetail.firstSecondQualityThreshold
+      : null;
+
+  const imageDiagnosticsEvent = [...timeline].reverse().find((event) => event.event === 'IMAGE_MODEL_DIAGNOSTICS');
+  const imageDiagnosticsDetail = parseTimelineDetail(imageDiagnosticsEvent?.detail);
+  const imageModelDiagnostics = imageDiagnosticsDetail
+    ? {
+        configuredPrimaryModel:
+          typeof imageDiagnosticsDetail.configuredPrimaryModel === 'string'
+            ? imageDiagnosticsDetail.configuredPrimaryModel
+            : null,
+        configuredFallbackModel:
+          typeof imageDiagnosticsDetail.configuredFallbackModel === 'string'
+            ? imageDiagnosticsDetail.configuredFallbackModel
+            : null,
+        attemptedModels: Array.isArray(imageDiagnosticsDetail.attemptedModels)
+          ? imageDiagnosticsDetail.attemptedModels.map((value) => String(value))
+          : [],
+        modelUsed: typeof imageDiagnosticsDetail.modelUsed === 'string' ? imageDiagnosticsDetail.modelUsed : null,
+        fallbackUsed: Boolean(imageDiagnosticsDetail.fallbackUsed)
+      }
+    : null;
+
   const calmExceptionApplied =
     Boolean(compilerDetail?.calmExceptionApplied) || timeline.some((event) => event.event === 'CALM_MODE_EXCEPTION_APPLIED');
 
-  if (!intentRules.length && !hookRule && !shotStyleSet.length && !safetyConstraints.length && !calmExceptionApplied) {
+  if (
+    !intentRules.length &&
+    !hookRule &&
+    !hookTemplateId &&
+    !shotStyleSet.length &&
+    !safetyConstraints.length &&
+    !calmExceptionApplied &&
+    !firstSecondQualityThreshold &&
+    !imageModelDiagnostics
+  ) {
     return undefined;
   }
 
   return {
     intentRules,
     hookRule,
+    hookTemplateId,
+    firstSecondQualityThreshold,
     shotStyleSet,
     safetyConstraints,
-    calmExceptionApplied
+    calmExceptionApplied,
+    imageModel: imageModelDiagnostics
   };
 };
 
@@ -174,6 +309,69 @@ export const uploadStartFrameHandler = async (payload: StartFrameUploadRequest):
   });
 };
 
+const resolveStartFrameSource = (input: { hasUploadedReference: boolean; hasCustomPrompt: boolean; hasSelection: boolean }) => {
+  if (input.hasUploadedReference || input.hasCustomPrompt) return 'uploaded_asset' as const;
+  if (input.hasSelection) return 'generated_candidate' as const;
+  return 'none' as const;
+};
+
+export const createStartFramePreflightHandler = (payload: StartFramePreflightRequest): StartFramePreflightResponse => {
+  const topic = String(payload.topic ?? '').trim();
+  if (!topic) throw new Error('TOPIC_REQUIRED');
+
+  const hasUploadedReference = Boolean(String(payload.startFrameUploadObjectPath ?? '').trim());
+  const hasCustomPrompt = Boolean(String(payload.startFrameCustomPrompt ?? '').trim());
+
+  const selectedStartFrame = hasUploadedReference || hasCustomPrompt
+    ? {
+        style: (payload.startFrameStyle ?? 'owner_portrait') as
+          | 'storefront_hero'
+          | 'product_macro'
+          | 'owner_portrait'
+          | 'hands_at_work'
+          | 'before_after_split',
+        label: 'Eigenes Referenzbild'
+      }
+    : resolveSelectedStartFrame({
+        topic,
+        conceptId: payload.conceptId,
+        moodPreset: 'commercial_cta',
+        startFrameCandidateId: payload.startFrameCandidateId,
+        startFrameStyle: payload.startFrameStyle
+      });
+
+  const source = resolveStartFrameSource({
+    hasUploadedReference,
+    hasCustomPrompt,
+    hasSelection: Boolean(selectedStartFrame || payload.startFrameStyle || payload.startFrameCandidateId)
+  });
+
+  const policy = evaluateStartframePolicyPreflight({
+    topic,
+    conceptId: payload.conceptId,
+    startFrameStyle: selectedStartFrame?.style,
+    startFrameCandidateId: payload.startFrameCandidateId,
+    startFrameLabel: selectedStartFrame?.label,
+    startFrameCustomPrompt: payload.startFrameCustomPrompt,
+    startFrameReferenceHint: payload.startFrameReferenceHint,
+    startFrameUploadObjectPath: payload.startFrameUploadObjectPath
+  });
+
+  return {
+    decision: policy.decision,
+    reasonCode: policy.reasonCode,
+    userMessage: policy.userMessage,
+    remediation: policy.remediation,
+    source,
+    precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE',
+    effectiveStartFrameStyle: policy.effectiveStartFrameStyle ?? selectedStartFrame?.style,
+    effectiveStartFrameLabel:
+      policy.effectiveStartFrameLabel ??
+      (selectedStartFrame?.style ? startFrameLabelByStyle[selectedStartFrame.style] : selectedStartFrame?.label),
+    matchedSignals: policy.matchedSignals
+  };
+};
+
 export const selectConceptHandler = (payload: SelectConceptRequest): SelectConceptResponse => {
   const project = getProject(payload.projectId);
   if (!project) {
@@ -181,12 +379,16 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   }
 
   const variantType = normalizeVariantType(payload.variantType);
+  const audioMode = payload.audioMode ?? 'voiceover';
   const fallbackMoodPreset = payload.moodPreset ?? 'commercial_cta';
   const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId);
   const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId);
   const storyboardLight = normalizeStoryboardLight(payload.storyboardLight);
 
-  const approvedScript = String(payload.approvedScript ?? '').trim();
+  const approvedScriptV2 = normalizeScriptV2(payload.approvedScriptV2);
+  const approvedScriptLegacy = String(payload.approvedScript ?? '').trim();
+  const approvedScript = approvedScriptLegacy || buildScriptFromV2(approvedScriptV2);
+
   if (!approvedScript) {
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
   }
@@ -196,6 +398,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   const customReferenceHint = String(payload.startFrameReferenceHint ?? '').trim();
   const uploadObjectPath = String(payload.startFrameUploadObjectPath ?? '').trim();
   const hasUploadedReference = uploadObjectPath.length > 0;
+  const startFrameMode = hasUploadedReference ? 'uploaded_asset' : customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate';
+  const effectiveStartFrameSource = hasUploadedReference || customPrompt.length > 0 ? 'uploaded_asset' : 'generated_candidate';
 
   const selectedStartFrame =
     customPrompt.length > 0 || hasUploadedReference
@@ -222,13 +426,39 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     throw new Error('STARTFRAME_SELECTION_REQUIRED');
   }
 
+  const startFramePolicy = evaluateStartframePolicyPreflight({
+    topic: project.topic,
+    conceptId: payload.conceptId,
+    startFrameStyle: selectedStartFrame.style,
+    startFrameCandidateId: selectedStartFrame.candidateId,
+    startFrameLabel: selectedStartFrame.label,
+    startFrameCustomPrompt: customPrompt,
+    startFrameReferenceHint: customReferenceHint,
+    startFrameUploadObjectPath: hasUploadedReference ? uploadObjectPath : undefined
+  });
+
+  if (startFramePolicy.decision === 'block') {
+    throw new Error(`STARTFRAME_POLICY_PREFLIGHT_BLOCKED:${startFramePolicy.reasonCode}`);
+  }
+
+  const effectiveStartFrame =
+    startFramePolicy.decision === 'fallback' && startFramePolicy.effectiveStartFrameStyle
+      ? {
+          ...selectedStartFrame,
+          style: startFramePolicy.effectiveStartFrameStyle,
+          label: startFramePolicy.effectiveStartFrameLabel ?? startFrameLabelByStyle[startFramePolicy.effectiveStartFrameStyle],
+          prompt: startFramePolicy.effectiveStartFramePrompt ?? startFramePromptByStyle[startFramePolicy.effectiveStartFrameStyle],
+          description: `${selectedStartFrame.description} (policy fallback)`
+        }
+      : selectedStartFrame;
+
   const legacyUserControlsProvided = Boolean(payload.userControls);
   const userControls = normalizeUserControlProfile(payload.userControls);
   const consistency = validateCreativeConsistency({
     script: approvedScript,
     conceptId: payload.conceptId,
     moodPreset,
-    startFrameStyle: selectedStartFrame.style,
+    startFrameStyle: effectiveStartFrame.style,
     userControls: legacyUserControlsProvided ? userControls : undefined,
     creativeIntent: payload.creativeIntent ? creativeIntent : undefined,
     storyboardLight
@@ -260,16 +490,57 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       conceptId: payload.conceptId,
       moodPreset,
       approvedScript,
-      startFrameCandidateId: selectedStartFrame.candidateId,
-      startFrameStyle: selectedStartFrame.style,
-      startFrameLabel: selectedStartFrame.label,
-      startFramePrompt: selectedStartFrame.prompt,
-      startFrameMode: hasUploadedReference ? 'uploaded_asset' : customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate',
+      approvedScriptV2,
+      startFrameCandidateId: effectiveStartFrame.candidateId,
+      startFrameStyle: effectiveStartFrame.style,
+      startFrameLabel: effectiveStartFrame.label,
+      startFramePrompt: effectiveStartFrame.prompt,
+      startFrameMode,
+      effectiveStartFrameSource,
+      precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE',
       startFrameReferenceHint: customReferenceHint || undefined,
       startFrameReferenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined,
+      startFramePolicy: {
+        decision: startFramePolicy.decision,
+        reasonCode: startFramePolicy.reasonCode,
+        matchedSignals: startFramePolicy.matchedSignals
+      },
+      audioMode,
+      audioModeCompatibility: {
+        voiceover: 'stable',
+        scene: 'experimental_fallback_to_voiceover_possible',
+        hybrid: 'experimental_fallback_to_voiceover_possible'
+      },
       creativeIntent,
       storyboardLight,
       userControls: legacyUserControlsProvided ? userControls : undefined
+    })
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: startFramePolicy.decision === 'fallback' ? 'STARTFRAME_POLICY_PREFLIGHT_FALLBACK' : 'STARTFRAME_POLICY_PREFLIGHT_PASSED',
+    detail: JSON.stringify({
+      decision: startFramePolicy.decision,
+      reasonCode: startFramePolicy.reasonCode,
+      userMessage: startFramePolicy.userMessage,
+      remediation: startFramePolicy.remediation,
+      matchedSignals: startFramePolicy.matchedSignals,
+      effectiveStartFrameStyle: effectiveStartFrame.style,
+      effectiveStartFrameLabel: effectiveStartFrame.label
+    })
+  });
+
+  appendTimelineEvent(job.id, {
+    at: new Date().toISOString(),
+    event: 'AUDIO_MODE_SELECTED',
+    detail: JSON.stringify({
+      selectedAudioMode: audioMode,
+      compatibility: {
+        voiceover: 'stable',
+        scene: 'experimental',
+        hybrid: 'experimental'
+      }
     })
   });
 
@@ -364,9 +635,14 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     at: new Date().toISOString(),
     event: 'SELECTED_STARTFRAME',
     detail: JSON.stringify({
-      candidateId: selectedStartFrame.candidateId,
-      style: selectedStartFrame.style,
-      label: selectedStartFrame.label,
+      candidateId: effectiveStartFrame.candidateId,
+      style: effectiveStartFrame.style,
+      label: effectiveStartFrame.label,
+      startFrameMode,
+      effectiveStartFrameSource,
+      precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE',
+      policyDecision: startFramePolicy.decision,
+      policyReasonCode: startFramePolicy.reasonCode,
       referenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined
     })
   });
