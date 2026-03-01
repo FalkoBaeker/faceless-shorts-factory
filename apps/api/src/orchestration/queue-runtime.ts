@@ -79,6 +79,17 @@ type StoryboardSelection = {
   moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
   creativeIntent?: CreativeIntent;
   storyboardLight?: StoryboardLight;
+  brandProfile?: {
+    companyName: string;
+    websiteUrl?: string;
+    logoUrl?: string;
+    brandTone?: string;
+    primaryColorHex?: string;
+    secondaryColorHex?: string;
+    ctaStyle?: 'soft' | 'balanced' | 'strong';
+    audienceHint?: string;
+    valueProposition?: string;
+  };
   approvedScript?: string;
   approvedScriptV2?: ScriptV2;
   audioMode?: 'voiceover' | 'scene' | 'hybrid';
@@ -511,6 +522,7 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   const fallback: StoryboardSelection = {
     conceptId: 'concept_web_vertical_slice',
     moodPreset: 'commercial_cta',
+    brandProfile: undefined,
     approvedScript: undefined,
     approvedScriptV2: undefined,
     audioMode: 'voiceover',
@@ -580,11 +592,33 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
         }
       : undefined;
 
+    const rawBrandProfile = parsed.brandProfile && typeof parsed.brandProfile === 'object'
+      ? (parsed.brandProfile as Record<string, unknown>)
+      : null;
+
+    const brandProfile = rawBrandProfile
+      ? {
+          companyName: String(rawBrandProfile.companyName ?? '').trim().slice(0, 120),
+          websiteUrl: String(rawBrandProfile.websiteUrl ?? '').trim().slice(0, 200) || undefined,
+          logoUrl: String(rawBrandProfile.logoUrl ?? '').trim().slice(0, 400) || undefined,
+          brandTone: String(rawBrandProfile.brandTone ?? '').trim().slice(0, 180) || undefined,
+          primaryColorHex: String(rawBrandProfile.primaryColorHex ?? '').trim().slice(0, 12) || undefined,
+          secondaryColorHex: String(rawBrandProfile.secondaryColorHex ?? '').trim().slice(0, 12) || undefined,
+          ctaStyle:
+            typeof rawBrandProfile.ctaStyle === 'string' && ['soft', 'balanced', 'strong'].includes(rawBrandProfile.ctaStyle)
+              ? (rawBrandProfile.ctaStyle as 'soft' | 'balanced' | 'strong')
+              : undefined,
+          audienceHint: String(rawBrandProfile.audienceHint ?? '').trim().slice(0, 240) || undefined,
+          valueProposition: String(rawBrandProfile.valueProposition ?? '').trim().slice(0, 280) || undefined
+        }
+      : undefined;
+
     return {
       conceptId: String(parsed.conceptId ?? fallback.conceptId),
       moodPreset,
       creativeIntent: parseCreativeIntent(parsed.creativeIntent),
       storyboardLight: parseStoryboardLight(parsed.storyboardLight),
+      brandProfile: brandProfile?.companyName ? brandProfile : undefined,
       approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
       approvedScriptV2: parseScriptV2((parsed as { approvedScriptV2?: unknown }).approvedScriptV2),
       audioMode:
@@ -911,6 +945,7 @@ const processVideo = async (job: Job<StagePayload>) => {
         moodPreset: storyboard.moodPreset,
         creativeIntent: storyboard.creativeIntent,
         storyboardLight: storyboard.storyboardLight,
+        brandProfile: storyboard.brandProfile,
         approvedScript: storyboard.approvedScript,
         approvedScriptV2: storyboard.approvedScriptV2,
         startFrameStyle: storyboard.startFrameStyle,
@@ -945,7 +980,8 @@ const processVideo = async (job: Job<StagePayload>) => {
         startFrameReferenceObjectPath: storyboard.startFrameReferenceObjectPath ?? null,
         selectedAudioMode: storyboard.audioMode ?? 'voiceover',
         creativeIntent: result.creativeIntent,
-        storyboardLightBeatCount: result.storyboardLight?.beats?.length ?? 0
+        storyboardLightBeatCount: result.storyboardLight?.beats?.length ?? 0,
+        brandProfile: result.brandProfile ?? null
       })
     );
     await insertTimeline(
@@ -965,6 +1001,10 @@ const processVideo = async (job: Job<StagePayload>) => {
     await insertTimeline(jobId, 'ASSET_VIDEO_STORED', buildAssetDetail('video', result.video));
     if (result.referenceAsset) {
       await insertTimeline(jobId, 'ASSET_STARTFRAME_REFERENCE_STORED', buildAssetDetail('startframe_reference', result.referenceAsset));
+    }
+
+    if (result.brandProfile) {
+      await insertTimeline(jobId, 'BRAND_PROFILE_APPLIED', JSON.stringify(result.brandProfile));
     }
 
     if (result.creativeIntent) {

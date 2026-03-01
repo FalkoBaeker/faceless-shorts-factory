@@ -44,6 +44,7 @@ import {
   validateCreativeConsistency,
   type ShotStyleTag
 } from './services/creative-consistency.ts';
+import { getBrandProfile, upsertBrandProfile } from './brand-profile-store.ts';
 import {
   evaluateStartframePolicyPreflight,
   startFrameLabelByStyle,
@@ -188,6 +189,33 @@ const parseTimelineDetail = (detail: string | undefined) => {
   }
 };
 
+const mapBrandProfileForApi = (
+  profile: ReturnType<typeof getBrandProfile>
+): {
+  companyName: string;
+  websiteUrl?: string;
+  logoUrl?: string;
+  brandTone?: string;
+  primaryColorHex?: string;
+  secondaryColorHex?: string;
+  ctaStyle?: 'soft' | 'balanced' | 'strong';
+  audienceHint?: string;
+  valueProposition?: string;
+} | null => {
+  if (!profile) return null;
+  return {
+    companyName: profile.companyName,
+    websiteUrl: profile.websiteUrl,
+    logoUrl: profile.logoUrl,
+    brandTone: profile.brandTone,
+    primaryColorHex: profile.primaryColorHex,
+    secondaryColorHex: profile.secondaryColorHex,
+    ctaStyle: profile.ctaStyle,
+    audienceHint: profile.audienceHint,
+    valueProposition: profile.valueProposition
+  };
+};
+
 const buildExplainability = (timeline: Array<{ at: string; event: string; detail?: string }>) => {
   const compilerEvent = [...timeline].reverse().find((event) => event.event === 'PROMPT_COMPILER_V2_APPLIED');
   const compilerDetail = parseTimelineDetail(compilerEvent?.detail);
@@ -260,6 +288,37 @@ const buildExplainability = (timeline: Array<{ at: string; event: string; detail
     safetyConstraints,
     calmExceptionApplied,
     imageModel: imageModelDiagnostics
+  };
+};
+
+export const getBrandProfileHandler = (organizationId: string) => {
+  const profile = getBrandProfile(organizationId);
+  return {
+    organizationId,
+    profile: mapBrandProfileForApi(profile),
+    updatedAt: profile?.updatedAt
+  };
+};
+
+export const upsertBrandProfileHandler = (
+  organizationId: string,
+  payload: {
+    companyName: string;
+    websiteUrl?: string;
+    logoUrl?: string;
+    brandTone?: string;
+    primaryColorHex?: string;
+    secondaryColorHex?: string;
+    ctaStyle?: 'soft' | 'balanced' | 'strong';
+    audienceHint?: string;
+    valueProposition?: string;
+  }
+) => {
+  const saved = upsertBrandProfile(organizationId, payload);
+  return {
+    organizationId,
+    profile: mapBrandProfileForApi(saved),
+    updatedAt: saved.updatedAt
   };
 };
 
@@ -377,6 +436,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   if (!project) {
     throw new Error(`PROJECT_NOT_FOUND:${payload.projectId}`);
   }
+
+  const brandProfile = mapBrandProfileForApi(getBrandProfile(project.organizationId)) ?? payload.brandProfile ?? null;
 
   const variantType = normalizeVariantType(payload.variantType);
   const audioMode = payload.audioMode ?? 'voiceover';
@@ -513,6 +574,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       },
       creativeIntent,
       storyboardLight,
+      brandProfile,
       userControls: legacyUserControlsProvided ? userControls : undefined
     })
   });
@@ -573,6 +635,14 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
         ctaHint: storyboardLight.ctaHint,
         pacingHint: storyboardLight.pacingHint
       })
+    });
+  }
+
+  if (brandProfile) {
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'BRAND_PROFILE_APPLIED',
+      detail: JSON.stringify(brandProfile)
     });
   }
 
@@ -677,11 +747,16 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
   const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, 'concept_web_vertical_slice');
   const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, 'concept_web_vertical_slice');
 
+  const organizationId = String((payload as { organizationId?: string }).organizationId ?? '').trim();
+  const persistedBrandProfile = organizationId ? mapBrandProfileForApi(getBrandProfile(organizationId)) : null;
+  const effectiveBrandProfile = payload.brandProfile ?? persistedBrandProfile ?? undefined;
+
   const draft = await generateScriptDraft({
     topic,
     variantType,
     moodPreset,
-    creativeIntent
+    creativeIntent,
+    brandProfile: effectiveBrandProfile
   });
 
   return {

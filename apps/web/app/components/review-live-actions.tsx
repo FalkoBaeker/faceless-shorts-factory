@@ -1,18 +1,21 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import {
   createProject,
   createScriptDraft,
   createStartFrameCandidates,
+  fetchBrandProfile,
   preflightStartFrame,
   uploadStartFrameReference,
+  upsertBrandProfile,
   selectConcept,
   triggerGenerate,
   type ApiError,
   type AudioMode,
+  type BrandProfilePayload,
   type CreativeIntentPayload,
   type MoodPreset,
   type ShotStyleTag,
@@ -211,6 +214,14 @@ export function ReviewLiveActions() {
   const [startFrameBusy, setStartFrameBusy] = useState(false);
   const [startFramePolicy, setStartFramePolicy] = useState<StartFramePreflightPayload | null>(null);
   const [status, setStatus] = useState('');
+  const [brandProfile, setBrandProfile] = useState<BrandProfilePayload>({
+    companyName: '',
+    brandTone: 'friendly',
+    primaryColorHex: '#D35400',
+    secondaryColorHex: '#F4D03F',
+    ctaStyle: 'balanced'
+  });
+  const [brandBusy, setBrandBusy] = useState(false);
 
   const primaryConceptOptions = useMemo(() => conceptOptions.filter((option) => option.primary), []);
   const advancedConceptOptions = useMemo(() => conceptOptions.filter((option) => !option.primary), []);
@@ -268,7 +279,32 @@ export function ReviewLiveActions() {
 
   const organizationId = 'org_web_mvp';
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadBrandProfile = async () => {
+      const token = readStoredToken();
+      if (!token) return;
+
+      try {
+        const payload = await fetchBrandProfile(token, organizationId);
+        if (!cancelled && payload.profile) {
+          setBrandProfile((prev) => ({ ...prev, ...payload.profile }));
+        }
+      } catch {
+        // non-blocking for initial render
+      }
+    };
+
+    void loadBrandProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [organizationId]);
+
   const generationBlocker = useMemo(() => {
+    if (!brandProfile.companyName?.trim()) return 'Bitte Brand Onboarding mit Firmenname speichern.';
     if (!effectGoals.length) return 'Bitte mindestens ein Effect Goal wählen.';
     if (!narrativeFormats.length) return 'Bitte mindestens ein Narrative Format wählen.';
     if (!scriptAccepted || !scriptDraft.trim()) return 'Script prüfen und akzeptieren.';
@@ -284,7 +320,8 @@ export function ReviewLiveActions() {
     scriptDraft,
     selectedStartFrameCandidate,
     uploadedStartFrame,
-    startFramePolicy
+    startFramePolicy,
+    brandProfile.companyName
   ]);
 
   const resetStartFrameCandidates = () => {
@@ -305,6 +342,32 @@ export function ReviewLiveActions() {
       ...prev,
       beats: prev.beats.map((beat) => (beat.beatId === beatId ? { ...beat, [field]: value } : beat))
     }));
+  };
+
+  const saveBrandOnboarding = async () => {
+    const token = readStoredToken();
+    if (!token) {
+      setStatus('Bitte zuerst auf der Startseite einloggen.');
+      return;
+    }
+
+    if (!brandProfile.companyName?.trim()) {
+      setStatus('Firmenname ist Pflicht für das Brand Onboarding.');
+      return;
+    }
+
+    setBrandBusy(true);
+    try {
+      const saved = await upsertBrandProfile(token, organizationId, brandProfile);
+      if (saved.profile) {
+        setBrandProfile((prev) => ({ ...prev, ...saved.profile }));
+      }
+      setStatus(`Brand-Profil gespeichert (${saved.profile?.companyName ?? brandProfile.companyName}).`);
+    } catch (error) {
+      setStatus(`Brand-Profil speichern fehlgeschlagen: ${asApiMessage(error)}`);
+    } finally {
+      setBrandBusy(false);
+    }
   };
 
   const runStartFramePolicyPreflight = async (input: {
@@ -360,7 +423,14 @@ export function ReviewLiveActions() {
     setBusy(true);
     setStatus('Erzeuge Script-Entwurf ...');
     try {
-      const draft = await createScriptDraft(token, { topic, variantType, moodPreset, creativeIntent });
+      const draft = await createScriptDraft(token, {
+        topic,
+        variantType,
+        organizationId,
+        moodPreset,
+        creativeIntent,
+        brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined
+      });
       setScriptDraft(draft.script);
       setStoryboardLight(buildStoryboardFromScript(draft.script));
       setScriptAccepted(false);
@@ -544,6 +614,7 @@ export function ReviewLiveActions() {
         moodPreset,
         creativeIntent,
         storyboardLight,
+        brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
         approvedScript: scriptDraft.trim(),
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
         startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
@@ -587,6 +658,57 @@ export function ReviewLiveActions() {
             }}
           />
         </label>
+      </div>
+
+      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+        Brand Onboarding (P3)
+      </h3>
+      <p className="section-copy" style={{ marginTop: 0 }}>
+        Dieses Profil wird für Script + Prompt Compiler wiederverwendet, damit der Markenoutput konsistent bleibt.
+      </p>
+      <div className="section-card" style={{ marginTop: 0 }}>
+        <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
+          <label className="auth-field">
+            <span>Firmenname *</span>
+            <input
+              value={brandProfile.companyName ?? ''}
+              onChange={(event) => setBrandProfile((prev) => ({ ...prev, companyName: event.target.value }))}
+              placeholder="z. B. Bäckerei Morgenrot"
+            />
+          </label>
+          <label className="auth-field">
+            <span>Website</span>
+            <input
+              value={brandProfile.websiteUrl ?? ''}
+              onChange={(event) => setBrandProfile((prev) => ({ ...prev, websiteUrl: event.target.value }))}
+              placeholder="https://..."
+            />
+          </label>
+          <label className="auth-field">
+            <span>Brand Tone</span>
+            <input
+              value={brandProfile.brandTone ?? ''}
+              onChange={(event) => setBrandProfile((prev) => ({ ...prev, brandTone: event.target.value }))}
+              placeholder="friendly / premium / bold"
+            />
+          </label>
+          <label className="auth-field">
+            <span>Value Proposition</span>
+            <input
+              value={brandProfile.valueProposition ?? ''}
+              onChange={(event) => setBrandProfile((prev) => ({ ...prev, valueProposition: event.target.value }))}
+              placeholder="Wofür steht eure Marke?"
+            />
+          </label>
+        </div>
+        <div className="action-row" style={{ marginTop: 8 }}>
+          <button className="button-ghost" type="button" onClick={saveBrandOnboarding} disabled={brandBusy}>
+            {brandBusy ? 'Speichere Brand-Profil ...' : 'Brand-Profil speichern'}
+          </button>
+          <span className={`chip ${brandProfile.companyName?.trim() ? 'chip-success' : 'chip-warning'}`}>
+            {brandProfile.companyName?.trim() ? `Brand aktiv: ${brandProfile.companyName}` : 'Brand-Profil unvollständig'}
+          </span>
+        </div>
       </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
@@ -967,6 +1089,7 @@ export function ReviewLiveActions() {
         <span className="chip chip-neutral">Legacy-Mood: {selectedMoodLabel}</span>
         <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
         <span className="chip chip-neutral">Audio: {audioMode}</span>
+        <span className="chip chip-neutral">Brand: {brandProfile.companyName?.trim() || 'not set'}</span>
         <span className="chip chip-neutral">Intent: {effectGoals.length} Goals / {narrativeFormats.length} Formats</span>
         <span className="chip chip-neutral">Shot-Styles: {shotStyles.length}</span>
         <span className={`chip ${activeStartframe.source === 'none' ? 'chip-warning' : 'chip-success'}`}>

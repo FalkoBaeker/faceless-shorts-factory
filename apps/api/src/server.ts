@@ -3,6 +3,8 @@ import { URL } from 'node:url';
 import {
   createProjectHandler,
   createScriptDraftHandler,
+  getBrandProfileHandler,
+  upsertBrandProfileHandler,
   uploadStartFrameHandler,
   createStartFramePreflightHandler,
   createStartFrameCandidatesHandler,
@@ -59,7 +61,7 @@ const applyCors = (req: IncomingMessage, res: ServerResponse) => {
     res.setHeader('vary', 'origin');
   }
 
-  res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+  res.setHeader('access-control-allow-methods', 'GET,POST,PUT,OPTIONS');
   res.setHeader('access-control-allow-headers', 'content-type,authorization');
   res.setHeader('access-control-max-age', '86400');
 };
@@ -247,6 +249,38 @@ const parseAudioMode = (raw: unknown): 'voiceover' | 'scene' | 'hybrid' => {
     return value as 'voiceover' | 'scene' | 'hybrid';
   }
   return 'voiceover';
+};
+
+const parseBrandProfile = (raw: unknown) => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+
+  const companyName = String(input.companyName ?? '').trim().slice(0, 120);
+  if (!companyName) return undefined;
+
+  const normalizeHex = (value: unknown) => {
+    const text = String(value ?? '').trim();
+    if (!text) return undefined;
+    const withHash = text.startsWith('#') ? text : `#${text}`;
+    return /^#[0-9a-fA-F]{6}$/.test(withHash) ? withHash.toUpperCase() : undefined;
+  };
+
+  const ctaStyleRaw = String(input.ctaStyle ?? '').trim().toLowerCase();
+  const ctaStyle = ['soft', 'balanced', 'strong'].includes(ctaStyleRaw)
+    ? (ctaStyleRaw as 'soft' | 'balanced' | 'strong')
+    : undefined;
+
+  return {
+    companyName,
+    websiteUrl: String(input.websiteUrl ?? '').trim().slice(0, 200) || undefined,
+    logoUrl: String(input.logoUrl ?? '').trim().slice(0, 400) || undefined,
+    brandTone: String(input.brandTone ?? '').trim().slice(0, 180) || undefined,
+    primaryColorHex: normalizeHex(input.primaryColorHex),
+    secondaryColorHex: normalizeHex(input.secondaryColorHex),
+    ctaStyle,
+    audienceHint: String(input.audienceHint ?? '').trim().slice(0, 240) || undefined,
+    valueProposition: String(input.valueProposition ?? '').trim().slice(0, 280) || undefined
+  };
 };
 
 const parseScriptV2 = (raw: unknown) => {
@@ -449,6 +483,27 @@ export const buildApiServer = () =>
         });
       }
 
+      if (method === 'GET' && /^\/v1\/brands\/[^/]+$/.test(path)) {
+        await ensureRunPermissionIfRequired(req);
+        const organizationId = decodeURIComponent(path.split('/')[3] ?? '').trim();
+        if (!organizationId) throw new Error('ORGANIZATION_ID_REQUIRED');
+        const profile = getBrandProfileHandler(organizationId);
+        return sendJson(res, 200, profile);
+      }
+
+      if (method === 'PUT' && /^\/v1\/brands\/[^/]+$/.test(path)) {
+        await ensureRunPermissionIfRequired(req);
+        const organizationId = decodeURIComponent(path.split('/')[3] ?? '').trim();
+        if (!organizationId) throw new Error('ORGANIZATION_ID_REQUIRED');
+
+        const body = await readJsonBody(req);
+        const profile = parseBrandProfile(body);
+        if (!profile) throw new Error('BRAND_PROFILE_INVALID');
+
+        const saved = upsertBrandProfileHandler(organizationId, profile);
+        return sendJson(res, 200, saved);
+      }
+
       if (method === 'POST' && path === '/v1/projects') {
         await ensureRunPermissionIfRequired(req);
 
@@ -470,8 +525,10 @@ export const buildApiServer = () =>
         const draft = await createScriptDraftHandler({
           topic: String(body.topic ?? ''),
           variantType: parseVariantType(body.variantType),
+          organizationId: String(body.organizationId ?? '').trim() || undefined,
           moodPreset: parseMoodPreset(body.moodPreset),
-          creativeIntent: parseCreativeIntent(body.creativeIntent)
+          creativeIntent: parseCreativeIntent(body.creativeIntent),
+          brandProfile: parseBrandProfile(body.brandProfile)
         });
         return sendJson(res, 200, draft);
       }
@@ -539,6 +596,7 @@ export const buildApiServer = () =>
           moodPreset: parseMoodPreset(body.moodPreset),
           creativeIntent: parseCreativeIntent(body.creativeIntent),
           storyboardLight: parseStoryboardLight(body.storyboardLight),
+          brandProfile: parseBrandProfile(body.brandProfile),
           approvedScript: String(body.approvedScript ?? ''),
           approvedScriptV2: parseScriptV2(body.approvedScriptV2),
           startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,

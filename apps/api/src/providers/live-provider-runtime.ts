@@ -151,6 +151,18 @@ type StartFrameStyle =
 
 type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
 
+type BrandProfile = {
+  companyName: string;
+  websiteUrl?: string;
+  logoUrl?: string;
+  brandTone?: string;
+  primaryColorHex?: string;
+  secondaryColorHex?: string;
+  ctaStyle?: 'soft' | 'balanced' | 'strong';
+  audienceHint?: string;
+  valueProposition?: string;
+};
+
 type StoryboardConceptId =
   | 'concept_web_vertical_slice'
   | 'concept_offer_focus'
@@ -439,6 +451,23 @@ const renderStoryboardLightPrompt = (storyboardLight?: StoryboardLight) => {
   ]
     .filter(Boolean)
     .join(' ');
+};
+
+const renderBrandProfilePrompt = (brandProfile?: BrandProfile) => {
+  if (!brandProfile?.companyName?.trim()) return '';
+
+  const segments = [
+    `Brand company: ${brandProfile.companyName}.`,
+    brandProfile.brandTone ? `Brand tone: ${brandProfile.brandTone}.` : '',
+    brandProfile.valueProposition ? `Value proposition: ${brandProfile.valueProposition}.` : '',
+    brandProfile.audienceHint ? `Audience hint: ${brandProfile.audienceHint}.` : '',
+    brandProfile.websiteUrl ? `Website: ${brandProfile.websiteUrl}.` : '',
+    brandProfile.ctaStyle ? `CTA style preference: ${brandProfile.ctaStyle}.` : '',
+    brandProfile.primaryColorHex ? `Primary brand color: ${brandProfile.primaryColorHex}.` : '',
+    brandProfile.secondaryColorHex ? `Secondary brand color: ${brandProfile.secondaryColorHex}.` : ''
+  ];
+
+  return segments.filter(Boolean).join(' ');
 };
 
 const hookTemplateLibrary: Record<HookTemplateId, { ruleId: string; prompt: string }> = {
@@ -891,7 +920,8 @@ const createScriptFromLlm = async (
   topic: string,
   variantType: VariantType,
   moodPreset: MoodPreset,
-  creativeIntent?: CreativeIntentMatrix
+  creativeIntent?: CreativeIntentMatrix,
+  brandProfile?: BrandProfile
 ) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.01, 'llm-script');
@@ -900,6 +930,7 @@ const createScriptFromLlm = async (
   const targetWords = Math.round(targetSeconds * 2.35);
   const moodPrompt = moodPromptMap[moodPreset];
   const intentPrompt = creativeIntent ? renderIntentPrompt(creativeIntent).text : '';
+  const brandPrompt = renderBrandProfilePrompt(brandProfile);
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
@@ -908,6 +939,7 @@ const createScriptFromLlm = async (
       `Ziel-Länge: ca. ${targetSeconds} Sekunden, etwa ${targetWords} Wörter. ` +
       `${moodPrompt} ` +
       `${intentPrompt} ` +
+      `${brandPrompt} ` +
       'Das Skript muss mit einem vollständigen, abgeschlossenen Satz enden. ' +
       'In der ersten Sekunde muss der Hook spürbar sein, außer im calm-mode. ' +
       'Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints.',
@@ -925,12 +957,14 @@ const condenseScriptToTarget = async (
   targetSeconds: number,
   targetWords: number,
   moodPreset: MoodPreset,
-  creativeIntent?: CreativeIntentMatrix
+  creativeIntent?: CreativeIntentMatrix,
+  brandProfile?: BrandProfile
 ) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.008, 'llm-script-condense');
 
   const intentPrompt = creativeIntent ? renderIntentPrompt(creativeIntent).text : '';
+  const brandPrompt = renderBrandProfilePrompt(brandProfile);
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
@@ -938,6 +972,7 @@ const condenseScriptToTarget = async (
       `Kürze dieses deutsche Voiceover-Skript auf maximal ${targetWords} Wörter (ca. ${targetSeconds} Sekunden). ` +
       `${moodPromptMap[moodPreset]} ` +
       `${intentPrompt} ` +
+      `${brandPrompt} ` +
       'Bewahre den roten Faden und einen klaren CTA. Der letzte Satz muss vollständig sein. ' +
       `Text: """${script}""". Gib nur den finalen gesprochenen Text aus.`,
     max_output_tokens: Math.max(180, Math.round(targetWords * 2.2))
@@ -953,6 +988,7 @@ export const generateScriptDraft = async (input: {
   variantType: VariantType;
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
   regenerate?: boolean;
 }) => {
   await runProviderHealthchecks();
@@ -962,12 +998,12 @@ export const generateScriptDraft = async (input: {
   const { targetSeconds } = resolveVariantDurations(input.variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
 
-  let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset, effectiveIntent);
+  let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset, effectiveIntent, input.brandProfile);
   let estimatedSeconds = estimateSpeechSeconds(script);
   let condensed = false;
 
   if (estimatedSeconds > targetSeconds * 1.08) {
-    script = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset, effectiveIntent);
+    script = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset, effectiveIntent, input.brandProfile);
     estimatedSeconds = estimateSpeechSeconds(script);
     condensed = true;
   }
@@ -1658,6 +1694,7 @@ export const runVideoStage = async (input: {
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
   storyboardLight?: StoryboardLight;
+  brandProfile?: BrandProfile;
   approvedScript?: string;
   approvedScriptV2?: {
     language?: string;
@@ -1773,7 +1810,8 @@ export const runVideoStage = async (input: {
         topic: input.topic,
         variantType: input.variantType,
         moodPreset,
-        creativeIntent: effectiveIntent
+        creativeIntent: effectiveIntent,
+        brandProfile: input.brandProfile
       });
 
   if (!draft.withinTarget) {
@@ -1785,6 +1823,7 @@ export const runVideoStage = async (input: {
 
   const llmText = draft.script;
   const storyboardPrompt = renderStoryboardLightPrompt(storyboardLight);
+  const brandPrompt = renderBrandProfilePrompt(input.brandProfile);
 
   const safetyConstraints = [
     `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
@@ -1798,6 +1837,7 @@ export const runVideoStage = async (input: {
       `Mood: ${moodPromptMap[moodPreset]}`,
       startFramePrompt,
       storyboardPrompt,
+      brandPrompt,
       `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
       `Narration context: ${llmText}`
     ],
@@ -1816,6 +1856,7 @@ export const runVideoStage = async (input: {
       `Hard motion target: minimum ${motionRequirement.minPhases} movement phases, max static shot ${motionRequirement.maxStaticSeconds} seconds.`,
       startFramePrompt,
       storyboardPrompt,
+      brandPrompt,
       `Narration text: ${llmText}`
     ],
     intent: effectiveIntent,
@@ -1849,6 +1890,8 @@ export const runVideoStage = async (input: {
     moodPreset,
     creativeIntent: effectiveIntent,
     storyboardLight,
+    brandProfile: input.brandProfile,
+
     userControls: legacyUserControlsProvided ? legacyUserControls : undefined,
     promptCompiler: videoCompiled.meta,
     motionEnforcement: motionVideo.enforcement,

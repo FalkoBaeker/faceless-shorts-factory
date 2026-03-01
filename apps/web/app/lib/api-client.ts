@@ -126,6 +126,24 @@ export type StoryboardLightPayload = {
   pacingHint?: string;
 };
 
+export type BrandProfilePayload = {
+  companyName: string;
+  websiteUrl?: string;
+  logoUrl?: string;
+  brandTone?: string;
+  primaryColorHex?: string;
+  secondaryColorHex?: string;
+  ctaStyle?: 'soft' | 'balanced' | 'strong';
+  audienceHint?: string;
+  valueProposition?: string;
+};
+
+export type BrandProfileResponsePayload = {
+  organizationId: string;
+  profile: BrandProfilePayload | null;
+  updatedAt?: string;
+};
+
 export type StartFrameUploadPayload = {
   assetId: string;
   objectPath: string;
@@ -239,7 +257,7 @@ const parseApiError = async (res: Response): Promise<ApiError> => {
 const requestJson = async <T>(
   path: string,
   options?: {
-    method?: 'GET' | 'POST';
+    method?: 'GET' | 'POST' | 'PUT';
     body?: Record<string, unknown>;
     token?: string | null;
   }
@@ -279,6 +297,19 @@ export const fetchMe = (token?: string | null) =>
     token
   });
 
+export const fetchBrandProfile = (token: string, organizationId: string) =>
+  requestJson<BrandProfileResponsePayload>(`/v1/brands/${encodeURIComponent(organizationId)}`, {
+    method: 'GET',
+    token
+  });
+
+export const upsertBrandProfile = (token: string, organizationId: string, profile: BrandProfilePayload) =>
+  requestJson<BrandProfileResponsePayload>(`/v1/brands/${encodeURIComponent(organizationId)}`, {
+    method: 'PUT',
+    token,
+    body: profile
+  });
+
 export const createProject = (token: string, payload: { organizationId: string; topic: string; variantType: 'SHORT_15' | 'MASTER_30' }) =>
   requestJson<CreateProjectPayload>('/v1/projects', {
     method: 'POST',
@@ -297,8 +328,10 @@ export const createScriptDraft = (
   payload: {
     topic: string;
     variantType: 'SHORT_15' | 'MASTER_30';
+    organizationId?: string;
     moodPreset: MoodPreset;
     creativeIntent?: CreativeIntentPayload;
+    brandProfile?: BrandProfilePayload;
   }
 ) =>
   requestJson<ScriptDraftPayload>('/v1/script/draft', {
@@ -365,6 +398,7 @@ export const selectConcept = (
     moodPreset: MoodPreset;
     creativeIntent?: CreativeIntentPayload;
     storyboardLight?: StoryboardLightPayload;
+    brandProfile?: BrandProfilePayload;
     approvedScript: string;
     startFrameCandidateId?: string;
     startFrameStyle?:
@@ -389,6 +423,7 @@ export const selectConcept = (
       moodPreset: payload.moodPreset,
       creativeIntent: payload.creativeIntent,
       storyboardLight: payload.storyboardLight,
+      brandProfile: payload.brandProfile,
       approvedScript: payload.approvedScript,
       startFrameCandidateId: payload.startFrameCandidateId,
       startFrameStyle: payload.startFrameStyle,

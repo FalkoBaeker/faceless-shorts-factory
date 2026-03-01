@@ -3,6 +3,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { fetchMe, login, signUp, type ApiError, type AuthMePayload } from '../lib/api-client';
 import { readStoredToken, storeToken } from '../lib/session-store';
+import { getSupabaseBrowserClient } from '../lib/supabase-browser';
 
 type Mode = 'login' | 'signup';
 
@@ -93,6 +94,26 @@ export function AuthPanel() {
     }
   };
 
+  const signInWithGoogle = async () => {
+    setBusy(true);
+    setMessage('Leite zu Google OAuth weiter ...');
+
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const redirectTo = `${origin}/auth/callback`;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo }
+      });
+
+      if (error) throw error;
+    } catch (error) {
+      setMessage(`Google Sign-In fehlgeschlagen: ${toErrorMessage(error)}`);
+      setBusy(false);
+    }
+  };
+
   const logout = () => {
     storeToken(null);
     setToken(null);
@@ -149,6 +170,9 @@ export function AuthPanel() {
           </div>
 
           <div className="action-row">
+            <button className="button" type="button" onClick={signInWithGoogle} disabled={busy}>
+              {busy ? 'Läuft ...' : 'Weiter mit Google'}
+            </button>
             <button className="button" type="submit" disabled={busy}>
               {busy ? 'Läuft ...' : mode === 'signup' ? 'Signup starten' : 'Login starten'}
             </button>

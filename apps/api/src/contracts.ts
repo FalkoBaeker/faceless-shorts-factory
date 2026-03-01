@@ -85,6 +85,18 @@ export type UserControlProfile = {
   visualStyle?: 'clean' | 'cinematic' | 'ugc';
 };
 
+export type BrandProfile = {
+  companyName: string;
+  websiteUrl?: string;
+  logoUrl?: string;
+  brandTone?: string;
+  primaryColorHex?: string;
+  secondaryColorHex?: string;
+  ctaStyle?: 'soft' | 'balanced' | 'strong';
+  audienceHint?: string;
+  valueProposition?: string;
+};
+
 export type CreateProjectRequest = {
   organizationId: string;
   topic: string;
@@ -105,6 +117,7 @@ export type SelectConceptRequest = {
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
   storyboardLight?: StoryboardLight;
+  brandProfile?: BrandProfile;
   approvedScript?: string;
   approvedScriptV2?: ScriptV2;
   startFrameCandidateId?: string;
@@ -132,8 +145,10 @@ export type SelectConceptResponse = {
 export type ScriptDraftRequest = {
   topic: string;
   variantType: Extract<VariantType, 'SHORT_15' | 'MASTER_30'>;
+  organizationId?: string;
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
 };
 
 export type ScriptDraftResponse = {
@@ -315,6 +330,12 @@ export type AlertTestResponse = {
   sent: boolean;
   target: 'email' | 'logs';
   detail: string;
+};
+
+export type BrandProfileResponse = {
+  organizationId: string;
+  profile: BrandProfile | null;
+  updatedAt?: string;
 };
 
 export type JobAssetsResponse = {
