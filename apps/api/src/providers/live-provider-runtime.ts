@@ -1291,9 +1291,9 @@ export const generateStartFrameThumbnail = async (input: {
   ].join(' ');
 
   try {
-    const bytes = await createImage(thumbPrompt);
+    const imageResult = await createImage(thumbPrompt);
     const objectPath = `catalog/startframe-thumbnails/${sanitizeSegment(input.candidateId, 'candidate')}.png`;
-    const asset = await uploadAsset('catalog-startframe', objectPath, bytes, 'image/png', 'openai-image-thumbnail');
+    const asset = await uploadAsset('catalog-startframe', objectPath, imageResult.bytes, 'image/png', 'openai-image-thumbnail');
     thumbnailCache.set(input.candidateId, asset);
     return asset;
   } catch (error) {
