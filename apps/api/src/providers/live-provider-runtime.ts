@@ -332,6 +332,14 @@ const inferExplicitHeroSubject = (topic: string) => {
     return 'eine Bäckereitheke mit goldbraunen Brötchen und Croissants, dazu ein gut lesbares Sommerangebot-Schild';
   }
 
+  if (/katz|kitten|wurf|cattery|russisch\s*blau|russischblau/.test(lower)) {
+    return 'eine klar erkennbare Katze im Portrait, mit natürlichem Fell-Detail, Blickkontakt und ruhigem Innenraum-Hintergrund';
+  }
+
+  if (/hund|welpe|dog/.test(lower)) {
+    return 'ein klar erkennbarer Hund im Vordergrund, natürliche Fellstruktur und aktive Interaktion im realen Umfeld';
+  }
+
   if (/pizza|pasta|restaurant|imbiss|café|kaffee|coffee/.test(lower)) {
     return 'ein frisch angerichtetes Signature-Gericht auf dem Tresen, mit sichtbarer Bedienung im Hintergrund';
   }
@@ -344,7 +352,7 @@ const inferExplicitHeroSubject = (topic: string) => {
     return 'ein Fahrzeug in klar erkennbarer Service- oder Anwendungssituation mit sichtbarer Aktion am Objekt';
   }
 
-  return `eine klar benannte Hauptperson mit dem Kernprodukt aus dem Thema "${topic}" im realen Nutzungskontext`;
+  return `eine konkret benannte Hauptfigur zum Thema "${topic}", mit klar sichtbarer Handlung im realen Nutzungskontext`;
 };
 
 const stopwordsDe = new Set([
@@ -1224,7 +1232,7 @@ const flowBeatLooksGeneric = (value: string) => {
   const text = value.trim().toLowerCase();
   if (!text) return true;
   return (
-    /\b(konkrete?r?\s+schritt|zentrales?\s+motiv|kamera\s+folgt|sichtbare\s+weiterentwicklung|hook\s*\+\s*setup|payoff|cta\s*-?szene|eindeutige\s+handlungsaufforderung)\b/.test(
+    /\b(konkrete?r?\s+schritt|zentrales?\s+motiv|kamera\s+folgt|sichtbare\s+weiterentwicklung|hook\s*\+\s*setup|payoff|cta\s*-?szene|eindeutige\s+handlungsaufforderung|klar\s+benannte\s+hauptperson|konkret\s+benannte\s+hauptfigur)\b/.test(
       text
     ) || text.length < 28
   );

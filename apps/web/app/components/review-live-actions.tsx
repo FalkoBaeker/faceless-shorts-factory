@@ -52,11 +52,15 @@ const inferExplicitHeroSubject = (topic: string) => {
     return 'eine Bäckereitheke mit goldbraunen Brötchen und Croissants plus sichtbarem Sommerangebot-Schild';
   }
 
+  if (/katz|kitten|wurf|cattery|russisch\s*blau|russischblau/.test(lower)) {
+    return 'eine klar erkennbare Katze im Portrait mit natürlichem Fell-Detail und ruhigem Innenraum-Hintergrund';
+  }
+
   if (/pizza|pasta|restaurant|imbiss|café|kaffee|coffee/.test(lower)) {
     return 'ein frisch angerichtetes Signature-Gericht auf dem Tresen mit aktiver Bedienung im Hintergrund';
   }
 
-  return `eine klar benannte Hauptperson mit Kernprodukt aus "${topic}" im realen Nutzungskontext`;
+  return `eine konkret benannte Hauptfigur zum Thema "${topic}" mit klar sichtbarer Handlung im realen Nutzungskontext`;
 };
 
 const concreteFallbackAction = (input: { topic: string; sentence: string; index: number }) => {
