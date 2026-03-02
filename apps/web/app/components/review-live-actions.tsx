@@ -63,11 +63,11 @@ const concreteFallbackAction = (input: { topic: string; sentence: string; index:
   const detail = input.sentence.replace(/[.!?…]+$/g, '').trim() || input.topic;
   const heroSubject = inferExplicitHeroSubject(input.topic);
   const templates = [
-    `Hook in Bewegung: Kamera fährt vertikal auf ${heroSubject}, sofortiger Fokus im Bildzentrum.`,
-    `Halbtotale im Alltag: Eine Person interagiert sichtbar mit ${heroSubject}; klar erkennbar: ${detail}.`,
-    `Detailshot mit Dynamik: Nahaufnahme von Produkt/Material in Aktion im Kontext von ${heroSubject}; ${detail}.`,
-    `POV-Übergang: Kamera folgt einem konkreten Schritt vom Problem zur Lösung mit ${heroSubject}; ${detail}.`,
-    `Reaktionsshot: sichtbares Ergebnis im echten Kontext mit ${heroSubject}, deutlicher Effekt rund um ${detail}.`
+    `Shot 1 Hook: Vertikale Kamerafahrt auf ${heroSubject}; eine klar sichtbare Startaktion führt ${detail} ein.`,
+    `Shot 2 Kontext: Halbtotale im realen Umfeld; Hauptfigur interagiert direkt mit ${heroSubject}, ${detail} bleibt klar erkennbar.`,
+    `Shot 3 Detail: Nahe Aufnahme mit Fokuswechsel auf Produkt/Handlung; sichtbarer Mikromoment rund um ${detail}.`,
+    `Shot 4 Entwicklung: Perspektivwechsel mit zweiter Bewegung derselben Szene; der Ablauf geht sichtbar vorwärts ohne Reset.`,
+    `Shot 5 Ergebnis: Reaktionsshot im selben Ort mit klarer Wirkung; ${detail} bleibt im Kontext von ${heroSubject}.`
   ];
 
   return templates[input.index % templates.length];

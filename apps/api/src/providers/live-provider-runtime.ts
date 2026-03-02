@@ -1105,7 +1105,7 @@ const fallbackVideoPlanV1 = (topic: string, userEditedFlowScript?: string): Vide
     script: {
       narration: ensureSentenceEnding(narration),
       scenes: [
-        { order: 1, action: `Vertikale Kamerafahrt auf das zentrale Motiv von ${topic}, sofortige Bewegung im Bild.` },
+        { order: 1, action: `Vertikale Kamerafahrt auf ${inferExplicitHeroSubject(topic)}, sofortige Bewegung im Bild.` },
         { order: 2, action: 'Alltagsszene mit klar erkennbarem Problem, fokussiert auf eine Person im echten Kontext.' },
         { order: 3, action: 'Sichtbarer Lösungsschritt in Nahaufnahme mit Vorher/Nachher-Effekt im selben Bewegungsfluss.' },
         { order: 4, action: 'Abschlussshot mit Produkt/Angebot im Zentrum und klarer CTA-Situation im Bild.' }
@@ -1312,6 +1312,8 @@ const generateSoraPromptBlueprint = async (input: {
       `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
       `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
       'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
+      'userFlowScript und userFlowBeat müssen auf Deutsch, klar und nicht-technisch sein (was sieht der Zuschauer konkret). ' +
+      'Keine generischen Phrasen wie "konkreter Schritt", "zentrales Motiv", "Kamera folgt" ohne benanntes Objekt/Subjekt. ' +
       'JSON Schema: ' +
       '{"technicalSoraPrompt":string,"userFlowScript":string,"hook":string,"continuityAnchors":string[],"segments":[{"index":number,"seconds":number,"title":string,"startState":string,"endState":string,"prompt":string,"userFlowBeat":string}]}.',
     max_output_tokens: 2600
@@ -1579,6 +1581,8 @@ export const generateScriptDraft = async (input: {
   const scriptV2 = await buildScriptV2ForDraft({
     topic: input.topic,
     narration: script,
+    variantType: input.variantType,
+    moodPreset,
     creativeIntent: effectiveIntent,
     brandProfile: input.brandProfile,
     startFrameHint: input.startFrameHint
@@ -1622,12 +1626,12 @@ const concreteSceneAction = (input: { topic: string; detail: string; index: numb
   const detail = input.detail || input.topic;
   const heroSubject = inferExplicitHeroSubject(input.topic);
   const templates = [
-    `Hook in Bewegung: Vertikale Kamerafahrt auf ${heroSubject}, schnelle Annäherung und klarer Fokus im 9:16-Bild.`,
-    `Halbtotale im realen Kontext: Eine Person interagiert sichtbar mit ${heroSubject}; klar erkennbarer Schwerpunkt: ${detail}.`,
-    `Nahe Detailaufnahme mit Handlung: Produkt/Material wird aktiv genutzt oder bearbeitet; ${detail} ist klar sichtbar.`,
-    `POV-Übergang mit Tempo: Kamera folgt einem konkreten Schritt vom Problem zur Lösung im Kontext von ${heroSubject}; ${detail}.`,
-    `Reaktionsshot auf das Ergebnis: sichtbarer Vorher/Nachher-Effekt im selben Ort mit ${heroSubject}, keine statische Totale.`,
-    `Abschluss mit CTA-Szene: klare Endhandlung im echten Nutzungskontext mit ${heroSubject}; Fokus auf ${detail}.`
+    `Shot 1 Hook: Vertikale Kamerafahrt auf ${heroSubject}; eine Person führt sofort eine klare Startaktion aus, die ${detail} visuell einführt.`,
+    `Shot 2 Kontext: Halbtotale im realen Umfeld; Hauptfigur interagiert direkt mit ${heroSubject}, während ${detail} im Bild klar lesbar bleibt.`,
+    `Shot 3 Detail: Nahe Aufnahme mit Fokuswechsel von Objekt auf Handlung; sichtbarer Mikromoment der Nutzung rund um ${detail}.`,
+    `Shot 4 Entwicklung: Perspektivwechsel auf eine zweite Bewegung derselben Szene; der Ablauf geht sichtbar vorwärts ohne Reset auf den Anfang.`,
+    `Shot 5 Ergebnis: Reaktionsshot im selben Ort, klare Wirkung im Gesicht/Objekt erkennbar; ${detail} bleibt kontexttreu eingebunden.`,
+    `Shot 6 CTA: Abschlussshot mit direktem Blick zur Kamera, Produkt/Angebot sichtbar und eindeutiger Handlungsaufforderung im Bild.`
   ];
 
   return ensureSentenceEnding(templates[input.index % templates.length]);
@@ -1665,55 +1669,69 @@ const fallbackScriptV2FromNarration = (topic: string, narration: string): Script
 const buildScriptV2ForDraft = async (input: {
   topic: string;
   narration: string;
+  variantType: VariantType;
+  moodPreset: MoodPreset;
   creativeIntent: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
   startFrameHint?: string;
 }): Promise<ScriptV2> => {
   try {
-    const plan = await generateVideoPlan({
+    const { targetSeconds } = resolveVariantDurations(input.variantType);
+    const segmentPlanSeconds = buildSegmentPlanSeconds(targetSeconds);
+    const hookOpening = ensureSentenceEnding(input.narration.split(/[.!?…]/)[0]?.trim() || `Stop scrolling: ${input.topic}.`);
+    const flowBeatsPrompt = input.narration
+      .split(/(?<=[.!?…])\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 6)
+      .map((value, index) => `${index + 1}) ${value}`)
+      .join(' | ');
+
+    const technicalBasePrompt = [
+      `Topic: ${input.topic}`,
+      `Narration: ${input.narration}`,
+      `Intent: ${renderIntentPrompt(input.creativeIntent).text}`,
+      `Brand: ${renderBrandProfilePrompt(input.brandProfile)}`,
+      `Startframe: ${input.startFrameHint || inferExplicitHeroSubject(input.topic)}`,
+      `Output: 9:16 TikTok style, target ${targetSeconds}s, no loops, consistent subject identity.`
+    ]
+      .filter(Boolean)
+      .join(' | ');
+
+    const blueprint = await generateSoraPromptBlueprint({
       topic: input.topic,
-      creativeIntent: input.creativeIntent,
-      brandProfile: input.brandProfile,
-      startFrameHint: input.startFrameHint,
+      targetSeconds,
+      segmentPlanSeconds,
+      hookOpening,
+      narration: input.narration,
+      flowBeatsPrompt: flowBeatsPrompt || `1) ${input.narration}`,
+      technicalBasePrompt,
+      explicitHeroSubject: inferExplicitHeroSubject(input.topic),
+      startFrameDirective: input.startFrameHint || '',
+      startFrameTransitionDirective: input.startFrameHint
+        ? `Start from uploaded/selected startframe context: ${input.startFrameHint}`
+        : `Start from generated hero subject: ${inferExplicitHeroSubject(input.topic)}`,
+      intentPrompt: renderIntentPrompt(input.creativeIntent).text,
+      brandPrompt: renderBrandProfilePrompt(input.brandProfile),
+      moodPrompt: moodPromptMap[input.moodPreset],
       userEditedFlowScript: input.narration
     });
 
-    const scenes = plan.script.scenes
-      .slice(0, 8)
-      .map((scene, index) => {
-        const rawAction = String(scene.action ?? '').trim();
-        const repairedAction = sceneActionLooksMeta(rawAction)
-          ? concreteSceneAction({
-              topic: input.topic,
-              detail: extractActionDetail(rawAction, input.narration),
-              index
-            })
-          : ensureSentenceEnding(rawAction);
-
-        return {
-          order: Number.isFinite(scene.order) ? Math.max(1, Math.floor(scene.order)) : index + 1,
-          action: repairedAction,
-          lines: scene.lines?.length
-            ? scene.lines
-                .map((line) => ({
-                  speaker: String(line.speaker ?? '').trim().slice(0, 40),
-                  text: String(line.text ?? '').trim().slice(0, 180)
-                }))
-                .filter((line) => line.speaker && line.text)
-            : undefined,
-          onScreenText: String(scene.onScreenText ?? '').trim().slice(0, 120) || undefined
-        };
-      })
+    const scenes = blueprint.segments
+      .map((segment) => ({
+        order: segment.index,
+        action: ensureSentenceEnding(segment.userFlowBeat || segment.startState),
+        onScreenText: undefined,
+        lines: undefined
+      }))
       .filter((scene) => scene.action.length >= 8)
       .sort((a, b) => a.order - b.order);
 
-    if (!scenes.length) {
-      return fallbackScriptV2FromNarration(input.topic, input.narration);
-    }
+    if (!scenes.length) return fallbackScriptV2FromNarration(input.topic, input.narration);
 
     return {
       language: 'de',
-      openingHook: ensureSentenceEnding(plan.hookOpening || `Stop scrolling: ${input.topic}.`),
+      openingHook: ensureSentenceEnding(blueprint.hook || hookOpening),
       narration: input.narration,
       scenes
     };
