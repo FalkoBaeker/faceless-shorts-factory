@@ -133,11 +133,24 @@ type MotionAnalysis = {
   longestStaticSeconds: number;
 };
 
+type MotionSegmentReport = {
+  segmentIndex: number;
+  seconds: number;
+  attemptCount: number;
+  videoId: string;
+  model: string;
+  motion: MotionAnalysis;
+  withinThreshold: boolean;
+  lastFrameAssetPath?: string;
+};
+
 type MotionEnforcement = MotionAnalysis & {
   minPhasesRequired: number;
   maxStaticSecondsAllowed: number;
   withinThreshold: boolean;
   attempts: number;
+  segmentPlanSeconds?: number[];
+  segmentReports?: MotionSegmentReport[];
 };
 
 type StartFrameStyle =
@@ -445,6 +458,50 @@ const resolveVariantDurations = (variantType: VariantType): VariantDurationConfi
   return {
     targetSeconds,
     sourceSeconds
+  };
+};
+
+const buildSegmentPlanSeconds = (targetSeconds: number) => {
+  const target = Math.max(4, Math.round(targetSeconds));
+
+  if (target <= 15) return [8, 8];
+  if (target <= 30) return [12, 12, 8];
+
+  const plan: number[] = [];
+  let remaining = target;
+
+  while (remaining > 0) {
+    if (remaining >= 12) {
+      plan.push(12);
+      remaining -= 12;
+      continue;
+    }
+
+    if (remaining > 8) {
+      plan.push(12);
+      remaining -= 12;
+      continue;
+    }
+
+    if (remaining > 4) {
+      plan.push(8);
+      remaining -= 8;
+      continue;
+    }
+
+    plan.push(4);
+    remaining -= 4;
+  }
+
+  return plan;
+};
+
+const scaleMotionRequirementForSegment = (input: { minPhases: number; maxStaticSeconds: number }, segmentSeconds: number) => {
+  const normalizedSeconds = Math.min(12, Math.max(4, Math.round(segmentSeconds)));
+  const minPhases = Math.max(3, Math.round((input.minPhases * normalizedSeconds) / 12));
+  return {
+    minPhases,
+    maxStaticSeconds: input.maxStaticSeconds
   };
 };
 
@@ -1567,12 +1624,16 @@ const createImage = async (prompt: string) => {
   throw lastError instanceof Error ? lastError : new ProviderRuntimeError('IMAGE_GENERATION_FAILED', { provider: 'openai', fatal: true });
 };
 
-const createVideo = async (prompt: string, variantType: VariantType) => {
+const createVideo = async (
+  prompt: string,
+  input: { variantType: VariantType; secondsOverride?: number }
+) => {
   checkRate('video', cfg.maxRpmVideo);
-  const { sourceSeconds } = resolveVariantDurations(variantType);
-  const seconds = String(sourceSeconds);
+  const { sourceSeconds } = resolveVariantDurations(input.variantType);
+  const effectiveSeconds = Math.min(12, Math.max(4, Math.round(input.secondsOverride ?? sourceSeconds)));
+  const seconds = String(effectiveSeconds);
   const model = 'sora-2';
-  const estimated = sourceSeconds * 0.1;
+  const estimated = effectiveSeconds * 0.1;
   reserveBudget(estimated, `video-${model}`);
 
   const created = await openAiPostJson('/v1/videos', {
@@ -1899,6 +1960,8 @@ const createVideoWithMotionEnforcement = async (input: {
   variantType: VariantType;
   requirement: { minPhases: number; maxStaticSeconds: number };
   calmMode?: boolean;
+  secondsOverride?: number;
+  segmentLabel?: string;
 }) => {
   const baseAttempts = Math.max(1, Number(process.env.MOTION_ENFORCEMENT_ATTEMPTS ?? 2));
   const maxAttempts = input.calmMode ? Math.min(4, baseAttempts + 1) : baseAttempts;
@@ -1913,8 +1976,11 @@ const createVideoWithMotionEnforcement = async (input: {
 
   while (attempt < maxAttempts) {
     attempt += 1;
-    const video = await createVideo(prompt, input.variantType);
-    const metrics = probeMotion(video.bytes, `segment_attempt_${attempt}`);
+    const video = await createVideo(prompt, {
+      variantType: input.variantType,
+      secondsOverride: input.secondsOverride
+    });
+    const metrics = probeMotion(video.bytes, `${input.segmentLabel ?? 'segment'}_attempt_${attempt}`);
 
     const withinThreshold =
       metrics.motionPhases >= requiredMinPhases &&
@@ -1991,6 +2057,89 @@ const createVideoWithMotionEnforcement = async (input: {
       attempts: maxAttempts
     } as MotionEnforcement
   };
+};
+
+const extractLastFramePng = (videoBytes: Buffer, label: string): Buffer | null => {
+  const dir = mkdtempSync(join(tmpdir(), `fsf-last-frame-${label}-`));
+  const input = join(dir, 'input.mp4');
+  const output = join(dir, 'last-frame.png');
+
+  try {
+    writeFileSync(input, videoBytes);
+    const duration = probeMediaDurationSeconds(input, `${label}_duration`);
+    const seek = Math.max(0, duration - 0.08);
+
+    const run = spawnSync(
+      'ffmpeg',
+      ['-y', '-loglevel', 'error', '-ss', seek.toFixed(3), '-i', input, '-frames:v', '1', output],
+      { encoding: 'utf8' }
+    );
+
+    if (run.status !== 0) return null;
+    const bytes = readFileSync(output);
+    return bytes.length ? bytes : null;
+  } catch {
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const concatVideoSegments = (segments: Buffer[]): Buffer => {
+  if (!segments.length) {
+    throw new ProviderRuntimeError('SEGMENT_CONCAT_NO_INPUT', { provider: 'ffmpeg', fatal: true });
+  }
+
+  if (segments.length === 1) return segments[0];
+
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-segment-concat-'));
+  const output = join(dir, 'concatenated.mp4');
+
+  try {
+    const inputs: string[] = [];
+
+    segments.forEach((bytes, index) => {
+      const file = join(dir, `segment-${index + 1}.mp4`);
+      writeFileSync(file, bytes);
+      inputs.push(file);
+    });
+
+    const ffArgs: string[] = ['-y', '-loglevel', 'error'];
+    for (const file of inputs) {
+      ffArgs.push('-i', file);
+    }
+
+    const concatInputs = inputs.map((_, index) => `[${index}:v]`).join('');
+    ffArgs.push(
+      '-filter_complex',
+      `${concatInputs}concat=n=${inputs.length}:v=1:a=0[v]`,
+      '-map',
+      '[v]',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+      output
+    );
+
+    const run = spawnSync('ffmpeg', ffArgs, { encoding: 'utf8' });
+    if (run.status !== 0) {
+      throw new ProviderRuntimeError(`FFMPEG_SEGMENT_CONCAT_FAILED:${run.stderr?.slice(0, 300) ?? 'unknown'}`, {
+        provider: 'ffmpeg',
+        fatal: true
+      });
+    }
+
+    return readFileSync(output);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 };
 
 const probeMediaDurationSeconds = (inputPath: string, label: string) => {
@@ -2568,15 +2717,112 @@ export const runVideoStage = async (input: {
   });
 
   const imageResult = await createImage(imageCompiled.prompt);
-  const motionVideo = await createVideoWithMotionEnforcement({
-    prompt: videoCompiled.prompt,
-    variantType: input.variantType,
-    requirement: motionRequirement,
-    calmMode: effectiveIntent.energyMode === 'calm'
-  });
+
+  const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
+  const segmentReports: MotionSegmentReport[] = [];
+  const segmentVideoBytes: Buffer[] = [];
+  let continuityCue = referenceSummary
+    ? `Start continuity cue from uploaded startframe: ${referenceSummary}`
+    : `Start continuity cue: ${explicitHeroSubject}`;
+  let timelineCursor = 0;
+
+  for (let index = 0; index < segmentPlanSeconds.length; index += 1) {
+    const segmentSeconds = segmentPlanSeconds[index];
+    const segmentStart = timelineCursor;
+    timelineCursor += segmentSeconds;
+    const segmentEnd = timelineCursor;
+
+    const segmentPrompt = [
+      videoCompiled.prompt,
+      `Segment ${index + 1}/${segmentPlanSeconds.length} for a single continuous video. Segment duration: ${segmentSeconds}s. Segment window: ${segmentStart}-${segmentEnd}s.`,
+      index === 0
+        ? `Shot 1 must start from selected startframe anchor. ${startFrameTransitionDirective}`
+        : `Start exactly where segment ${index} ended. Continuity cue: ${continuityCue}.`,
+      'This is one continuous narrative across segments, not separate clips.',
+      'Advance to a new visual action and camera development; never reset to the opening composition.',
+      'Never create internal loops or repeating 4-shot micro-cycles.'
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const segmentMotionRequirement = scaleMotionRequirementForSegment(motionRequirement, segmentSeconds);
+
+    const segmentResult = await createVideoWithMotionEnforcement({
+      prompt: segmentPrompt,
+      variantType: input.variantType,
+      requirement: segmentMotionRequirement,
+      calmMode: effectiveIntent.energyMode === 'calm',
+      secondsOverride: segmentSeconds,
+      segmentLabel: `segment_${index + 1}`
+    });
+
+    segmentVideoBytes.push(segmentResult.video.bytes);
+
+    const segmentAsset = await uploadAsset(
+      input.jobId,
+      `jobs/${input.jobId}/assets/segments/segment-${index + 1}.mp4`,
+      segmentResult.video.bytes,
+      'video/mp4',
+      'openai-video'
+    );
+
+    let lastFrameAssetPath: string | undefined;
+    const lastFrameBytes = extractLastFramePng(segmentResult.video.bytes, `segment-${index + 1}`);
+    if (lastFrameBytes) {
+      const lastFrameAsset = await uploadAsset(
+        input.jobId,
+        `jobs/${input.jobId}/assets/segments/segment-${index + 1}-lastframe.png`,
+        lastFrameBytes,
+        'image/png',
+        'ffmpeg'
+      );
+      lastFrameAssetPath = lastFrameAsset.objectPath;
+      continuityCue = `Use the framing/subject continuity from ${lastFrameAsset.signedUrl} and continue motion forward`;
+    }
+
+    segmentReports.push({
+      segmentIndex: index + 1,
+      seconds: segmentSeconds,
+      attemptCount: segmentResult.enforcement.attempts,
+      videoId: segmentResult.video.videoId,
+      model: segmentResult.video.model,
+      motion: {
+        durationSeconds: segmentResult.enforcement.durationSeconds,
+        sceneThreshold: segmentResult.enforcement.sceneThreshold,
+        motionCuts: segmentResult.enforcement.motionCuts,
+        motionPhases: segmentResult.enforcement.motionPhases,
+        longestStaticSeconds: segmentResult.enforcement.longestStaticSeconds
+      },
+      withinThreshold: segmentResult.enforcement.withinThreshold,
+      lastFrameAssetPath
+    });
+
+    logEvent({
+      event: 'video_segment_generated',
+      level: 'INFO',
+      jobId: input.jobId,
+      detail: JSON.stringify({
+        segmentIndex: index + 1,
+        seconds: segmentSeconds,
+        segmentObjectPath: segmentAsset.objectPath,
+        withinThreshold: segmentResult.enforcement.withinThreshold,
+        attempts: segmentResult.enforcement.attempts
+      })
+    });
+  }
+
+  const concatenatedVideoBytes = concatVideoSegments(segmentVideoBytes);
+  const finalSegmentMotion = probeMotion(concatenatedVideoBytes, 'segment_concatenated');
 
   const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');
-  const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, motionVideo.video.bytes, 'video/mp4', 'openai-video');
+  const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, concatenatedVideoBytes, 'video/mp4', 'openai-video');
+
+  const totalAttempts = segmentReports.reduce((sum, item) => sum + item.attemptCount, 0);
+  const withinThreshold = segmentReports.every((item) => item.withinThreshold);
+  const requiredTotalPhases = segmentPlanSeconds.reduce(
+    (sum, seconds) => sum + scaleMotionRequirementForSegment(motionRequirement, seconds).minPhases,
+    0
+  );
 
   return {
     script: llmText,
@@ -2584,8 +2830,8 @@ export const runVideoStage = async (input: {
     imageDiagnostics: imageResult.diagnostics,
     video: videoAsset,
     referenceAsset,
-    videoModel: motionVideo.video.model,
-    videoId: motionVideo.video.videoId,
+    videoModel: 'sora-2',
+    videoId: segmentReports.map((item) => item.videoId).join(','),
     conceptId: concept.id,
     startFrameStyle,
     startFrameCandidateId: input.startFrameCandidateId ?? input.generationPayload?.startFrame?.candidateId,
@@ -2600,7 +2846,15 @@ export const runVideoStage = async (input: {
 
     userControls: legacyUserControlsProvided ? legacyUserControls : undefined,
     promptCompiler: videoCompiled.meta,
-    motionEnforcement: motionVideo.enforcement,
+    motionEnforcement: {
+      ...finalSegmentMotion,
+      minPhasesRequired: requiredTotalPhases,
+      maxStaticSecondsAllowed: motionRequirement.maxStaticSeconds,
+      withinThreshold,
+      attempts: totalAttempts,
+      segmentPlanSeconds,
+      segmentReports
+    },
     scriptValidation: {
       targetSeconds: draft.targetSeconds,
       estimatedSeconds: draft.estimatedSeconds,
