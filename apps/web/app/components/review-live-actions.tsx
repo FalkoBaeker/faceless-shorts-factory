@@ -45,14 +45,29 @@ const deriveMoodFromIntent = (intent: CreativeIntentPayload): MoodPreset => {
   return 'commercial_cta';
 };
 
+const inferExplicitHeroSubject = (topic: string) => {
+  const lower = topic.toLowerCase();
+
+  if (/bäck|brot|bröt|croissant|konditor|backstube/.test(lower)) {
+    return 'eine Bäckereitheke mit goldbraunen Brötchen und Croissants plus sichtbarem Sommerangebot-Schild';
+  }
+
+  if (/pizza|pasta|restaurant|imbiss|café|kaffee|coffee/.test(lower)) {
+    return 'ein frisch angerichtetes Signature-Gericht auf dem Tresen mit aktiver Bedienung im Hintergrund';
+  }
+
+  return `eine klar benannte Hauptperson mit Kernprodukt aus "${topic}" im realen Nutzungskontext`;
+};
+
 const concreteFallbackAction = (input: { topic: string; sentence: string; index: number }) => {
   const detail = input.sentence.replace(/[.!?…]+$/g, '').trim() || input.topic;
+  const heroSubject = inferExplicitHeroSubject(input.topic);
   const templates = [
-    `Hook in Bewegung: Kamera fährt vertikal auf das Hauptmotiv zu "${input.topic}", sofortiger Fokus im Bildzentrum.`,
-    `Halbtotale im Alltag: Eine Person interagiert sichtbar mit dem Angebot; klar erkennbar: ${detail}.`,
-    `Detailshot mit Dynamik: Nahaufnahme von Produkt/Material in Aktion; ${detail}.`,
-    `POV-Übergang: Kamera folgt einem konkreten Schritt vom Problem zur Lösung; ${detail}.`,
-    `Reaktionsshot: sichtbares Ergebnis im echten Kontext, deutlicher Effekt rund um ${detail}.`
+    `Hook in Bewegung: Kamera fährt vertikal auf ${heroSubject}, sofortiger Fokus im Bildzentrum.`,
+    `Halbtotale im Alltag: Eine Person interagiert sichtbar mit ${heroSubject}; klar erkennbar: ${detail}.`,
+    `Detailshot mit Dynamik: Nahaufnahme von Produkt/Material in Aktion im Kontext von ${heroSubject}; ${detail}.`,
+    `POV-Übergang: Kamera folgt einem konkreten Schritt vom Problem zur Lösung mit ${heroSubject}; ${detail}.`,
+    `Reaktionsshot: sichtbares Ergebnis im echten Kontext mit ${heroSubject}, deutlicher Effekt rund um ${detail}.`
   ];
 
   return templates[input.index % templates.length];

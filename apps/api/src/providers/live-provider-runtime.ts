@@ -294,6 +294,28 @@ const moodPromptMap: Record<MoodPreset, string> = {
     'Stimmung: leicht humorvoll, freundlich, professionell. Keine Rabatt-Deadline-/Hard-Sell-Formulierungen wie "nur heute", "Angebot endet", "jetzt kaufen".'
 };
 
+const inferExplicitHeroSubject = (topic: string) => {
+  const lower = topic.toLowerCase();
+
+  if (/bäck|brot|bröt|croissant|konditor|backstube/.test(lower)) {
+    return 'eine Bäckereitheke mit goldbraunen Brötchen und Croissants, dazu ein gut lesbares Sommerangebot-Schild';
+  }
+
+  if (/pizza|pasta|restaurant|imbiss|café|kaffee|coffee/.test(lower)) {
+    return 'ein frisch angerichtetes Signature-Gericht auf dem Tresen, mit sichtbarer Bedienung im Hintergrund';
+  }
+
+  if (/fitness|gym|workout|training/.test(lower)) {
+    return 'eine Person im aktiven Training mit klar sichtbarer Übungsausführung im Studio';
+  }
+
+  if (/auto|car|werkstatt|garage/.test(lower)) {
+    return 'ein Fahrzeug in klar erkennbarer Service- oder Anwendungssituation mit sichtbarer Aktion am Objekt';
+  }
+
+  return `eine klar benannte Hauptperson mit dem Kernprodukt aus dem Thema "${topic}" im realen Nutzungskontext`;
+};
+
 const motionGuardByVariant: Record<VariantType, string> = {
   SHORT_15: 'Motion-Guard: mindestens 5 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.',
   MASTER_30: 'Motion-Guard: mindestens 8 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.'
@@ -989,7 +1011,8 @@ const generateVideoPlan = async (input: {
       `Pflicht: script.scenes muss konkrete, sichtbare Handlungen enthalten (kein reines Umschreiben der Narration). ` +
       `Pflicht: jede Szene braucht klar unterschiedliche Bildsprache/Shot-Idee, keine Wiederholung desselben Ausschnitts. ` +
       `Verboten in script.scenes.action: Meta-Formulierungen wie \"Zeige...\", \"Szene X:\" oder abstrakte Platzhalter ohne Shot-Detail. ` +
-      `Jede action muss als konkrete Shot-Beschreibung formuliert sein (Subjekt + sichtbare Bewegung + Kontext). ` +
+      `Verboten sind unscharfe Begriffe wie \"zentrales Motiv\", \"Hauptmotiv\", \"Thema visualisieren\" ohne konkrete Benennung. ` +
+      `Jede action muss als konkrete Shot-Beschreibung formuliert sein (konkretes Subjekt/Objekt + sichtbare Bewegung + Kontext/Ort). ` +
       `Verboten als Default-Motiv: \"hands at work\", außer es steht explizit im Topic/User-Input. ` +
       `JSON-Schema: {"hookOpening":string,"flowBeats":[{"order":number,"beat":string,"visualHint"?:string,"onScreenTextHint"?:string}],"script":{"narration":string,"scenes":[{"order":number,"action":string,"lines"?:[{"speaker":string,"text":string}],"onScreenText"?:string}]},"subjectConstraints":string[],"promptDirectives":string[]}`,
     max_output_tokens: 1200
@@ -1298,7 +1321,8 @@ const sceneActionLooksMeta = (action: string) => {
   return (
     /^szene\s*\d+[:.)]?/.test(value) ||
     /^\s*(zeige|zeigen|zeig|darstellen|präsentiere|visualisiere)\b/.test(value) ||
-    value.includes('konkrete sichtbare handlung')
+    value.includes('konkrete sichtbare handlung') ||
+    /\b(zentrales?\s+motiv|hauptmotiv|thema\s+visualisieren)\b/.test(value)
   );
 };
 
@@ -1315,13 +1339,14 @@ const extractActionDetail = (action: string, fallback: string) => {
 
 const concreteSceneAction = (input: { topic: string; detail: string; index: number }) => {
   const detail = input.detail || input.topic;
+  const heroSubject = inferExplicitHeroSubject(input.topic);
   const templates = [
-    `Hook in Bewegung: Vertikale Kamerafahrt auf das zentrale Motiv zu "${input.topic}", schnelle Annäherung und klarer Fokus im 9:16-Bild.`,
-    `Halbtotale im realen Kontext: Eine Person interagiert sichtbar mit dem Angebot; Fokus auf ${detail}.`,
-    `Nahe Detailaufnahme mit Handlung: Hände, Produkt oder Material in Aktion; ${detail} ist klar erkennbar.`,
-    `POV-Übergang mit Tempo: Kamera folgt einem konkreten Schritt vom Problem zur Lösung; ${detail}.`,
-    `Reaktionsshot auf das Ergebnis: sichtbarer Vorher/Nachher-Effekt rund um ${detail}, keine statische Totale.`,
-    `Abschluss mit CTA-Szene: klare Endhandlung im echten Nutzungskontext, zentraler Fokus auf ${detail}.`
+    `Hook in Bewegung: Vertikale Kamerafahrt auf ${heroSubject}, schnelle Annäherung und klarer Fokus im 9:16-Bild.`,
+    `Halbtotale im realen Kontext: Eine Person interagiert sichtbar mit ${heroSubject}; klar erkennbarer Schwerpunkt: ${detail}.`,
+    `Nahe Detailaufnahme mit Handlung: Produkt/Material wird aktiv genutzt oder bearbeitet; ${detail} ist klar sichtbar.`,
+    `POV-Übergang mit Tempo: Kamera folgt einem konkreten Schritt vom Problem zur Lösung im Kontext von ${heroSubject}; ${detail}.`,
+    `Reaktionsshot auf das Ergebnis: sichtbarer Vorher/Nachher-Effekt im selben Ort mit ${heroSubject}, keine statische Totale.`,
+    `Abschluss mit CTA-Szene: klare Endhandlung im echten Nutzungskontext mit ${heroSubject}; Fokus auf ${detail}.`
   ];
 
   return ensureSentenceEnding(templates[input.index % templates.length]);
@@ -2416,7 +2441,8 @@ export const runVideoStage = async (input: {
     `Keep on-screen text inside title-safe area (${safeMarginPercent}% margin).`,
     'No caption text should touch the frame border.',
     'TikTok pace: immediate hook, visibly changing shots, no slow static drift.',
-    'No looping/recycling of the same crop or 4-shot pattern; progression must stay forward.'
+    'No looping/recycling of the same crop or 4-shot pattern; progression must stay forward.',
+    'Never use abstract labels like "central motif"; always name the exact subject/object shown in the shot.'
   ];
 
   const lightingAnchors = [
@@ -2428,8 +2454,10 @@ export const runVideoStage = async (input: {
     .filter(Boolean)
     .join(' ');
 
+  const explicitHeroSubject = inferExplicitHeroSubject(effectiveTopic);
+
   const imageCompiled = compilePromptV3({
-    sceneIntent: `Create a filmic opening keyframe for topic "${effectiveTopic}"`,
+    sceneIntent: `Create a filmic opening keyframe for topic "${effectiveTopic}". Explicit hero subject: ${explicitHeroSubject}`,
     hookOpening,
     flowBeats: flowBeatsPrompt,
     lightingAnchors,
@@ -2441,7 +2469,7 @@ export const runVideoStage = async (input: {
   });
 
   const videoCompiled = compilePromptV3({
-    sceneIntent: `Create a cinematic social short about "${effectiveTopic}" with clear narrative momentum`,
+    sceneIntent: `Create a cinematic social short about "${effectiveTopic}" with clear narrative momentum. Explicit hero subject: ${explicitHeroSubject}`,
     hookOpening,
     flowBeats: flowBeatsPrompt,
     lightingAnchors: [
