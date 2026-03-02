@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   CreateProjectRequest,
   CreateProjectResponse,
@@ -841,6 +842,16 @@ export const createStartFrameCandidatesHandler = async (
     creativeIntent,
     limit: payload.limit
   });
+  const contextSignature = createHash('sha1')
+    .update(
+      JSON.stringify({
+        conceptId: payload.conceptId ?? 'concept_web_vertical_slice',
+        moodPreset,
+        creativeIntent
+      })
+    )
+    .digest('hex')
+    .slice(0, 12);
 
   const candidates = await Promise.all(
     baseCandidates.map(async (candidate) => {
@@ -850,7 +861,8 @@ export const createStartFrameCandidatesHandler = async (
         style: candidate.style,
         label: candidate.label,
         description: candidate.description,
-        moodPreset
+        moodPreset,
+        contextSignature
       });
 
       if (!generated?.signedUrl) return candidate;

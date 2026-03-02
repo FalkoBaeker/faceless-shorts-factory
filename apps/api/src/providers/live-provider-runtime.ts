@@ -2432,6 +2432,27 @@ const extensionForMime = (mimeType: string) => {
 
 const thumbnailCache = new Map<string, StoredAsset>();
 
+const buildStartFrameThumbnailSignature = (input: {
+  candidateId: string;
+  topic: string;
+  style: StartFrameStyle;
+  label: string;
+  description: string;
+  moodPreset: MoodPreset;
+  contextSignature?: string;
+}) => {
+  const canonical = [
+    input.candidateId.trim().toLowerCase(),
+    input.topic.trim().toLowerCase(),
+    input.style,
+    input.label.trim().toLowerCase(),
+    input.description.trim().toLowerCase(),
+    input.moodPreset,
+    String(input.contextSignature ?? '').trim().toLowerCase()
+  ].join('|');
+  return createHash('sha1').update(canonical).digest('hex').slice(0, 12);
+};
+
 export const uploadStartFrameReference = async (input: {
   organizationId: string;
   fileName: string;
@@ -2476,12 +2497,15 @@ export const generateStartFrameThumbnail = async (input: {
   label: string;
   description: string;
   moodPreset: MoodPreset;
+  contextSignature?: string;
 }) => {
   if (!cfg.openaiApiKey || cfg.storageProvider !== 'supabase') {
     return null;
   }
 
-  const cached = thumbnailCache.get(input.candidateId);
+  const promptSignature = buildStartFrameThumbnailSignature(input);
+  const cacheKey = `${input.candidateId}:${promptSignature}`;
+  const cached = thumbnailCache.get(cacheKey);
   if (cached) {
     return cached;
   }
@@ -2497,9 +2521,9 @@ export const generateStartFrameThumbnail = async (input: {
 
   try {
     const imageResult = await createImage(thumbPrompt);
-    const objectPath = `catalog/startframe-thumbnails/${sanitizeSegment(input.candidateId, 'candidate')}.png`;
+    const objectPath = `catalog/startframe-thumbnails/${sanitizeSegment(input.candidateId, 'candidate')}-${promptSignature}.png`;
     const asset = await uploadAsset('catalog-startframe', objectPath, imageResult.bytes, 'image/png', 'openai-image-thumbnail');
-    thumbnailCache.set(input.candidateId, asset);
+    thumbnailCache.set(cacheKey, asset);
     return asset;
   } catch (error) {
     logEvent({
@@ -2509,7 +2533,8 @@ export const generateStartFrameThumbnail = async (input: {
       detail: String((error as Error)?.message ?? error),
       data: {
         candidateId: input.candidateId,
-        style: input.style
+        style: input.style,
+        promptSignature
       }
     });
     return null;

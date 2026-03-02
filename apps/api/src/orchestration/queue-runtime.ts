@@ -1212,6 +1212,26 @@ const processVideo = async (job: Job<StagePayload>) => {
     if (result.referenceAsset) {
       await insertTimeline(jobId, 'ASSET_STARTFRAME_REFERENCE_STORED', buildAssetDetail('startframe_reference', result.referenceAsset));
     }
+    if (result.strictStep1ImagePrompt) {
+      await insertTimeline(
+        jobId,
+        'ASSET_STARTFRAME_PROMPT_STEP1_STORED',
+        buildAssetDetail('startframe_prompt_step1', result.strictStep1ImagePrompt)
+      );
+    }
+    if (result.strictStep1Prompt) {
+      await insertTimeline(jobId, 'ASSET_SORA_PROMPT_STEP1_STORED', buildAssetDetail('sora_prompt_step1', result.strictStep1Prompt));
+    }
+    if (result.strictStep2Prompt) {
+      await insertTimeline(jobId, 'ASSET_SORA_PROMPT_STEP2_STORED', buildAssetDetail('sora_prompt_step2', result.strictStep2Prompt));
+    }
+    if (result.strictStep1RequestPreview) {
+      await insertTimeline(
+        jobId,
+        'ASSET_SORA_REQUEST_STEP1_STORED',
+        buildAssetDetail('sora_request_step1', result.strictStep1RequestPreview)
+      );
+    }
     if (result.strictStep1Prompt) {
       await insertTimeline(
         jobId,
@@ -1262,6 +1282,16 @@ const processVideo = async (job: Job<StagePayload>) => {
           source: result.videoPlanSource
         })
       );
+      if (result.videoPlanSource === 'fallback') {
+        await insertTimeline(
+          jobId,
+          'VIDEO_PLAN_V1_FALLBACK_USED',
+          JSON.stringify({
+            source: result.videoPlanSource,
+            reconciled: result.videoPlanReconciled
+          })
+        );
+      }
     }
 
     await insertTimeline(jobId, 'PROMPT_COMPILER_V3_APPLIED', JSON.stringify(result.promptCompiler));
