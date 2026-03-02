@@ -823,18 +823,22 @@ const reserveBudget = (estimatedEur: number, reason: string) => {
   dailySpend.set(day, next);
 };
 
-const openAiHeaders = () => {
+const openAiAuthHeaders = () => {
   ensureEnv('OPENAI_API_KEY', cfg.openaiApiKey);
   return {
-    Authorization: `Bearer ${cfg.openaiApiKey}`,
-    'Content-Type': 'application/json'
+    Authorization: `Bearer ${cfg.openaiApiKey}`
   };
 };
+
+const openAiHeaders = () => ({
+  ...openAiAuthHeaders(),
+  'Content-Type': 'application/json'
+});
 
 const openAiGet = async (path: string) => {
   const res = await fetch(`https://api.openai.com${path}`, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${cfg.openaiApiKey}` }
+    headers: openAiAuthHeaders()
   });
   const body = await res.text();
   if (!res.ok) throwProviderError('openai', res.status, body);
@@ -865,10 +869,37 @@ const openAiPostBinary = async (path: string, payload: Record<string, unknown>) 
   return buffer;
 };
 
+const openAiPostMultipart = async (
+  path: string,
+  fields: Record<string, string | number | boolean | null | undefined>,
+  file?: { fieldName: string; bytes: Buffer; fileName: string; mimeType?: string }
+) => {
+  const form = new FormData();
+
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || value === null) continue;
+    form.append(key, String(value));
+  }
+
+  if (file) {
+    form.append(file.fieldName, new Blob([file.bytes], { type: file.mimeType ?? 'application/octet-stream' }), file.fileName);
+  }
+
+  const res = await fetch(`https://api.openai.com${path}`, {
+    method: 'POST',
+    headers: openAiAuthHeaders(),
+    body: form
+  });
+
+  const body = await res.text();
+  if (!res.ok) throwProviderError('openai', res.status, body);
+  return parseJsonSafe(body) ?? {};
+};
+
 const openAiGetBinary = async (path: string) => {
   const res = await fetch(`https://api.openai.com${path}`, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${cfg.openaiApiKey}` }
+    headers: openAiAuthHeaders()
   });
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!res.ok) {
@@ -1859,7 +1890,11 @@ const createImage = async (prompt: string) => {
 
 const createVideo = async (
   prompt: string,
-  input: { variantType: VariantType; secondsOverride?: number }
+  input: {
+    variantType: VariantType;
+    secondsOverride?: number;
+    inputReference?: { bytes: Buffer; fileName: string; mimeType?: string };
+  }
 ) => {
   checkRate('video', cfg.maxRpmVideo);
   const { sourceSeconds } = resolveVariantDurations(input.variantType);
@@ -1869,12 +1904,23 @@ const createVideo = async (
   const estimated = effectiveSeconds * 0.1;
   reserveBudget(estimated, `video-${model}`);
 
-  const created = await openAiPostJson('/v1/videos', {
-    model,
-    prompt,
-    seconds,
-    size: '720x1280'
-  });
+  const created = await openAiPostMultipart(
+    '/v1/videos',
+    {
+      model,
+      prompt,
+      seconds,
+      size: '720x1280'
+    },
+    input.inputReference
+      ? {
+          fieldName: 'input_reference',
+          bytes: input.inputReference.bytes,
+          fileName: input.inputReference.fileName,
+          mimeType: input.inputReference.mimeType ?? 'image/png'
+        }
+      : undefined
+  );
 
   const videoId = String(created.id ?? '');
   if (!videoId) throw new ProviderRuntimeError('VIDEO_ID_MISSING', { provider: 'openai', fatal: true });
@@ -2195,6 +2241,7 @@ const createVideoWithMotionEnforcement = async (input: {
   calmMode?: boolean;
   secondsOverride?: number;
   segmentLabel?: string;
+  inputReference?: { bytes: Buffer; fileName: string; mimeType?: string };
 }) => {
   const baseAttempts = Math.max(1, Number(process.env.MOTION_ENFORCEMENT_ATTEMPTS ?? 2));
   const maxAttempts = input.calmMode ? Math.min(4, baseAttempts + 1) : baseAttempts;
@@ -2211,7 +2258,8 @@ const createVideoWithMotionEnforcement = async (input: {
     attempt += 1;
     const video = await createVideo(prompt, {
       variantType: input.variantType,
-      secondsOverride: input.secondsOverride
+      secondsOverride: input.secondsOverride,
+      inputReference: input.inputReference
     });
     const metrics = probeMotion(video.bytes, `${input.segmentLabel ?? 'segment'}_attempt_${attempt}`);
 
@@ -2640,9 +2688,11 @@ export const runVideoStage = async (input: {
 
   let referenceAsset: StoredAsset | null = null;
   let referenceSummary = '';
+  let referenceImageBytes: Buffer | null = null;
 
   if (startFrameReferenceObjectPath) {
     const referenceBytes = await supabaseDownload(startFrameReferenceObjectPath);
+    referenceImageBytes = referenceBytes;
     const referenceMimeType = detectImageMimeFromName(startFrameReferenceObjectPath);
     const referenceExt = extensionForMime(referenceMimeType);
     referenceAsset = await uploadAsset(
@@ -3003,6 +3053,7 @@ export const runVideoStage = async (input: {
   let continuityCue = referenceSummary
     ? `Start continuity cue from uploaded startframe: ${referenceSummary}`
     : `Start continuity cue: ${explicitHeroSubject}`;
+  let nextSegmentReferenceBytes: Buffer | null = referenceImageBytes ?? imageResult.bytes;
   let timelineCursor = 0;
 
   for (let index = 0; index < segmentPlanSeconds.length; index += 1) {
@@ -3038,7 +3089,14 @@ export const runVideoStage = async (input: {
       requirement: segmentMotionRequirement,
       calmMode: effectiveIntent.energyMode === 'calm',
       secondsOverride: segmentSeconds,
-      segmentLabel: `segment_${index + 1}`
+      segmentLabel: `segment_${index + 1}`,
+      inputReference: nextSegmentReferenceBytes
+        ? {
+            bytes: nextSegmentReferenceBytes,
+            fileName: `segment-${index + 1}-reference.png`,
+            mimeType: 'image/png'
+          }
+        : undefined
     });
 
     segmentVideoBytes.push(segmentResult.video.bytes);
@@ -3068,6 +3126,7 @@ export const runVideoStage = async (input: {
       ]
         .filter(Boolean)
         .join(' ');
+      nextSegmentReferenceBytes = lastFrameBytes;
     } else {
       continuityCue = blueprintSegment?.endState
         ? `Continue from previous segment end-state: ${blueprintSegment.endState}`
