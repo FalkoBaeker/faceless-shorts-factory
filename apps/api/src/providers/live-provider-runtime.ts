@@ -461,11 +461,7 @@ const parseRangeFloat = (value: unknown, fallback: number, min: number, max: num
   return Math.min(max, Math.max(min, parsed));
 };
 
-const resolveImageModelOrder = () => {
-  const primary = String(cfg.openaiImageModel ?? 'gpt-image-1.5').trim() || 'gpt-image-1.5';
-  const fallback = String(cfg.openaiImageModelFallback ?? 'gpt-image-1').trim() || 'gpt-image-1';
-  return primary === fallback ? [primary] : [primary, fallback];
-};
+const resolveImageModelOrder = () => ['gpt-image-1.5'];
 
 const premium60Enabled = () => (process.env.ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
 
@@ -1175,6 +1171,62 @@ const generateStrictStep2SoraPrompt = async (input: {
   return {
     soraPrompt,
     model: STRICT_PROMPT_ARCHITECT_MODEL
+  };
+};
+
+const generateViewerScriptFromStrictSoraPrompt = async (input: {
+  soraPrompt: string;
+  topic: string;
+  targetSeconds: number;
+}) => {
+  if (!input.soraPrompt.trim()) {
+    throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.008, 'llm-strict-viewer-script');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: STRICT_PROMPT_ARCHITECT_MODEL,
+    input:
+      'Erstelle aus diesem Sora-Prompt ein für Zuschauer geeignetes Skript. ' +
+      'Keine technischen Lens-/Kamera-Parameter, aber klar beschreiben, was nacheinander im Video passiert, inklusive Dialogen, Bewegungen und Schnitten. ' +
+      `Topic: ${input.topic}. Ziel-Länge ca. ${input.targetSeconds}s. ` +
+      `Sora-Prompt: ${input.soraPrompt}. ` +
+      'Gib nur das finale Skript als Fließtext aus.',
+    max_output_tokens: 1800
+  });
+
+  const script = parseOpenAiResponseText(response).trim();
+  if (!script) {
+    throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
+  return script;
+};
+
+const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
+  const sentences = script
+    .split(/(?<=[.!?…])\s+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+
+  const openingHook = ensureSentenceEnding(sentences[0] ?? script.slice(0, 120));
+  const scenes = (sentences.length ? sentences : [script])
+    .map((sentence, index) => ({
+      order: index + 1,
+      action: ensureSentenceEnding(sentence),
+      lines: undefined,
+      onScreenText: undefined
+    }))
+    .filter((scene) => scene.action.trim().length >= 12);
+
+  return {
+    language: 'de',
+    openingHook,
+    narration: script,
+    scenes
   };
 };
 
@@ -1930,14 +1982,38 @@ export const generateScriptDraft = async (input: {
   const { targetSeconds } = resolveVariantDurations(input.variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
 
-  let script = await createScriptFromLlm(
-    input.topic,
-    input.variantType,
+  const strictWebsiteBundle = await extractWebsiteContextWithStrictLlm({
+    topic: input.topic,
+    brandProfile: input.brandProfile,
+    creativeIntent: effectiveIntent
+  });
+
+  const strictImagePromptText = buildStrictStep1ImagePrompt({
+    topic: input.topic,
+    brandProfile: input.brandProfile,
+    creativeIntent: effectiveIntent,
     moodPreset,
-    effectiveIntent,
-    input.brandProfile,
-    input.startFrameHint
-  );
+    websiteContext: strictWebsiteBundle.websiteContext
+  });
+
+  const strictImage = await createStrictStep1Image(strictImagePromptText);
+  const strictImageDataUrl = `data:image/png;base64,${strictImage.bytes.toString('base64')}`;
+
+  const strictStep1Prompt = await generateStrictStep1SoraPrompt({
+    topic: input.topic,
+    brandProfile: input.brandProfile,
+    creativeIntent: effectiveIntent,
+    moodPreset,
+    startFrameImageUrl: strictImageDataUrl,
+    startFrameHint: input.startFrameHint,
+    websiteBundle: strictWebsiteBundle
+  });
+
+  let script = await generateViewerScriptFromStrictSoraPrompt({
+    soraPrompt: strictStep1Prompt.soraPrompt,
+    topic: input.topic,
+    targetSeconds
+  });
   script = finalizeScriptLanguage(script, input.brandProfile);
   let estimatedSeconds = estimateSpeechSeconds(script);
 
@@ -1954,16 +2030,7 @@ export const generateScriptDraft = async (input: {
 
   const condensed = durationRepairAttempts > 0;
   const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
-  const scriptV2 = await buildScriptV2ForDraft({
-    topic: input.topic,
-    narration: script,
-    variantType: input.variantType,
-    moodPreset,
-    creativeIntent: effectiveIntent,
-    brandProfile: input.brandProfile,
-    startFrameHint: input.startFrameHint,
-    startFrameReferenceObjectPath: input.startFrameReferenceObjectPath
-  });
+  const scriptV2 = buildScriptV2FromViewerScript(script);
 
   return {
     script,
