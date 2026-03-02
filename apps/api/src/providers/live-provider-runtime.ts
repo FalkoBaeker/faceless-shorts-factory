@@ -80,7 +80,7 @@ const cfg = {
   maxRpmLlm: Number(process.env.MAX_RPM_LLM ?? 30),
   maxRpmTts: Number(process.env.MAX_RPM_TTS ?? 10),
   maxRpmVideo: Number(process.env.MAX_RPM_VIDEO ?? 3),
-  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1',
+  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1.5',
   openaiImageModelFallback: process.env.OPENAI_IMAGE_MODEL_FALLBACK ?? 'gpt-image-1'
 };
 
@@ -330,7 +330,7 @@ const parseRangeFloat = (value: unknown, fallback: number, min: number, max: num
 };
 
 const resolveImageModelOrder = () => {
-  const primary = String(cfg.openaiImageModel ?? 'gpt-image-1').trim() || 'gpt-image-1';
+  const primary = String(cfg.openaiImageModel ?? 'gpt-image-1.5').trim() || 'gpt-image-1.5';
   const fallback = String(cfg.openaiImageModelFallback ?? 'gpt-image-1').trim() || 'gpt-image-1';
   return primary === fallback ? [primary] : [primary, fallback];
 };
@@ -971,6 +971,9 @@ const generateVideoPlan = async (input: {
       `${input.startFrameHint ? `Startframe-Hinweis: ${input.startFrameHint}. ` : ''}` +
       `${input.userEditedFlowScript ? `User-Entwurf: ${input.userEditedFlowScript}. ` : ''}` +
       `Pflicht: hookOpening muss in Sekunde 0-2 funktionieren. 4-6 flowBeats. ` +
+      `Pflicht: script.scenes muss konkrete, sichtbare Handlungen enthalten (kein reines Umschreiben der Narration). ` +
+      `Pflicht: jede Szene braucht klar unterschiedliche Bildsprache/Shot-Idee, keine Wiederholung desselben Ausschnitts. ` +
+      `Verboten als Default-Motiv: \"hands at work\", außer es steht explizit im Topic/User-Input. ` +
       `JSON-Schema: {"hookOpening":string,"flowBeats":[{"order":number,"beat":string,"visualHint"?:string,"onScreenTextHint"?:string}],"script":{"narration":string,"scenes":[{"order":number,"action":string,"lines"?:[{"speaker":string,"text":string}],"onScreenText"?:string}]},"subjectConstraints":string[],"promptDirectives":string[]}`,
     max_output_tokens: 1200
   });
@@ -1180,7 +1183,7 @@ const createScriptFromLlm = async (
       `${brandPrompt} ` +
       'Das Skript muss mit einem vollständigen, abgeschlossenen Satz enden. ' +
       'In der ersten Sekunde muss der Hook spürbar sein, außer im calm-mode. ' +
-      'Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints.',
+      'Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints. Schreibe in kurzen, schnellen Sätzen (TikTok-Tempo), ohne Füller.',
     max_output_tokens: Math.max(220, Math.round(targetWords * 2.4))
   });
   const text = parseOpenAiResponseText(response);
@@ -1871,8 +1874,6 @@ const muxVideoAndAudio = (
         '-y',
         '-loglevel',
         'error',
-        '-stream_loop',
-        '-1',
         '-i',
         inputVideo,
         '-i',
@@ -2227,7 +2228,7 @@ export const runVideoStage = async (input: {
     videoPlanV1?.hookOpening?.trim() ||
     storyboardLight?.hookHint?.trim() ||
     llmText.split(/[.!?…]/)[0]?.trim() ||
-    `Achtung: ${effectiveTopic}.`;
+    `Stop scrolling: ${effectiveTopic} in 30 Sekunden klar gemacht.`;
 
   const hookAutoRepairAttempts = Math.max(1, Math.min(2, Number(process.env.HOOK_AUTO_REPAIR_ATTEMPTS ?? 2)));
   let repairedHookOpening = initialHookOpening;
@@ -2235,7 +2236,7 @@ export const runVideoStage = async (input: {
   for (let hookAttempt = 0; hookAttempt < hookAutoRepairAttempts; hookAttempt += 1) {
     const strongEnough = repairedHookOpening.trim().length >= 14 || effectiveIntent.energyMode === 'calm';
     if (strongEnough) break;
-    repairedHookOpening = `Achtung: ${effectiveTopic} – in Sekunden siehst du die Lösung.`;
+    repairedHookOpening = `Stop scrolling: ${effectiveTopic} – in Sekunden siehst du die konkrete Lösung.`;
   }
 
   const hookOpening = ensureSentenceEnding(repairedHookOpening);
@@ -2261,7 +2262,9 @@ export const runVideoStage = async (input: {
   const outputConstraints = [
     `9:16 vertical output, cinematic but readable for mobile.`,
     `Keep on-screen text inside title-safe area (${safeMarginPercent}% margin).`,
-    'No caption text should touch the frame border.'
+    'No caption text should touch the frame border.',
+    'TikTok pace: immediate hook, visibly changing shots, no slow static drift.',
+    'No looping/recycling of the same crop or 4-shot pattern; progression must stay forward.'
   ];
 
   const lightingAnchors = [
@@ -2294,7 +2297,8 @@ export const runVideoStage = async (input: {
       motionGuardByVariant[input.variantType],
       `Motion target: >=${motionRequirement.minPhases} movement phases, static shots <=${motionRequirement.maxStaticSeconds}s`,
       videoPlanV1?.promptDirectives?.length ? `Directives: ${videoPlanV1.promptDirectives.join(' | ')}` : '',
-      `Narration: ${llmText}`
+      `Narration: ${llmText}`,
+      'Shot progression rule: each beat must introduce a new visual action or camera move.'
     ]
       .filter(Boolean)
       .join(' '),
