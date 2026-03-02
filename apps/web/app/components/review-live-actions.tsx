@@ -14,108 +14,24 @@ import {
   selectConcept,
   triggerGenerate,
   type ApiError,
-  type AudioMode,
   type BrandProfilePayload,
   type CreativeIntentPayload,
   type MoodPreset,
-  type ShotStyleTag,
   type StartFrameCandidatePayload,
   type StartFramePreflightPayload,
   type StoryboardLightPayload
 } from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
 
-const premium60Enabled = (process.env.NEXT_PUBLIC_ENABLE_PREMIUM_60 ?? 'false').trim().toLowerCase() === 'true';
-
-const conceptOptions = [
-  {
-    id: 'concept_web_vertical_slice',
-    label: 'Vertical Slice',
-    whatHappens: 'Hook, dann kurze Nutzenpunkte, dann klarer CTA.',
-    primary: true
-  },
-  {
-    id: 'concept_offer_focus',
-    label: 'Angebot im Fokus',
-    whatHappens: 'Startet mit Offer-Highlight und endet mit Handlungsdruck.',
-    primary: true
-  },
-  {
-    id: 'concept_problem_solution',
-    label: 'Problem → Lösung',
-    whatHappens: 'Zeigt erst Schmerzpunkt, dann direkte Lösung in zwei Steps.',
-    primary: true
-  },
-  {
-    id: 'concept_before_after',
-    label: 'Vorher / Nachher',
-    whatHappens: 'Öffnet mit sichtbarem Kontrast und schließt mit Wirkung + CTA.',
-    primary: true
-  },
-  {
-    id: 'concept_testimonial',
-    label: 'Kundenstimme',
-    whatHappens: 'Beginnt mit Testimonial-Zitat, dann Beweisbild und CTA.',
-    primary: false
-  }
-] as const;
-
-type ConceptId = (typeof conceptOptions)[number]['id'];
-
-const defaultStyleByConcept: Record<ConceptId, 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split'> = {
-  concept_web_vertical_slice: 'storefront_hero',
-  concept_offer_focus: 'product_macro',
-  concept_problem_solution: 'before_after_split',
-  concept_before_after: 'before_after_split',
-  concept_testimonial: 'owner_portrait'
-};
-
-const effectGoalOptions: Array<{ id: CreativeIntentPayload['effectGoals'][number]['id']; label: string; description: string }> = [
+const effectGoalOptions: Array<{
+  id: CreativeIntentPayload['effectGoals'][number]['id'];
+  label: string;
+  description: string;
+}> = [
   { id: 'sell_conversion', label: 'Verkaufen', description: 'Klarer Conversion-Fokus mit starker Handlungsorientierung.' },
   { id: 'funny', label: 'Humorvoll', description: 'Leichter, sympathischer Humor ohne billig zu wirken.' },
-  { id: 'cringe_hook', label: 'Cringe-Hook', description: 'Absichtlich auffälliger Hook für Stop-Scroll-Moment.' },
   { id: 'testimonial_trust', label: 'Vertrauen', description: 'Social Proof / Kundenstimme und Glaubwürdigkeit.' },
   { id: 'urgency_offer', label: 'Dringlichkeit', description: 'Zeitdruck/Angebotsdruck, aber markenkonform.' }
-];
-
-const narrativeFormatOptions: Array<{ id: CreativeIntentPayload['narrativeFormats'][number]['id']; label: string; description: string }> = [
-  { id: 'commercial', label: 'Commercial', description: 'Klassischer Werbefluss mit CTA-Finale.' },
-  { id: 'offer_focus', label: 'Offer Focus', description: 'Angebot und Mehrwert stehen im Zentrum.' },
-  { id: 'problem_solution', label: 'Problem → Lösung', description: 'Schmerzpunkt und direkte Lösung in kurzer Sequenz.' },
-  { id: 'before_after', label: 'Before / After', description: 'Vorher/Nachher-Kontrast als Story-Rückgrat.' },
-  { id: 'dialog', label: 'Dialog', description: 'Szenische Gesprächsstruktur statt Monolog.' }
-];
-
-const shotStyleOptions: Array<{ id: ShotStyleTag; label: string }> = [
-  { id: 'cinematic_closeup', label: 'Cinematic Closeup' },
-  { id: 'over_shoulder', label: 'Over-Shoulder' },
-  { id: 'handheld_push', label: 'Handheld Push' },
-  { id: 'product_macro', label: 'Product Macro' },
-  { id: 'wide_establishing', label: 'Wide Establishing' },
-  { id: 'fast_cut_montage', label: 'Fast-Cut Montage' }
-];
-
-const moodOptions: Array<{ id: MoodPreset; label: string; description: string }> = [
-  {
-    id: 'commercial_cta',
-    label: 'Commercial mit CTA',
-    description: 'Direkt, nutzenorientiert, mit klarem Abschluss-Call-to-Action.'
-  },
-  {
-    id: 'problem_solution',
-    label: 'Problem → Lösung',
-    description: 'Zeigt erst das Problem und dann die konkrete Lösung.'
-  },
-  {
-    id: 'testimonial',
-    label: 'Testimonial',
-    description: 'Vertrauensaufbau durch Kundenstimme / Social Proof.'
-  },
-  {
-    id: 'humor_light',
-    label: 'Humor light',
-    description: 'Leicht humorvoll, aber markenkonform und mit CTA.'
-  }
 ];
 
 const deriveMoodFromIntent = (intent: CreativeIntentPayload): MoodPreset => {
@@ -123,7 +39,7 @@ const deriveMoodFromIntent = (intent: CreativeIntentPayload): MoodPreset => {
   const narrativeIds = intent.narrativeFormats.map((entry) => entry.id);
 
   if (effectIds.includes('funny')) return 'humor_light';
-  if (effectIds.includes('testimonial_trust') || narrativeIds.includes('dialog')) return 'testimonial';
+  if (effectIds.includes('testimonial_trust')) return 'testimonial';
   if (narrativeIds.includes('problem_solution') || narrativeIds.includes('before_after')) return 'problem_solution';
   return 'commercial_cta';
 };
@@ -134,15 +50,14 @@ const buildStoryboardFromScript = (script: string): StoryboardLightPayload => {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const beats = (sentences.slice(0, 4).length ? sentences.slice(0, 4) : ['Hook eröffnen', 'Kernnutzen zeigen', 'CTA Abschluss'])
-    .map((sentence, index) => ({
+  const beats = (sentences.slice(0, 4).length ? sentences.slice(0, 4) : ['Hook eröffnen', 'Kernnutzen zeigen', 'CTA Abschluss']).map(
+    (sentence, index) => ({
       beatId: `beat_${index + 1}`,
       order: index + 1,
       action: sentence,
-      visualHint: index === 0 ? 'Schneller visueller Einstieg' : undefined,
-      dialogueHint: undefined,
-      onScreenTextHint: undefined
-    }));
+      visualHint: index === 0 ? 'Schneller visueller Einstieg' : undefined
+    })
+  );
 
   return {
     beats,
@@ -176,13 +91,18 @@ const toBase64Payload = (dataUrl: string) => dataUrl.replace(/^data:[^;]+;base64
 export function ReviewLiveActions() {
   const router = useRouter();
   const [topic, setTopic] = useState('Sommerangebot für lokale Bäckerei in Berlin');
-  const [variantType, setVariantType] = useState<'SHORT_15' | 'MASTER_30'>('SHORT_15');
-  const [audioMode, setAudioMode] = useState<AudioMode>('voiceover');
+  const variantType = 'SHORT_15' as const;
+  const conceptId = 'concept_web_vertical_slice';
+
   const [effectGoals, setEffectGoals] = useState<Array<CreativeIntentPayload['effectGoals'][number]['id']>>(['sell_conversion']);
-  const [narrativeFormats, setNarrativeFormats] = useState<Array<CreativeIntentPayload['narrativeFormats'][number]['id']>>(['commercial']);
   const [energyMode, setEnergyMode] = useState<'auto' | 'high' | 'calm'>('auto');
-  const [shotStyles, setShotStyles] = useState<ShotStyleTag[]>(['cinematic_closeup', 'product_macro']);
-  const [conceptId, setConceptId] = useState<ConceptId>('concept_web_vertical_slice');
+
+  const narrativeFormats = useMemo<Array<CreativeIntentPayload['narrativeFormats'][number]['id']>>(() => ['commercial'], []);
+  const shotStyles = useMemo<Array<NonNullable<CreativeIntentPayload['shotStyles']>[number]['id']>>(
+    () => ['cinematic_closeup', 'product_macro'],
+    []
+  );
+
   const [startFrameCandidates, setStartFrameCandidates] = useState<StartFrameCandidatePayload[]>([]);
   const [selectedStartFrameCandidateId, setSelectedStartFrameCandidateId] = useState('');
   const [uploadedStartFrame, setUploadedStartFrame] = useState<
@@ -196,24 +116,16 @@ export function ReviewLiveActions() {
       }
     | null
   >(null);
-  // legacy userControls removed in P1 (T26)
+
   const [scriptDraft, setScriptDraft] = useState('');
-  const [storyboardLight, setStoryboardLight] = useState<StoryboardLightPayload>({
-    beats: [
-      { beatId: 'beat_1', order: 1, action: 'Hook in Sekunde 1', visualHint: 'Stop-scroll Moment' },
-      { beatId: 'beat_2', order: 2, action: 'Kernnutzen visuell zeigen' },
-      { beatId: 'beat_3', order: 3, action: 'Klarer CTA mit next step' }
-    ],
-    hookHint: 'Knalliger Einstieg',
-    ctaHint: 'Jetzt testen/anfragen',
-    pacingHint: 'dynamic'
-  });
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
+
   const [busy, setBusy] = useState(false);
   const [startFrameBusy, setStartFrameBusy] = useState(false);
   const [startFramePolicy, setStartFramePolicy] = useState<StartFramePreflightPayload | null>(null);
   const [status, setStatus] = useState('');
+
   const [brandProfile, setBrandProfile] = useState<BrandProfilePayload>({
     companyName: '',
     brandTone: 'friendly',
@@ -223,10 +135,31 @@ export function ReviewLiveActions() {
   });
   const [brandBusy, setBrandBusy] = useState(false);
 
-  const primaryConceptOptions = useMemo(() => conceptOptions.filter((option) => option.primary), []);
-  const advancedConceptOptions = useMemo(() => conceptOptions.filter((option) => !option.primary), []);
+  const organizationId = 'org_web_mvp';
 
-  const selectedConcept = useMemo(() => conceptOptions.find((option) => option.id === conceptId) ?? conceptOptions[0], [conceptId]);
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadBrandProfile = async () => {
+      const token = readStoredToken();
+      if (!token) return;
+
+      try {
+        const payload = await fetchBrandProfile(token, organizationId);
+        if (!cancelled && payload.profile) {
+          setBrandProfile((prev) => ({ ...prev, ...payload.profile }));
+        }
+      } catch {
+        // non-blocking
+      }
+    };
+
+    void loadBrandProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [organizationId]);
 
   const creativeIntent = useMemo<CreativeIntentPayload>(
     () => ({
@@ -243,10 +176,6 @@ export function ReviewLiveActions() {
   );
 
   const moodPreset = useMemo(() => deriveMoodFromIntent(creativeIntent), [creativeIntent]);
-  const selectedMoodLabel = useMemo(
-    () => moodOptions.find((option) => option.id === moodPreset)?.label ?? moodPreset,
-    [moodPreset]
-  );
 
   const selectedStartFrameCandidate = useMemo(
     () => startFrameCandidates.find((candidate) => candidate.candidateId === selectedStartFrameCandidateId) ?? null,
@@ -277,52 +206,16 @@ export function ReviewLiveActions() {
     };
   }, [uploadedStartFrame, selectedStartFrameCandidate]);
 
-  const organizationId = 'org_web_mvp';
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadBrandProfile = async () => {
-      const token = readStoredToken();
-      if (!token) return;
-
-      try {
-        const payload = await fetchBrandProfile(token, organizationId);
-        if (!cancelled && payload.profile) {
-          setBrandProfile((prev) => ({ ...prev, ...payload.profile }));
-        }
-      } catch {
-        // non-blocking for initial render
-      }
-    };
-
-    void loadBrandProfile();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [organizationId]);
-
   const generationBlocker = useMemo(() => {
     if (!brandProfile.companyName?.trim()) return 'Bitte Brand Onboarding mit Firmenname speichern.';
-    if (!effectGoals.length) return 'Bitte mindestens ein Effect Goal wählen.';
-    if (!narrativeFormats.length) return 'Bitte mindestens ein Narrative Format wählen.';
-    if (!scriptAccepted || !scriptDraft.trim()) return 'Script prüfen und akzeptieren.';
+    if (!effectGoals.length) return 'Bitte mindestens ein Creative-Intent-Ziel wählen.';
+    if (!scriptAccepted || !scriptDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
     if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Startframe wählen oder eigenes Bild hochladen.';
     if (startFramePolicy?.decision === 'block') {
       return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
     }
     return null;
-  }, [
-    effectGoals.length,
-    narrativeFormats.length,
-    scriptAccepted,
-    scriptDraft,
-    selectedStartFrameCandidate,
-    uploadedStartFrame,
-    startFramePolicy,
-    brandProfile.companyName
-  ]);
+  }, [brandProfile.companyName, effectGoals.length, scriptAccepted, scriptDraft, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
@@ -336,13 +229,6 @@ export function ReviewLiveActions() {
   };
 
   const toggleFromList = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
-
-  const updateStoryboardBeat = (beatId: string, field: 'action' | 'visualHint' | 'dialogueHint' | 'onScreenTextHint', value: string) => {
-    setStoryboardLight((prev) => ({
-      ...prev,
-      beats: prev.beats.map((beat) => (beat.beatId === beatId ? { ...beat, [field]: value } : beat))
-    }));
-  };
 
   const saveBrandOnboarding = async () => {
     const token = readStoredToken();
@@ -397,15 +283,9 @@ export function ReviewLiveActions() {
       if (preflight.decision === 'block') {
         setStatus(`Startframe-Policy blockiert: ${preflight.userMessage} (${preflight.reasonCode}). ${preflight.remediation}`);
       } else if (preflight.decision === 'fallback') {
-        setStatus(
-          `Startframe-Policy Fallback aktiv (${preflight.reasonCode}). Effektiv: ${preflight.effectiveStartFrameLabel ?? preflight.effectiveStartFrameStyle}.`
-        );
+        setStatus(`Startframe-Policy Fallback aktiv (${preflight.reasonCode}). Effektiv: ${preflight.effectiveStartFrameLabel ?? preflight.effectiveStartFrameStyle}.`);
       } else {
-        setStatus(
-          input.sourceLabel
-            ? `Startframe aktiv (${input.sourceLabel}). Policy-Preflight bestanden.`
-            : 'Startframe-Policy-Preflight bestanden.'
-        );
+        setStatus(input.sourceLabel ? `Startframe aktiv (${input.sourceLabel}). Policy-Preflight bestanden.` : 'Startframe-Policy-Preflight bestanden.');
       }
     } catch (error) {
       setStartFramePolicy(null);
@@ -421,7 +301,7 @@ export function ReviewLiveActions() {
     }
 
     setBusy(true);
-    setStatus('Erzeuge Script-Entwurf ...');
+    setStatus('Erzeuge Ablauf ...');
     try {
       const draft = await createScriptDraft(token, {
         topic,
@@ -431,8 +311,8 @@ export function ReviewLiveActions() {
         creativeIntent,
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined
       });
+
       setScriptDraft(draft.script);
-      setStoryboardLight(buildStoryboardFromScript(draft.script));
       setScriptAccepted(false);
       setScriptMeta({
         targetSeconds: draft.targetSeconds,
@@ -441,13 +321,14 @@ export function ReviewLiveActions() {
       });
       resetStartFrameCandidates();
       resetUploadedReference();
+
       setStatus(
         draft.withinTarget
-          ? `Script bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s). Bitte prüfen und akzeptieren.`
-          : `Script zu lang (${Math.round(draft.estimatedSeconds)}s). Bitte kürzen oder regenerieren.`
+          ? `Ablauf bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s). Bitte akzeptieren oder bearbeiten.`
+          : `Ablauf zu lang (${Math.round(draft.estimatedSeconds)}s). Bitte kürzen oder neu generieren.`
       );
     } catch (error) {
-      setStatus(`Script-Entwurf fehlgeschlagen: ${asApiMessage(error)}`);
+      setStatus(`Ablauf-Erzeugung fehlgeschlagen: ${asApiMessage(error)}`);
     } finally {
       setBusy(false);
     }
@@ -455,12 +336,12 @@ export function ReviewLiveActions() {
 
   const acceptScript = () => {
     if (!scriptDraft.trim()) {
-      setStatus('Script ist leer. Bitte zuerst Script erzeugen.');
+      setStatus('Ablauf ist leer. Bitte zuerst Ablauf generieren.');
       return;
     }
 
     setScriptAccepted(true);
-    setStatus('Script akzeptiert. Als Nächstes: visuelle Startframe-Kandidaten erzeugen oder eigenes Bild hochladen.');
+    setStatus('Ablauf akzeptiert. Als Nächstes: Startframe-Kandidaten erzeugen oder eigenes Bild hochladen.');
   };
 
   const prepareStartFrames = async () => {
@@ -471,12 +352,12 @@ export function ReviewLiveActions() {
     }
 
     if (!scriptAccepted) {
-      setStatus('Bitte zuerst Script akzeptieren, bevor du Startframe-Kandidaten erzeugst.');
+      setStatus('Bitte zuerst Ablauf akzeptieren, bevor du Startframe-Kandidaten erzeugst.');
       return;
     }
 
     setStartFrameBusy(true);
-    setStatus(`Erzeuge Startframe-Kandidaten für ${selectedConcept.label} ...`);
+    setStatus('Erzeuge Startframe-Kandidaten ...');
     try {
       const response = await createStartFrameCandidates(token, {
         topic,
@@ -572,12 +453,13 @@ export function ReviewLiveActions() {
 
     setBusy(true);
     setStatus('Prüfe Startframe-Policy ...');
+
     try {
       const customPrompt = uploadedStartFrame
         ? `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) ist hochgeladen: ${uploadedStartFrame.objectPath}. Nutze dieses Motiv als Startframe und als visuelle Leitplanke.`
         : undefined;
 
-      const fallbackStyle = defaultStyleByConcept[conceptId];
+      const fallbackStyle = 'storefront_hero' as const;
 
       const preflight = await preflightStartFrame(token, {
         topic,
@@ -602,18 +484,41 @@ export function ReviewLiveActions() {
         variantType
       });
 
-      setStatus(
-        uploadedStartFrame
-          ? `Starte Render mit eigenem Referenzbild (${uploadedStartFrame.fileName}) ...`
-          : `Wähle final Storyboard (${selectedConcept.label}) + Startframe (${selectedStartFrameCandidate?.label}) und starte Render ...`
-      );
-
+      setStatus('Starte Video-Erstellung ...');
       const selection = await selectConcept(token, project.projectId, {
         variantType,
         conceptId,
         moodPreset,
         creativeIntent,
-        storyboardLight,
+        generationPayload: {
+          topic,
+          brandProfile,
+          creativeIntent: {
+            effectGoals: creativeIntent.effectGoals
+              .filter(
+                (goal): goal is (typeof creativeIntent.effectGoals)[number] & { id: 'sell_conversion' | 'funny' | 'testimonial_trust' | 'urgency_offer' } =>
+                  goal.id !== 'cringe_hook'
+              )
+              .map((goal) => ({ id: goal.id, weight: goal.weight, priority: goal.priority })),
+            narrativeFormats: creativeIntent.narrativeFormats,
+            shotStyles: creativeIntent.shotStyles,
+            energyMode: creativeIntent.energyMode
+          },
+          startFrame: {
+            style: selectedStartFrameCandidate?.style ?? fallbackStyle,
+            candidateId: selectedStartFrameCandidate?.candidateId,
+            customPrompt,
+            uploadObjectPath: uploadedStartFrame?.objectPath,
+            referenceHint: uploadedStartFrame?.fileName,
+            summary: uploadedStartFrame
+              ? `Upload: ${uploadedStartFrame.fileName}`
+              : selectedStartFrameCandidate
+                ? `Kandidat: ${selectedStartFrameCandidate.label}`
+                : 'no-startframe'
+          },
+          userEditedFlowScript: scriptDraft.trim() || undefined
+        },
+        storyboardLight: buildStoryboardFromScript(scriptDraft),
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
         approvedScript: scriptDraft.trim(),
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
@@ -622,12 +527,10 @@ export function ReviewLiveActions() {
         startFrameCustomPrompt: customPrompt,
         startFrameReferenceHint: uploadedStartFrame?.fileName,
         startFrameUploadObjectPath: uploadedStartFrame?.objectPath,
-        audioMode
+        audioMode: 'voiceover'
       });
 
-      setStatus('Starte Generierung ...');
       await triggerGenerate(token, project.projectId, selection.jobId);
-
       router.push(`/job-status?jobId=${encodeURIComponent(selection.jobId)}&state=progress`);
     } catch (error) {
       setStatus(`Flow fehlgeschlagen: ${asApiMessage(error)}`);
@@ -639,11 +542,9 @@ export function ReviewLiveActions() {
   return (
     <article id="live-mvp-flow" className="section-card" aria-labelledby="review-live-title">
       <h2 id="review-live-title" className="section-title">
-        Live MVP Flow (ECHTE API-Daten)
+        Fast-MVP Flow (ECHTE API-Daten)
       </h2>
-      <p className="section-copy">
-        Echter End-to-End Pfad: Topic → Mood → Script Review (Pflicht) → Concept (Primary-first) → Startframe-Preview (Pflicht) → Generate → Job-Status → Download.
-      </p>
+      <p className="section-copy">Topic → Branding/Intent → Ablauf generieren → Ablauf akzeptieren/bearbeiten → Startframe wählen → Video erstellen.</p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
         <label className="auth-field">
@@ -661,10 +562,10 @@ export function ReviewLiveActions() {
       </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Brand Onboarding (P3)
+        Branding
       </h3>
       <p className="section-copy" style={{ marginTop: 0 }}>
-        Dieses Profil wird für Script + Prompt Compiler wiederverwendet, damit der Markenoutput konsistent bleibt.
+        Dieses Profil wird für Ablauf, Prompt und Konsistenz wiederverwendet.
       </p>
       <div className="section-card" style={{ marginTop: 0 }}>
         <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
@@ -712,66 +613,10 @@ export function ReviewLiveActions() {
       </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Video-Länge
-      </h3>
-      <div className="state-toggle-row" role="tablist" aria-label="Variant toggle">
-        <button
-          type="button"
-          className={`state-toggle ${variantType === 'SHORT_15' ? 'active' : ''}`}
-          onClick={() => {
-            setVariantType('SHORT_15');
-            setScriptAccepted(false);
-            resetStartFrameCandidates();
-            resetUploadedReference();
-          }}
-        >
-          STANDARD_30 (30s)
-        </button>
-        {premium60Enabled ? (
-          <button
-            type="button"
-            className={`state-toggle ${variantType === 'MASTER_30' ? 'active' : ''}`}
-            onClick={() => {
-              setVariantType('MASTER_30');
-              setScriptAccepted(false);
-              resetStartFrameCandidates();
-              resetUploadedReference();
-            }}
-          >
-            PREMIUM_60 (60s)
-          </button>
-        ) : null}
-      </div>
-
-      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Audio-Strategie
-      </h3>
-      <div className="chip-wrap" role="list" aria-label="Audio Mode Auswahl">
-        {([
-          { id: 'voiceover', label: 'Voiceover (stabil)' },
-          { id: 'scene', label: 'Scene Audio (experimentell)' },
-          { id: 'hybrid', label: 'Hybrid VO+Scene (experimentell)' }
-        ] as const).map((mode) => (
-          <button
-            key={mode.id}
-            type="button"
-            className={`state-toggle ${audioMode === mode.id ? 'active' : ''}`}
-            onClick={() => setAudioMode(mode.id)}
-            aria-pressed={audioMode === mode.id}
-          >
-            {mode.label}
-          </button>
-        ))}
-      </div>
-      <p className="section-copy" style={{ marginTop: 0 }}>
-        Scene/Hybrid können bei fehlender Szenen-Audiospur automatisch auf Voiceover zurückfallen.
-      </p>
-
-      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
         Creative Intent Matrix
       </h3>
       <fieldset className="section-card" style={{ marginTop: 8 }}>
-        <legend className="section-copy" style={{ marginBottom: 8 }}>Effect Goal (multi-select)</legend>
+        <legend className="section-copy" style={{ marginBottom: 8 }}>Wirkziel (multi-select)</legend>
         <div className="chip-wrap" role="list" aria-label="Effect Goal Auswahl">
           {effectGoalOptions.map((option) => (
             <button
@@ -793,29 +638,6 @@ export function ReviewLiveActions() {
         </div>
       </fieldset>
 
-      <fieldset className="section-card" style={{ marginTop: 0 }}>
-        <legend className="section-copy" style={{ marginBottom: 8 }}>Narrative Format (multi-select)</legend>
-        <div className="chip-wrap" role="list" aria-label="Narrative Format Auswahl">
-          {narrativeFormatOptions.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              className={`state-toggle ${narrativeFormats.includes(option.id) ? 'active' : ''}`}
-              onClick={() => {
-                setNarrativeFormats((prev) => toggleFromList(prev, option.id));
-                setScriptAccepted(false);
-                resetStartFrameCandidates();
-                resetUploadedReference();
-              }}
-              aria-pressed={narrativeFormats.includes(option.id)}
-              title={option.description}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
-
       <div className="action-row" style={{ marginTop: 0 }}>
         <span className="chip chip-neutral">Energy</span>
         {(['auto', 'high', 'calm'] as const).map((mode) => (
@@ -823,7 +645,12 @@ export function ReviewLiveActions() {
             key={mode}
             type="button"
             className={`state-toggle ${energyMode === mode ? 'active' : ''}`}
-            onClick={() => setEnergyMode(mode)}
+            onClick={() => {
+              setEnergyMode(mode);
+              setScriptAccepted(false);
+              resetStartFrameCandidates();
+              resetUploadedReference();
+            }}
             aria-pressed={energyMode === mode}
           >
             {mode}
@@ -831,32 +658,28 @@ export function ReviewLiveActions() {
         ))}
       </div>
 
-      <p className="section-copy" style={{ marginTop: 0 }}>
-        Legacy-Mood (abgeleitet): {selectedMoodLabel}. Primary steering erfolgt über Intent + Storyboard.
-      </p>
-
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Script Review (Pflicht)
+        Ablauf / Skript
       </h3>
       <div className="action-row" style={{ marginTop: 8 }}>
         <button className="button-ghost" type="button" disabled={busy} onClick={prepareScript}>
-          Script erzeugen / regenerieren
+          Ablauf generieren
         </button>
         <button className="button" type="button" disabled={busy || !scriptDraft.trim()} onClick={acceptScript}>
-          Script akzeptieren
+          Ablauf akzeptieren / bearbeiten
         </button>
       </div>
 
       <label className="auth-field" style={{ marginTop: 8 }}>
-        <span>Skripttext (editierbar)</span>
+        <span>Ablauf-/Skripttext (ein Block, editierbar)</span>
         <textarea
           value={scriptDraft}
           onChange={(event) => {
             setScriptDraft(event.target.value);
             setScriptAccepted(false);
           }}
-          rows={7}
-          placeholder="Erzeuge zuerst einen Script-Entwurf."
+          rows={8}
+          placeholder="Erzeuge zuerst einen Ablauf-Entwurf."
         />
       </label>
 
@@ -866,105 +689,17 @@ export function ReviewLiveActions() {
           <span className="chip chip-neutral">Estimate: {Math.round(scriptMeta.estimatedSeconds)}s</span>
           <span className="chip chip-neutral">Wörter Ziel: ~{scriptMeta.suggestedWords}</span>
           <span className={`chip ${scriptAccepted ? 'chip-success' : 'chip-warning'}`}>
-            {scriptAccepted ? 'Script akzeptiert' : 'Script noch nicht akzeptiert'}
+            {scriptAccepted ? 'Ablauf akzeptiert' : 'Ablauf noch nicht akzeptiert'}
           </span>
         </div>
       ) : null}
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Storyboard Light (editierbar)
-      </h3>
-      <p className="section-copy" style={{ marginTop: 0 }}>
-        Bearbeite hier kurz, was im Video passiert. Diese Beats fließen direkt in den Prompt-Compiler.
-      </p>
-      <div className="section-card" style={{ marginTop: 0 }}>
-        {storyboardLight.beats.map((beat) => (
-          <div key={beat.beatId} className="auth-form-grid" style={{ gridTemplateColumns: '1fr', marginBottom: 8 }}>
-            <label className="auth-field">
-              <span>Beat {beat.order} – Action</span>
-              <input
-                value={beat.action}
-                onChange={(event) => updateStoryboardBeat(beat.beatId, 'action', event.target.value)}
-                placeholder="Was passiert in diesem Beat?"
-              />
-            </label>
-            <label className="auth-field">
-              <span>Visual Hint (optional)</span>
-              <input
-                value={beat.visualHint ?? ''}
-                onChange={(event) => updateStoryboardBeat(beat.beatId, 'visualHint', event.target.value)}
-                placeholder="z. B. schneller Push-in auf Produkt"
-              />
-            </label>
-            <label className="auth-field">
-              <span>Dialog Hint (optional)</span>
-              <input
-                value={beat.dialogueHint ?? ''}
-                onChange={(event) => updateStoryboardBeat(beat.beatId, 'dialogueHint', event.target.value)}
-                placeholder="Optionaler Dialog-Satz"
-              />
-            </label>
-          </div>
-        ))}
-      </div>
-
-      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Storyboard / Concept (Primary)
-      </h3>
-      <div className="chip-wrap" role="list" aria-label="Concept Auswahl (Primary)">
-        {primaryConceptOptions.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={`state-toggle ${conceptId === option.id ? 'active' : ''}`}
-            onClick={() => {
-              setConceptId(option.id);
-              resetStartFrameCandidates();
-            }}
-            aria-pressed={conceptId === option.id}
-            title={option.whatHappens}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-      <p className="section-copy" style={{ marginTop: 0 }}>
-        {selectedConcept.whatHappens}
-      </p>
-
-      <details className="section-card" style={{ marginTop: 0 }}>
-        <summary className="section-title" style={{ cursor: 'pointer' }}>
-          Erweiterte Concept-Optionen
-        </summary>
-        <p className="section-copy">Optional für feinere Narrative-Varianten.</p>
-        <div className="chip-wrap" role="list" aria-label="Concept Auswahl (Erweitert)">
-          {advancedConceptOptions.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              className={`state-toggle ${conceptId === option.id ? 'active' : ''}`}
-              onClick={() => {
-                setConceptId(option.id);
-                resetStartFrameCandidates();
-              }}
-              aria-pressed={conceptId === option.id}
-              title={option.whatHappens}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </details>
-
-      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Startframe-Kandidaten (Pflicht)
+        Startframe-Auswahl (Pflicht)
       </h3>
       <div className="action-row" style={{ marginTop: 8 }}>
-        <span className={`chip ${activeStartframe.source === 'none' ? 'chip-warning' : 'chip-success'}`}>
-          Aktiv: {activeStartframe.label}
-        </span>
+        <span className={`chip ${activeStartframe.source === 'none' ? 'chip-warning' : 'chip-success'}`}>Aktiv: {activeStartframe.label}</span>
         <span className="chip chip-neutral">Rule: Upload gewinnt über Kandidat</span>
-        <span className="chip chip-neutral">Source: {activeStartframe.source}</span>
         {startFramePolicy ? (
           <span className={`chip ${startFramePolicy.decision === 'block' ? 'chip-danger' : startFramePolicy.decision === 'fallback' ? 'chip-warning' : 'chip-success'}`}>
             Policy: {startFramePolicy.decision} ({startFramePolicy.reasonCode})
@@ -977,6 +712,7 @@ export function ReviewLiveActions() {
           {startFramePolicy.userMessage} {startFramePolicy.remediation}
         </p>
       ) : null}
+
       <div className="action-row" style={{ marginTop: 8 }}>
         <button className="button-ghost" type="button" disabled={busy || startFrameBusy || !scriptAccepted} onClick={prepareStartFrames}>
           {startFrameBusy ? 'Erzeuge Kandidaten ...' : '3 Startframe-Kandidaten erzeugen'}
@@ -1019,9 +755,7 @@ export function ReviewLiveActions() {
           })}
         </div>
       ) : (
-        <p className="section-copy" style={{ marginTop: 0 }}>
-          Noch keine Kandidaten erzeugt.
-        </p>
+        <p className="section-copy" style={{ marginTop: 0 }}>Noch keine Kandidaten erzeugt.</p>
       )}
 
       <label className="auth-field" style={{ marginTop: 8 }}>
@@ -1050,35 +784,15 @@ export function ReviewLiveActions() {
         </div>
       ) : null}
 
-      <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Shot Style Library (kuratiert)
-      </h3>
-      <div className="chip-wrap" role="list" aria-label="Shot-Style Auswahl">
-        {shotStyleOptions.map((style) => (
-          <button
-            key={style.id}
-            type="button"
-            className={`state-toggle ${shotStyles.includes(style.id) ? 'active' : ''}`}
-            onClick={() => setShotStyles((prev) => toggleFromList(prev, style.id))}
-            aria-pressed={shotStyles.includes(style.id)}
-          >
-            {style.label}
-          </button>
-        ))}
-      </div>
-      <p className="section-copy" style={{ marginTop: 0 }}>
-        Technische User-Controls wurden entfernt. Creative-Steuerung läuft über Intent, Storyboard und Shot-Styles.
-      </p>
-
       <div className="action-row">
         <button
           className="button"
           type="button"
           disabled={busy || Boolean(generationBlocker)}
           onClick={runFlow}
-          title={generationBlocker ?? 'Generierung starten'}
+          title={generationBlocker ?? 'Video erstellen'}
         >
-          {busy ? 'Flow läuft ...' : 'Echten Video-Flow starten'}
+          {busy ? 'Video wird erstellt ...' : 'Video erstellen'}
         </button>
       </div>
 
@@ -1086,20 +800,12 @@ export function ReviewLiveActions() {
       {status ? <p className="section-copy" style={{ marginTop: 0 }}>{status}</p> : null}
 
       <div className="action-row" style={{ marginTop: 0 }}>
-        <span className="chip chip-neutral">Legacy-Mood: {selectedMoodLabel}</span>
-        <span className="chip chip-neutral">Concept: {selectedConcept.label}</span>
-        <span className="chip chip-neutral">Audio: {audioMode}</span>
         <span className="chip chip-neutral">Brand: {brandProfile.companyName?.trim() || 'not set'}</span>
-        <span className="chip chip-neutral">Intent: {effectGoals.length} Goals / {narrativeFormats.length} Formats</span>
-        <span className="chip chip-neutral">Shot-Styles: {shotStyles.length}</span>
+        <span className="chip chip-neutral">Intent: {effectGoals.length} Ziele</span>
+        <span className="chip chip-neutral">Energy: {energyMode}</span>
         <span className={`chip ${activeStartframe.source === 'none' ? 'chip-warning' : 'chip-success'}`}>
           {activeStartframe.source === 'none' ? 'Startframe fehlt' : `Startframe aktiv (${activeStartframe.source})`}
         </span>
-        {startFramePolicy ? (
-          <span className={`chip ${startFramePolicy.decision === 'block' ? 'chip-danger' : startFramePolicy.decision === 'fallback' ? 'chip-warning' : 'chip-success'}`}>
-            Policy {startFramePolicy.decision}
-          </span>
-        ) : null}
       </div>
     </article>
   );

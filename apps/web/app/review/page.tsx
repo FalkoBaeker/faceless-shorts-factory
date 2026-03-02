@@ -15,8 +15,8 @@ export default function ReviewPreviewPage() {
         </div>
 
         <p className="hero-text">
-          Fokus auf den realen Pfad: Topic + Mood wählen, Script prüfen/akzeptieren, Storyboard/Concept + Startframe wählen,
-          dann Generate starten und im Job-Status bis READY warten.
+          Fokus auf den Fast-MVP-Pfad: Topic + Branding + Intent setzen, Ablauf generieren und akzeptieren/bearbeiten,
+          Startframe wählen und Video erstellen.
         </p>
 
         <div className="action-row">
@@ -50,14 +50,14 @@ export default function ReviewPreviewPage() {
           </li>
           <li className="step-item">
             <div>
-              <p className="step-name">2) Topic + Mood wählen, Script erzeugen und akzeptieren</p>
-              <p className="step-sub">Ohne „Script akzeptieren“ wird Generate blockiert.</p>
+              <p className="step-name">2) Topic + Branding + Intent setzen, Ablauf generieren und akzeptieren</p>
+              <p className="step-sub">Ohne „Ablauf akzeptieren / bearbeiten“ wird Video erstellen blockiert.</p>
             </div>
             <span className="chip chip-success">real</span>
           </li>
           <li className="step-item">
             <div>
-              <p className="step-name">3) Concept/Startframe wählen und Flow starten</p>
+              <p className="step-name">3) Startframe wählen und Video erstellen</p>
               <p className="step-sub">Danach Statusfolge: VIDEO_PENDING → AUDIO_PENDING → RENDERING → READY</p>
             </div>
             <span className="chip chip-success">real</span>

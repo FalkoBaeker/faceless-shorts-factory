@@ -80,6 +80,8 @@ export type CreativeEffectGoal =
   | 'testimonial_trust'
   | 'urgency_offer';
 
+export type CreativeEffectGoalV1 = Exclude<CreativeEffectGoal, 'cringe_hook'>;
+
 export type CreativeNarrativeFormat =
   | 'before_after'
   | 'dialog'
@@ -108,6 +110,26 @@ export type CreativeIntentPayload = {
   narrativeFormats: Array<CreativeIntentSelection<CreativeNarrativeFormat>>;
   energyMode?: 'auto' | 'high' | 'calm';
   shotStyles?: Array<CreativeIntentSelection<ShotStyleTag>>;
+};
+
+export type GenerationPayloadV1 = {
+  topic: string;
+  brandProfile: BrandProfilePayload;
+  creativeIntent: {
+    effectGoals: Array<CreativeIntentSelection<CreativeEffectGoalV1>>;
+    narrativeFormats: Array<CreativeIntentSelection<CreativeNarrativeFormat>>;
+    shotStyles?: Array<CreativeIntentSelection<ShotStyleTag>>;
+    energyMode?: 'auto' | 'high' | 'calm';
+  };
+  startFrame?: {
+    style?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+    candidateId?: string;
+    customPrompt?: string;
+    uploadObjectPath?: string;
+    referenceHint?: string;
+    summary?: string;
+  };
+  userEditedFlowScript?: string;
 };
 
 export type StoryboardBeatPayload = {
@@ -397,6 +419,7 @@ export const selectConcept = (
     conceptId: string;
     moodPreset: MoodPreset;
     creativeIntent?: CreativeIntentPayload;
+    generationPayload?: GenerationPayloadV1;
     storyboardLight?: StoryboardLightPayload;
     brandProfile?: BrandProfilePayload;
     approvedScript: string;
@@ -422,6 +445,7 @@ export const selectConcept = (
       conceptId: payload.conceptId,
       moodPreset: payload.moodPreset,
       creativeIntent: payload.creativeIntent,
+      generationPayload: payload.generationPayload,
       storyboardLight: payload.storyboardLight,
       brandProfile: payload.brandProfile,
       approvedScript: payload.approvedScript,

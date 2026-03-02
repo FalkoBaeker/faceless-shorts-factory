@@ -9,6 +9,8 @@ export type CreativeEffectGoal =
   | 'testimonial_trust'
   | 'urgency_offer';
 
+export type CreativeEffectGoalV1 = Exclude<CreativeEffectGoal, 'cringe_hook'>;
+
 export type CreativeNarrativeFormat =
   | 'before_after'
   | 'dialog'
@@ -97,6 +99,52 @@ export type BrandProfile = {
   valueProposition?: string;
 };
 
+export type StartFrameInputV1 = {
+  style?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+  candidateId?: string;
+  customPrompt?: string;
+  uploadObjectPath?: string;
+  referenceHint?: string;
+  summary?: string;
+};
+
+export type GenerationPayloadV1 = {
+  topic: string;
+  brandProfile: BrandProfile;
+  creativeIntent: {
+    effectGoals: Array<CreativeIntentSelection<CreativeEffectGoalV1>>;
+    narrativeFormats: Array<CreativeIntentSelection<CreativeNarrativeFormat>>;
+    shotStyles?: Array<CreativeIntentSelection<ShotStyleTag>>;
+    energyMode?: 'auto' | 'high' | 'calm';
+  };
+  startFrame?: StartFrameInputV1;
+  userEditedFlowScript?: string;
+};
+
+export type VideoPlanV1 = {
+  hookOpening: string;
+  flowBeats: Array<{
+    order: number;
+    beat: string;
+    visualHint?: string;
+    onScreenTextHint?: string;
+  }>;
+  script: {
+    narration: string;
+    scenes: Array<{
+      order: number;
+      action: string;
+      lines?: Array<{
+        speaker: string;
+        text: string;
+      }>;
+      onScreenText?: string;
+    }>;
+  };
+  subjectConstraints: string[];
+  promptDirectives: string[];
+};
+
 export type CreateProjectRequest = {
   organizationId: string;
   topic: string;
@@ -118,6 +166,7 @@ export type SelectConceptRequest = {
   creativeIntent?: CreativeIntentMatrix;
   storyboardLight?: StoryboardLight;
   brandProfile?: BrandProfile;
+  generationPayload?: GenerationPayloadV1;
   approvedScript?: string;
   approvedScriptV2?: ScriptV2;
   startFrameCandidateId?: string;

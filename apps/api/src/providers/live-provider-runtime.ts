@@ -163,6 +163,45 @@ type BrandProfile = {
   valueProposition?: string;
 };
 
+type GenerationPayloadV1 = {
+  topic: string;
+  brandProfile: BrandProfile;
+  creativeIntent: CreativeIntentMatrix;
+  startFrame?: {
+    style?: StartFrameStyle;
+    candidateId?: string;
+    customPrompt?: string;
+    uploadObjectPath?: string;
+    referenceHint?: string;
+    summary?: string;
+  };
+  userEditedFlowScript?: string;
+};
+
+type VideoPlanV1 = {
+  hookOpening: string;
+  flowBeats: Array<{
+    order: number;
+    beat: string;
+    visualHint?: string;
+    onScreenTextHint?: string;
+  }>;
+  script: {
+    narration: string;
+    scenes: Array<{
+      order: number;
+      action: string;
+      lines?: Array<{
+        speaker: string;
+        text: string;
+      }>;
+      onScreenText?: string;
+    }>;
+  };
+  subjectConstraints: string[];
+  promptDirectives: string[];
+};
+
 type StoryboardConceptId =
   | 'concept_web_vertical_slice'
   | 'concept_offer_focus'
@@ -801,6 +840,216 @@ const parseOpenAiResponseText = (response: Record<string, unknown>): string => {
   }
 
   return texts.join('\n').trim();
+};
+
+const parseStrictJson = <T>(raw: string): T | null => {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const direct = (() => {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return null;
+    }
+  })();
+  if (direct) return direct;
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1]?.trim();
+  if (fenced) {
+    try {
+      return JSON.parse(fenced) as T;
+    } catch {
+      // noop
+    }
+  }
+
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    const inner = text.slice(first, last + 1);
+    try {
+      return JSON.parse(inner) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const normalizeVideoPlanV1 = (raw: unknown): VideoPlanV1 | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const input = raw as Record<string, unknown>;
+
+  const hookOpening = String(input.hookOpening ?? '').trim().slice(0, 280);
+
+  const flowBeatsRaw = Array.isArray(input.flowBeats) ? input.flowBeats : [];
+  const flowBeats = flowBeatsRaw
+    .slice(0, 8)
+    .map((entry, index) => (entry && typeof entry === 'object' ? ({ ...(entry as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const beat = String(entry.beat ?? '').trim().slice(0, 220);
+      if (!beat) return null;
+      const orderRaw = Number(entry.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(entry.index) + 1;
+      return {
+        order,
+        beat,
+        visualHint: String(entry.visualHint ?? '').trim().slice(0, 180) || undefined,
+        onScreenTextHint: String(entry.onScreenTextHint ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((entry): entry is VideoPlanV1['flowBeats'][number] => Boolean(entry))
+    .sort((a, b) => a.order - b.order);
+
+  const scriptRaw = input.script && typeof input.script === 'object' ? (input.script as Record<string, unknown>) : null;
+  const scenesRaw = scriptRaw && Array.isArray(scriptRaw.scenes) ? scriptRaw.scenes : [];
+  const scenes = scenesRaw
+    .slice(0, 10)
+    .map((entry, index) => (entry && typeof entry === 'object' ? ({ ...(entry as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const action = String(entry.action ?? '').trim().slice(0, 240);
+      if (!action) return null;
+      const orderRaw = Number(entry.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(entry.index) + 1;
+      const linesRaw = Array.isArray(entry.lines) ? entry.lines : [];
+      const lines = linesRaw
+        .slice(0, 10)
+        .map((line) => (line && typeof line === 'object' ? (line as Record<string, unknown>) : null))
+        .filter((line): line is Record<string, unknown> => Boolean(line))
+        .map((line) => {
+          const speaker = String(line.speaker ?? '').trim().slice(0, 40);
+          const text = String(line.text ?? '').trim().slice(0, 180);
+          if (!speaker || !text) return null;
+          return { speaker, text };
+        })
+        .filter((line): line is { speaker: string; text: string } => Boolean(line));
+      return {
+        order,
+        action,
+        lines: lines.length ? lines : undefined,
+        onScreenText: String(entry.onScreenText ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((entry): entry is VideoPlanV1['script']['scenes'][number] => Boolean(entry))
+    .sort((a, b) => a.order - b.order);
+
+  const narration = String(scriptRaw?.narration ?? '').trim().slice(0, 2200);
+
+  if (!hookOpening || !flowBeats.length || !narration) return null;
+
+  return {
+    hookOpening,
+    flowBeats,
+    script: {
+      narration,
+      scenes
+    },
+    subjectConstraints: Array.isArray(input.subjectConstraints)
+      ? input.subjectConstraints.map((value) => String(value).trim()).filter(Boolean).slice(0, 10)
+      : [],
+    promptDirectives: Array.isArray(input.promptDirectives)
+      ? input.promptDirectives.map((value) => String(value).trim()).filter(Boolean).slice(0, 10)
+      : []
+  };
+};
+
+const fallbackVideoPlanV1 = (topic: string, userEditedFlowScript?: string): VideoPlanV1 => {
+  const edited = String(userEditedFlowScript ?? '').trim();
+  const narration =
+    edited ||
+    `Achtung: ${topic}. Wir zeigen in wenigen Sekunden das Kernproblem, direkt die Lösung und schließen mit einer klaren nächsten Aktion.`;
+
+  return {
+    hookOpening: `Achtung: ${topic}.`,
+    flowBeats: [
+      { order: 1, beat: `Hook sofort: ${topic}` },
+      { order: 2, beat: 'Problem präzise zeigen' },
+      { order: 3, beat: 'Lösung in klaren Schritten zeigen' },
+      { order: 4, beat: 'Konkreter CTA als Abschluss' }
+    ],
+    script: {
+      narration: ensureSentenceEnding(narration),
+      scenes: [
+        { order: 1, action: `Hook sofort: ${topic}` },
+        { order: 2, action: 'Problem sichtbar machen' },
+        { order: 3, action: 'Lösung demonstrieren' },
+        { order: 4, action: 'CTA klar aussprechen' }
+      ]
+    },
+    subjectConstraints: ['Subjekt über alle Beats konsistent halten.', 'Markenstil in Sprache und Visuals stabil halten.'],
+    promptDirectives: ['Hook in Sekunde 0-2 sichtbar machen.', 'Ablauf klar, kurz und sprechbar halten.']
+  };
+};
+
+const generateVideoPlan = async (input: {
+  topic: string;
+  creativeIntent: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
+  energyMode?: 'auto' | 'high' | 'calm';
+  startFrameHint?: string;
+  userEditedFlowScript?: string;
+}): Promise<VideoPlanV1> => {
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.015, 'llm-video-plan-v1');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: 'gpt-5-mini',
+    input:
+      'Erzeuge ausschließlich valides JSON für ein VideoPlanV1-Objekt. Keine Markdown-Ausgabe. ' +
+      `Topic: ${input.topic}. ` +
+      `${renderIntentPrompt(input.creativeIntent).text} ` +
+      `${renderBrandProfilePrompt(input.brandProfile)} ` +
+      `${input.startFrameHint ? `Startframe-Hinweis: ${input.startFrameHint}. ` : ''}` +
+      `${input.userEditedFlowScript ? `User-Entwurf: ${input.userEditedFlowScript}. ` : ''}` +
+      `Pflicht: hookOpening muss in Sekunde 0-2 funktionieren. 4-6 flowBeats. ` +
+      `JSON-Schema: {"hookOpening":string,"flowBeats":[{"order":number,"beat":string,"visualHint"?:string,"onScreenTextHint"?:string}],"script":{"narration":string,"scenes":[{"order":number,"action":string,"lines"?:[{"speaker":string,"text":string}],"onScreenText"?:string}]},"subjectConstraints":string[],"promptDirectives":string[]}`,
+    max_output_tokens: 1200
+  });
+
+  const raw = parseOpenAiResponseText(response);
+  const parsed = parseStrictJson<unknown>(raw);
+  const normalized = normalizeVideoPlanV1(parsed);
+  if (!normalized) {
+    throw new ProviderRuntimeError('VIDEO_PLAN_V1_INVALID_JSON', { provider: 'openai', fatal: false });
+  }
+  return normalized;
+};
+
+const reconcileVideoPlan = async (input: {
+  topic: string;
+  currentPlan: VideoPlanV1;
+  userEditedFlowScript: string;
+  creativeIntent: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
+  energyMode?: 'auto' | 'high' | 'calm';
+}): Promise<VideoPlanV1> => {
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.012, 'llm-video-plan-v1-reconcile');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: 'gpt-5-mini',
+    input:
+      'Erzeuge ausschließlich valides JSON für ein VideoPlanV1-Objekt. Keine Markdown-Ausgabe. ' +
+      `Topic: ${input.topic}. ` +
+      `Aktueller Plan JSON: ${JSON.stringify(input.currentPlan)}. ` +
+      `User-Edit (muss primär respektiert werden): ${input.userEditedFlowScript}. ` +
+      `${renderIntentPrompt(input.creativeIntent).text} ` +
+      `${renderBrandProfilePrompt(input.brandProfile)} ` +
+      'Aufgabe: repariere nur Hook/Flow/Konsistenz, ohne den User-Text unnötig umzuschreiben.',
+    max_output_tokens: 1200
+  });
+
+  const raw = parseOpenAiResponseText(response);
+  const parsed = parseStrictJson<unknown>(raw);
+  const normalized = normalizeVideoPlanV1(parsed);
+  if (!normalized) {
+    throw new ProviderRuntimeError('VIDEO_PLAN_V1_RECONCILE_INVALID_JSON', { provider: 'openai', fatal: false });
+  }
+  return normalized;
 };
 
 const probeWithRetry = async (name: string, fn: () => Promise<void>) => {
@@ -1695,6 +1944,8 @@ export const runVideoStage = async (input: {
   creativeIntent?: CreativeIntentMatrix;
   storyboardLight?: StoryboardLight;
   brandProfile?: BrandProfile;
+  generationPayload?: GenerationPayloadV1;
+  videoPlanV1?: VideoPlanV1;
   approvedScript?: string;
   approvedScriptV2?: {
     language?: string;
@@ -1718,11 +1969,17 @@ export const runVideoStage = async (input: {
   await runProviderHealthchecks();
 
   const concept = resolveStoryboardConcept(input.conceptId);
-  const startFrameStyle = resolveStartFrameStyle(input.startFrameStyle);
+  const effectiveTopic = String(input.generationPayload?.topic ?? input.topic).trim() || input.topic;
+  const effectiveBrandProfile = input.generationPayload?.brandProfile ?? input.brandProfile;
+  const intentInput = input.generationPayload?.creativeIntent ?? input.creativeIntent;
+
+  const startFrameStyle = resolveStartFrameStyle(input.startFrameStyle ?? input.generationPayload?.startFrame?.style);
+  const startFrameReferenceObjectPath = input.startFrameReferenceObjectPath ?? input.generationPayload?.startFrame?.uploadObjectPath;
+
   const fallbackMoodPreset = resolveMoodPreset(input.moodPreset);
-  const moodPreset = deriveLegacyMoodPresetFromIntent(input.creativeIntent, fallbackMoodPreset, concept.id);
-  const effectiveIntent = resolveEffectiveIntent(input.creativeIntent, moodPreset, concept.id);
-  const storyboardLight = normalizeStoryboardLight(input.storyboardLight);
+  const moodPreset = deriveLegacyMoodPresetFromIntent(intentInput, fallbackMoodPreset, concept.id);
+  const effectiveIntent = resolveEffectiveIntent(intentInput, moodPreset, concept.id);
+  const storyboardLightInput = normalizeStoryboardLight(input.storyboardLight);
 
   const legacyUserControlsProvided = isLegacyControlProfileProvided(input.userControls);
   const legacyUserControls = normalizeUserControlProfile(input.userControls);
@@ -1735,9 +1992,9 @@ export const runVideoStage = async (input: {
   let referenceAsset: StoredAsset | null = null;
   let referenceSummary = '';
 
-  if (input.startFrameReferenceObjectPath) {
-    const referenceBytes = await supabaseDownload(input.startFrameReferenceObjectPath);
-    const referenceMimeType = detectImageMimeFromName(input.startFrameReferenceObjectPath);
+  if (startFrameReferenceObjectPath) {
+    const referenceBytes = await supabaseDownload(startFrameReferenceObjectPath);
+    const referenceMimeType = detectImageMimeFromName(startFrameReferenceObjectPath);
     const referenceExt = extensionForMime(referenceMimeType);
     referenceAsset = await uploadAsset(
       input.jobId,
@@ -1749,10 +2006,14 @@ export const runVideoStage = async (input: {
     referenceSummary = await summarizeReferenceImage(referenceAsset.signedUrl);
   }
 
-  const startFramePromptBase = input.startFramePromptOverride?.trim() || startFramePrompts[startFrameStyle];
+  const startFramePromptBase =
+    input.startFramePromptOverride?.trim() ||
+    input.generationPayload?.startFrame?.customPrompt?.trim() ||
+    startFramePrompts[startFrameStyle];
   const startFrameLabel = startFrameLabels[startFrameStyle];
   const startFramePrompt = [
     startFramePromptBase,
+    input.generationPayload?.startFrame?.summary ? `Startframe summary: ${input.generationPayload.startFrame.summary}.` : '',
     referenceAsset ? `Reference image URL: ${referenceAsset.signedUrl}.` : '',
     referenceSummary ? `Reference cues: ${referenceSummary}` : ''
   ]
@@ -1767,9 +2028,7 @@ export const runVideoStage = async (input: {
     if (v2.openingHook?.trim()) parts.push(v2.openingHook.trim());
     if (v2.narration?.trim()) parts.push(v2.narration.trim());
 
-    for (const scene of v2.scenes
-      .slice()
-      .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))) {
+    for (const scene of v2.scenes.slice().sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))) {
       if (scene.action?.trim()) parts.push(scene.action.trim());
       for (const line of scene.lines ?? []) {
         const speaker = String(line.speaker ?? '').trim();
@@ -1791,7 +2050,79 @@ export const runVideoStage = async (input: {
 
   const approvedScript = input.approvedScript?.trim() || scriptFromV2;
 
-  const draft = approvedScript
+  let videoPlanV1: VideoPlanV1 | null = normalizeVideoPlanV1(input.videoPlanV1);
+  let videoPlanSource: 'provided' | 'generated' | 'reconciled' | 'fallback' | null = videoPlanV1 ? 'provided' : null;
+  let videoPlanReconciled = false;
+
+  if (!videoPlanV1 && input.generationPayload) {
+    try {
+      videoPlanV1 = await generateVideoPlan({
+        topic: effectiveTopic,
+        creativeIntent: effectiveIntent,
+        brandProfile: effectiveBrandProfile,
+        energyMode: effectiveIntent.energyMode,
+        startFrameHint: input.generationPayload.startFrame?.summary ?? input.generationPayload.startFrame?.referenceHint,
+        userEditedFlowScript: input.generationPayload.userEditedFlowScript
+      });
+      videoPlanSource = 'generated';
+
+      const userEdited = String(input.generationPayload.userEditedFlowScript ?? '').trim();
+      if (userEdited) {
+        videoPlanV1 = await reconcileVideoPlan({
+          topic: effectiveTopic,
+          currentPlan: videoPlanV1,
+          userEditedFlowScript: userEdited,
+          creativeIntent: effectiveIntent,
+          brandProfile: effectiveBrandProfile,
+          energyMode: effectiveIntent.energyMode
+        });
+        videoPlanSource = 'reconciled';
+        videoPlanReconciled = true;
+      }
+    } catch {
+      videoPlanV1 = fallbackVideoPlanV1(effectiveTopic, input.generationPayload.userEditedFlowScript);
+      videoPlanSource = 'fallback';
+      videoPlanReconciled = Boolean(input.generationPayload.userEditedFlowScript?.trim());
+    }
+  }
+
+  const storyboardLight =
+    storyboardLightInput ??
+    (videoPlanV1
+      ? {
+          beats: videoPlanV1.flowBeats.map((beat) => ({
+            beatId: `plan_${beat.order}`,
+            order: beat.order,
+            action: beat.beat,
+            visualHint: beat.visualHint,
+            onScreenTextHint: beat.onScreenTextHint
+          })),
+          hookHint: videoPlanV1.hookOpening,
+          ctaHint: videoPlanV1.flowBeats[videoPlanV1.flowBeats.length - 1]?.beat,
+          pacingHint: 'dynamic'
+        }
+      : undefined);
+
+  const scriptFromPlan = (() => {
+    if (!videoPlanV1) return '';
+    const sceneParts = videoPlanV1.script.scenes
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map((scene) => scene.action)
+      .filter(Boolean)
+      .join(' ');
+
+    const merged = [videoPlanV1.hookOpening, videoPlanV1.script.narration, sceneParts]
+      .map((part) => String(part ?? '').trim())
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return merged ? ensureSentenceEnding(merged) : '';
+  })();
+
+  let draft = approvedScript
     ? (() => {
         const script = ensureSentenceEnding(approvedScript);
         const estimatedSeconds = estimateSpeechSeconds(script);
@@ -1806,24 +2137,58 @@ export const runVideoStage = async (input: {
           creativeIntent: effectiveIntent
         };
       })()
-    : await generateScriptDraft({
-        topic: input.topic,
-        variantType: input.variantType,
-        moodPreset,
-        creativeIntent: effectiveIntent,
-        brandProfile: input.brandProfile
-      });
+    : scriptFromPlan
+      ? (() => {
+          const script = ensureSentenceEnding(scriptFromPlan);
+          const estimatedSeconds = estimateSpeechSeconds(script);
+          return {
+            script,
+            targetSeconds: durationConfig.targetSeconds,
+            estimatedSeconds,
+            withinTarget: estimatedSeconds <= durationConfig.targetSeconds * 1.08,
+            suggestedWords: Math.round(durationConfig.targetSeconds * 2.35),
+            condensed: false,
+            moodPreset,
+            creativeIntent: effectiveIntent
+          };
+        })()
+      : await generateScriptDraft({
+          topic: effectiveTopic,
+          variantType: input.variantType,
+          moodPreset,
+          creativeIntent: effectiveIntent,
+          brandProfile: effectiveBrandProfile
+        });
 
   if (!draft.withinTarget) {
-    throw new ProviderRuntimeError(
-      `SCRIPT_DURATION_EXCEEDS_TARGET:${draft.estimatedSeconds}s>${draft.targetSeconds}s`,
-      { provider: 'openai', fatal: true }
+    const condensedScript = await condenseScriptToTarget(
+      draft.script,
+      durationConfig.targetSeconds,
+      Math.round(durationConfig.targetSeconds * 2.35),
+      moodPreset,
+      effectiveIntent,
+      effectiveBrandProfile
     );
+    const estimatedSeconds = estimateSpeechSeconds(condensedScript);
+    draft = {
+      ...draft,
+      script: ensureSentenceEnding(condensedScript),
+      estimatedSeconds,
+      withinTarget: estimatedSeconds <= durationConfig.targetSeconds * 1.08,
+      condensed: true
+    };
+  }
+
+  if (!draft.withinTarget) {
+    throw new ProviderRuntimeError(`SCRIPT_DURATION_EXCEEDS_TARGET:${draft.estimatedSeconds}s>${draft.targetSeconds}s`, {
+      provider: 'openai',
+      fatal: true
+    });
   }
 
   const llmText = draft.script;
   const storyboardPrompt = renderStoryboardLightPrompt(storyboardLight);
-  const brandPrompt = renderBrandProfilePrompt(input.brandProfile);
+  const brandPrompt = renderBrandProfilePrompt(effectiveBrandProfile);
 
   const safetyConstraints = [
     `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
@@ -1832,12 +2197,13 @@ export const runVideoStage = async (input: {
 
   const imageCompiled = compilePromptV2({
     baseSegments: [
-      `Create a 9:16 keyframe image for this topic: ${input.topic}.`,
+      `Create a 9:16 keyframe image for this topic: ${effectiveTopic}.`,
       `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
       `Mood: ${moodPromptMap[moodPreset]}`,
       startFramePrompt,
       storyboardPrompt,
       brandPrompt,
+      videoPlanV1 ? `Subject constraints: ${(videoPlanV1.subjectConstraints ?? []).join(' | ')}` : '',
       `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
       `Narration context: ${llmText}`
     ],
@@ -1849,7 +2215,7 @@ export const runVideoStage = async (input: {
 
   const videoCompiled = compilePromptV2({
     baseSegments: [
-      `Create a vertical social video about: ${input.topic}.`,
+      `Create a vertical social video about: ${effectiveTopic}.`,
       `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
       `Mood: ${moodPromptMap[moodPreset]}`,
       motionGuardByVariant[input.variantType],
@@ -1857,6 +2223,7 @@ export const runVideoStage = async (input: {
       startFramePrompt,
       storyboardPrompt,
       brandPrompt,
+      videoPlanV1 ? `Prompt directives: ${(videoPlanV1.promptDirectives ?? []).join(' | ')}` : '',
       `Narration text: ${llmText}`
     ],
     intent: effectiveIntent,
@@ -1885,12 +2252,15 @@ export const runVideoStage = async (input: {
     videoId: motionVideo.video.videoId,
     conceptId: concept.id,
     startFrameStyle,
-    startFrameCandidateId: input.startFrameCandidateId,
+    startFrameCandidateId: input.startFrameCandidateId ?? input.generationPayload?.startFrame?.candidateId,
     startFrameLabel,
     moodPreset,
     creativeIntent: effectiveIntent,
     storyboardLight,
-    brandProfile: input.brandProfile,
+    brandProfile: effectiveBrandProfile,
+    videoPlanV1,
+    videoPlanSource,
+    videoPlanReconciled,
 
     userControls: legacyUserControlsProvided ? legacyUserControls : undefined,
     promptCompiler: videoCompiled.meta,

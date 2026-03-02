@@ -437,27 +437,36 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     throw new Error(`PROJECT_NOT_FOUND:${payload.projectId}`);
   }
 
-  const brandProfile = mapBrandProfileForApi(getBrandProfile(project.organizationId)) ?? payload.brandProfile ?? null;
+  const generationPayload = payload.generationPayload;
+  const usingGenerationPayload = Boolean(generationPayload);
+  const conceptId = String(payload.conceptId ?? 'concept_web_vertical_slice') || 'concept_web_vertical_slice';
+  const effectiveTopic = String(generationPayload?.topic ?? project.topic).trim() || project.topic;
+
+  const persistedBrandProfile = mapBrandProfileForApi(getBrandProfile(project.organizationId));
+  const brandProfile = generationPayload?.brandProfile ?? payload.brandProfile ?? persistedBrandProfile ?? null;
 
   const variantType = normalizeVariantType(payload.variantType);
   const audioMode = payload.audioMode ?? 'voiceover';
   const fallbackMoodPreset = payload.moodPreset ?? 'commercial_cta';
-  const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId);
-  const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId);
+
+  const creativeIntentInput = (generationPayload?.creativeIntent as SelectConceptRequest['creativeIntent']) ?? payload.creativeIntent;
+  const creativeIntent = normalizeCreativeIntent(creativeIntentInput, fallbackMoodPreset, conceptId);
+  const moodPreset = deriveLegacyMoodPresetFromIntent(creativeIntentInput, fallbackMoodPreset, conceptId);
   const storyboardLight = normalizeStoryboardLight(payload.storyboardLight);
 
   const approvedScriptV2 = normalizeScriptV2(payload.approvedScriptV2);
   const approvedScriptLegacy = String(payload.approvedScript ?? '').trim();
-  const approvedScript = approvedScriptLegacy || buildScriptFromV2(approvedScriptV2);
+  const userEditedFlowScript = String(generationPayload?.userEditedFlowScript ?? '').trim();
+  const approvedScript = approvedScriptLegacy || buildScriptFromV2(approvedScriptV2) || userEditedFlowScript;
 
-  if (!approvedScript) {
+  if (!usingGenerationPayload && !approvedScript) {
     throw new Error('SCRIPT_ACCEPTANCE_REQUIRED');
   }
 
-  const customPrompt = String(payload.startFrameCustomPrompt ?? '').trim();
+  const customPrompt = String(payload.startFrameCustomPrompt ?? generationPayload?.startFrame?.customPrompt ?? '').trim();
   const customLabel = String(payload.startFrameCustomLabel ?? '').trim() || 'Eigenes Referenzbild';
-  const customReferenceHint = String(payload.startFrameReferenceHint ?? '').trim();
-  const uploadObjectPath = String(payload.startFrameUploadObjectPath ?? '').trim();
+  const customReferenceHint = String(payload.startFrameReferenceHint ?? generationPayload?.startFrame?.referenceHint ?? '').trim();
+  const uploadObjectPath = String(payload.startFrameUploadObjectPath ?? generationPayload?.startFrame?.uploadObjectPath ?? '').trim();
   const hasUploadedReference = uploadObjectPath.length > 0;
   const startFrameMode = hasUploadedReference ? 'uploaded_asset' : customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate';
   const effectiveStartFrameSource = hasUploadedReference || customPrompt.length > 0 ? 'uploaded_asset' : 'generated_candidate';
@@ -466,7 +475,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     customPrompt.length > 0 || hasUploadedReference
       ? {
           candidateId: `sfc_custom_${Date.now()}`,
-          style: payload.startFrameStyle ?? 'owner_portrait',
+          style: payload.startFrameStyle ?? generationPayload?.startFrame?.style ?? 'owner_portrait',
           label: customLabel,
           description: 'Nutzerdefinierter Startframe aus Upload-Referenz',
           prompt:
@@ -475,12 +484,12 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
           thumbnailUrl: ''
         }
       : resolveSelectedStartFrame({
-          topic: project.topic,
-          conceptId: payload.conceptId,
+          topic: effectiveTopic,
+          conceptId,
           moodPreset,
           creativeIntent,
-          startFrameCandidateId: payload.startFrameCandidateId,
-          startFrameStyle: payload.startFrameStyle
+          startFrameCandidateId: payload.startFrameCandidateId ?? generationPayload?.startFrame?.candidateId,
+          startFrameStyle: payload.startFrameStyle ?? generationPayload?.startFrame?.style
         });
 
   if (!selectedStartFrame) {
@@ -488,8 +497,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   }
 
   const startFramePolicy = evaluateStartframePolicyPreflight({
-    topic: project.topic,
-    conceptId: payload.conceptId,
+    topic: effectiveTopic,
+    conceptId,
     startFrameStyle: selectedStartFrame.style,
     startFrameCandidateId: selectedStartFrame.candidateId,
     startFrameLabel: selectedStartFrame.label,
@@ -515,15 +524,24 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
 
   const legacyUserControlsProvided = Boolean(payload.userControls);
   const userControls = normalizeUserControlProfile(payload.userControls);
-  const consistency = validateCreativeConsistency({
-    script: approvedScript,
-    conceptId: payload.conceptId,
-    moodPreset,
-    startFrameStyle: effectiveStartFrame.style,
-    userControls: legacyUserControlsProvided ? userControls : undefined,
-    creativeIntent: payload.creativeIntent ? creativeIntent : undefined,
-    storyboardLight
-  });
+
+  const skipConsistency = usingGenerationPayload && !approvedScript;
+  const consistency = skipConsistency
+    ? {
+        ok: true,
+        score: 100,
+        reasons: [] as string[],
+        checks: [{ id: 'CONSISTENCY_SKIPPED_GENERATION_PAYLOAD', ok: true, detail: 'video_plan_v1_path' }]
+      }
+    : validateCreativeConsistency({
+        script: approvedScript,
+        conceptId,
+        moodPreset,
+        startFrameStyle: effectiveStartFrame.style,
+        userControls: legacyUserControlsProvided ? userControls : undefined,
+        creativeIntent: creativeIntentInput ? creativeIntent : undefined,
+        storyboardLight
+      });
 
   if (!consistency.ok) {
     throw new Error(`CREATIVE_CONSISTENCY_FAILED:${consistency.reasons.join('|')}`);
@@ -544,11 +562,25 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     detail: 'amount=-1 type=RESERVED'
   });
 
+  if (generationPayload) {
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'GENERATION_PAYLOAD_ACCEPTED',
+      detail: JSON.stringify({
+        topic: generationPayload.topic,
+        startFrame: generationPayload.startFrame,
+        creativeIntent: generationPayload.creativeIntent,
+        hasUserEditedFlowScript: Boolean(generationPayload.userEditedFlowScript?.trim()),
+        migrationMode: 'v1_additive'
+      })
+    });
+  }
+
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
     event: 'STORYBOARD_SELECTED',
     detail: JSON.stringify({
-      conceptId: payload.conceptId,
+      conceptId,
       moodPreset,
       approvedScript,
       approvedScriptV2,
@@ -575,6 +607,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       creativeIntent,
       storyboardLight,
       brandProfile,
+      generationPayload,
+      migrationMode: generationPayload ? 'v1_additive' : undefined,
       userControls: legacyUserControlsProvided ? userControls : undefined
     })
   });
@@ -717,10 +751,11 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     })
   });
 
+  const scriptAcceptanceDetail = approvedScript || (usingGenerationPayload ? 'VIDEO_PLAN_V1_ACCEPTED' : '');
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
     event: 'SCRIPT_ACCEPTED',
-    detail: approvedScript
+    detail: scriptAcceptanceDetail
   });
 
   appendTimelineEvent(job.id, {

@@ -74,6 +74,52 @@ type ScriptV2 = {
   }>;
 };
 
+type GenerationPayloadV1 = {
+  topic: string;
+  brandProfile: {
+    companyName: string;
+    websiteUrl?: string;
+    logoUrl?: string;
+    brandTone?: string;
+    primaryColorHex?: string;
+    secondaryColorHex?: string;
+    ctaStyle?: 'soft' | 'balanced' | 'strong';
+    audienceHint?: string;
+    valueProposition?: string;
+  };
+  creativeIntent: CreativeIntent;
+  startFrame?: {
+    style?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+    candidateId?: string;
+    customPrompt?: string;
+    uploadObjectPath?: string;
+    referenceHint?: string;
+    summary?: string;
+  };
+  userEditedFlowScript?: string;
+};
+
+type VideoPlanV1 = {
+  hookOpening: string;
+  flowBeats: Array<{
+    order: number;
+    beat: string;
+    visualHint?: string;
+    onScreenTextHint?: string;
+  }>;
+  script: {
+    narration: string;
+    scenes: Array<{
+      order: number;
+      action: string;
+      lines?: Array<{ speaker: string; text: string }>;
+      onScreenText?: string;
+    }>;
+  };
+  subjectConstraints: string[];
+  promptDirectives: string[];
+};
+
 type StoryboardSelection = {
   conceptId: string;
   moodPreset: 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor_light';
@@ -90,6 +136,8 @@ type StoryboardSelection = {
     audienceHint?: string;
     valueProposition?: string;
   };
+  generationPayload?: GenerationPayloadV1;
+  videoPlanV1?: VideoPlanV1;
   approvedScript?: string;
   approvedScriptV2?: ScriptV2;
   audioMode?: 'voiceover' | 'scene' | 'hybrid';
@@ -518,11 +566,145 @@ const prepareCaptionV2Payload = (storyboard: StoryboardSelection) => {
   };
 };
 
+const parseGenerationPayloadV1 = (raw: unknown): GenerationPayloadV1 | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+
+  const input = raw as Record<string, unknown>;
+  const topic = String(input.topic ?? '').trim().slice(0, 240);
+
+  const rawBrand = input.brandProfile && typeof input.brandProfile === 'object'
+    ? (input.brandProfile as Record<string, unknown>)
+    : null;
+  const brandProfile = rawBrand
+    ? {
+        companyName: String(rawBrand.companyName ?? '').trim().slice(0, 120),
+        websiteUrl: String(rawBrand.websiteUrl ?? '').trim().slice(0, 200) || undefined,
+        logoUrl: String(rawBrand.logoUrl ?? '').trim().slice(0, 400) || undefined,
+        brandTone: String(rawBrand.brandTone ?? '').trim().slice(0, 180) || undefined,
+        primaryColorHex: String(rawBrand.primaryColorHex ?? '').trim().slice(0, 12) || undefined,
+        secondaryColorHex: String(rawBrand.secondaryColorHex ?? '').trim().slice(0, 12) || undefined,
+        ctaStyle:
+          typeof rawBrand.ctaStyle === 'string' && ['soft', 'balanced', 'strong'].includes(rawBrand.ctaStyle)
+            ? (rawBrand.ctaStyle as 'soft' | 'balanced' | 'strong')
+            : undefined,
+        audienceHint: String(rawBrand.audienceHint ?? '').trim().slice(0, 240) || undefined,
+        valueProposition: String(rawBrand.valueProposition ?? '').trim().slice(0, 280) || undefined
+      }
+    : null;
+
+  const creativeIntent = parseCreativeIntent(input.creativeIntent);
+
+  if (!topic || !brandProfile?.companyName || !creativeIntent) return undefined;
+
+  const effectGoals = creativeIntent.effectGoals.filter((goal) => goal.id !== 'cringe_hook');
+
+  const startFrameRaw = input.startFrame;
+  const startFrame = startFrameRaw && typeof startFrameRaw === 'object'
+    ? (() => {
+        const sf = startFrameRaw as Record<string, unknown>;
+        const styleRaw = String(sf.style ?? '').trim();
+        const style = ['storefront_hero', 'product_macro', 'owner_portrait', 'hands_at_work', 'before_after_split'].includes(styleRaw)
+          ? (styleRaw as 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split')
+          : undefined;
+
+        return {
+          style,
+          candidateId: String(sf.candidateId ?? '').trim() || undefined,
+          customPrompt: String(sf.customPrompt ?? '').trim().slice(0, 400) || undefined,
+          uploadObjectPath: String(sf.uploadObjectPath ?? '').trim() || undefined,
+          referenceHint: String(sf.referenceHint ?? '').trim().slice(0, 180) || undefined,
+          summary: String(sf.summary ?? '').trim().slice(0, 280) || undefined
+        };
+      })()
+    : undefined;
+
+  return {
+    topic,
+    brandProfile,
+    creativeIntent: {
+      ...creativeIntent,
+      effectGoals
+    },
+    startFrame,
+    userEditedFlowScript: String(input.userEditedFlowScript ?? '').trim().slice(0, 4000) || undefined
+  };
+};
+
+const parseVideoPlanV1 = (raw: unknown): VideoPlanV1 | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+
+  const hookOpening = String(input.hookOpening ?? '').trim().slice(0, 280);
+  const flowBeatsRaw = Array.isArray(input.flowBeats) ? input.flowBeats : [];
+  const flowBeats = flowBeatsRaw
+    .slice(0, 8)
+    .map((entry, index) => (entry && typeof entry === 'object' ? ({ ...(entry as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const beat = String(entry.beat ?? '').trim().slice(0, 220);
+      if (!beat) return null;
+
+      const orderRaw = Number(entry.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(entry.index) + 1;
+
+      return {
+        order,
+        beat,
+        visualHint: String(entry.visualHint ?? '').trim().slice(0, 180) || undefined,
+        onScreenTextHint: String(entry.onScreenTextHint ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((entry): entry is VideoPlanV1['flowBeats'][number] => Boolean(entry))
+    .sort((a, b) => a.order - b.order);
+
+  const scriptRaw = input.script && typeof input.script === 'object' ? (input.script as Record<string, unknown>) : null;
+  if (!scriptRaw || !flowBeats.length) return undefined;
+
+  const scenesRaw = Array.isArray(scriptRaw.scenes) ? scriptRaw.scenes : [];
+  const scenes = scenesRaw
+    .slice(0, 10)
+    .map((entry, index) => (entry && typeof entry === 'object' ? ({ ...(entry as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => {
+      const action = String(entry.action ?? '').trim().slice(0, 240);
+      if (!action) return null;
+      const orderRaw = Number(entry.order);
+      const order = Number.isFinite(orderRaw) ? Math.max(1, Math.floor(orderRaw)) : Number(entry.index) + 1;
+      return {
+        order,
+        action,
+        onScreenText: String(entry.onScreenText ?? '').trim().slice(0, 120) || undefined
+      };
+    })
+    .filter((entry): entry is VideoPlanV1['script']['scenes'][number] => Boolean(entry))
+    .sort((a, b) => a.order - b.order);
+
+  const narration = String(scriptRaw.narration ?? '').trim().slice(0, 2000);
+  if (!hookOpening || !narration) return undefined;
+
+  return {
+    hookOpening,
+    flowBeats,
+    script: {
+      narration,
+      scenes
+    },
+    subjectConstraints: Array.isArray(input.subjectConstraints)
+      ? input.subjectConstraints.map((value) => String(value).trim()).filter(Boolean).slice(0, 8)
+      : [],
+    promptDirectives: Array.isArray(input.promptDirectives)
+      ? input.promptDirectives.map((value) => String(value).trim()).filter(Boolean).slice(0, 8)
+      : []
+  };
+};
+
 const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   const fallback: StoryboardSelection = {
     conceptId: 'concept_web_vertical_slice',
     moodPreset: 'commercial_cta',
     brandProfile: undefined,
+    generationPayload: undefined,
+    videoPlanV1: undefined,
     approvedScript: undefined,
     approvedScriptV2: undefined,
     audioMode: 'voiceover',
@@ -552,6 +734,8 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
       creativeIntent?: unknown;
       storyboardLight?: unknown;
       userControls?: unknown;
+      generationPayload?: unknown;
+      videoPlanV1?: unknown;
     };
 
     const startFrameStyle =
@@ -619,6 +803,8 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
       creativeIntent: parseCreativeIntent(parsed.creativeIntent),
       storyboardLight: parseStoryboardLight(parsed.storyboardLight),
       brandProfile: brandProfile?.companyName ? brandProfile : undefined,
+      generationPayload: parseGenerationPayloadV1(parsed.generationPayload),
+      videoPlanV1: parseVideoPlanV1(parsed.videoPlanV1),
       approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
       approvedScriptV2: parseScriptV2((parsed as { approvedScriptV2?: unknown }).approvedScriptV2),
       audioMode:
@@ -946,6 +1132,8 @@ const processVideo = async (job: Job<StagePayload>) => {
         creativeIntent: storyboard.creativeIntent,
         storyboardLight: storyboard.storyboardLight,
         brandProfile: storyboard.brandProfile,
+        generationPayload: storyboard.generationPayload,
+        videoPlanV1: storyboard.videoPlanV1,
         approvedScript: storyboard.approvedScript,
         approvedScriptV2: storyboard.approvedScriptV2,
         startFrameStyle: storyboard.startFrameStyle,
@@ -1020,6 +1208,20 @@ const processVideo = async (job: Job<StagePayload>) => {
           hookHint: result.storyboardLight.hookHint,
           ctaHint: result.storyboardLight.ctaHint,
           pacingHint: result.storyboardLight.pacingHint
+        })
+      );
+    }
+
+    if (result.videoPlanV1) {
+      await insertTimeline(
+        jobId,
+        result.videoPlanReconciled ? 'VIDEO_PLAN_V1_RECONCILED' : 'VIDEO_PLAN_V1_GENERATED',
+        JSON.stringify({
+          hookOpening: result.videoPlanV1.hookOpening,
+          flowBeatCount: result.videoPlanV1.flowBeats.length,
+          subjectConstraints: result.videoPlanV1.subjectConstraints,
+          promptDirectives: result.videoPlanV1.promptDirectives,
+          source: result.videoPlanSource
         })
       );
     }

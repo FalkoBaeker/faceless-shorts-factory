@@ -283,6 +283,71 @@ const parseBrandProfile = (raw: unknown) => {
   };
 };
 
+const parseGenerationPayload = (raw: unknown) => {
+  if (raw == null) return undefined;
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('GENERATION_PAYLOAD_INVALID');
+  }
+
+  const input = raw as Record<string, unknown>;
+  const topic = String(input.topic ?? '').trim().slice(0, 240);
+  if (!topic) throw new Error('GENERATION_PAYLOAD_TOPIC_REQUIRED');
+
+  const brandProfile = parseBrandProfile(input.brandProfile);
+  if (!brandProfile?.companyName?.trim()) {
+    throw new Error('GENERATION_PAYLOAD_BRAND_PROFILE_REQUIRED');
+  }
+
+  const ciRaw = input.creativeIntent;
+  if (!ciRaw || typeof ciRaw !== 'object') {
+    throw new Error('GENERATION_PAYLOAD_CREATIVE_INTENT_REQUIRED');
+  }
+
+  const ci = ciRaw as Record<string, unknown>;
+  const effectGoals = parseWeightedSelections(ci.effectGoals, ['sell_conversion', 'funny', 'testimonial_trust', 'urgency_offer'] as const);
+  const narrativeFormats = parseWeightedSelections(ci.narrativeFormats, ['before_after', 'dialog', 'offer_focus', 'commercial', 'problem_solution'] as const);
+  const shotStyles = parseWeightedSelections(ci.shotStyles, ['cinematic_closeup', 'over_shoulder', 'handheld_push', 'product_macro', 'wide_establishing', 'fast_cut_montage'] as const);
+  const energyModeRaw = String(ci.energyMode ?? 'auto').trim().toLowerCase();
+  const energyMode = ['auto', 'high', 'calm'].includes(energyModeRaw) ? (energyModeRaw as 'auto' | 'high' | 'calm') : 'auto';
+
+  if (!effectGoals.length || !narrativeFormats.length) {
+    throw new Error('GENERATION_PAYLOAD_CREATIVE_INTENT_INCOMPLETE');
+  }
+
+  const startFrameRaw = input.startFrame;
+  const startFrame = startFrameRaw && typeof startFrameRaw === 'object'
+    ? (() => {
+        const sf = startFrameRaw as Record<string, unknown>;
+        const styleRaw = String(sf.style ?? '').trim();
+        const style = styleRaw && ['storefront_hero', 'product_macro', 'owner_portrait', 'hands_at_work', 'before_after_split'].includes(styleRaw)
+          ? (styleRaw as 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split')
+          : undefined;
+
+        return {
+          style,
+          candidateId: String(sf.candidateId ?? '').trim() || undefined,
+          customPrompt: String(sf.customPrompt ?? '').trim().slice(0, 400) || undefined,
+          uploadObjectPath: String(sf.uploadObjectPath ?? '').trim() || undefined,
+          referenceHint: String(sf.referenceHint ?? '').trim().slice(0, 180) || undefined,
+          summary: String(sf.summary ?? '').trim().slice(0, 280) || undefined
+        };
+      })()
+    : undefined;
+
+  return {
+    topic,
+    brandProfile,
+    creativeIntent: {
+      effectGoals,
+      narrativeFormats,
+      shotStyles,
+      energyMode
+    },
+    startFrame,
+    userEditedFlowScript: String(input.userEditedFlowScript ?? '').trim().slice(0, 4000) || undefined
+  };
+};
+
 const parseScriptV2 = (raw: unknown) => {
   if (!raw || typeof raw !== 'object') return undefined;
   const input = raw as Record<string, unknown>;
@@ -590,16 +655,19 @@ export const buildApiServer = () =>
 
         const body = await readJsonBody(req);
         const projectId = path.split('/')[3];
+        const generationPayload = parseGenerationPayload(body.generationPayload);
+
         const selected = selectConceptHandler({
           projectId,
-          conceptId: String(body.conceptId ?? 'concept_1'),
+          conceptId: String(body.conceptId ?? 'concept_web_vertical_slice'),
           moodPreset: parseMoodPreset(body.moodPreset),
           creativeIntent: parseCreativeIntent(body.creativeIntent),
           storyboardLight: parseStoryboardLight(body.storyboardLight),
           brandProfile: parseBrandProfile(body.brandProfile),
+          generationPayload,
           approvedScript: String(body.approvedScript ?? ''),
           approvedScriptV2: parseScriptV2(body.approvedScriptV2),
-          startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
+          startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || generationPayload?.startFrame?.candidateId,
           startFrameStyle: String(body.startFrameStyle ?? '').trim()
             ? (String(body.startFrameStyle) as
                 | 'storefront_hero'
@@ -607,11 +675,12 @@ export const buildApiServer = () =>
                 | 'owner_portrait'
                 | 'hands_at_work'
                 | 'before_after_split')
-            : undefined,
+            : generationPayload?.startFrame?.style,
           startFrameCustomLabel: String(body.startFrameCustomLabel ?? '').trim() || undefined,
-          startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
-          startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
-          startFrameUploadObjectPath: String(body.startFrameUploadObjectPath ?? '').trim() || undefined,
+          startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || generationPayload?.startFrame?.customPrompt,
+          startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || generationPayload?.startFrame?.referenceHint,
+          startFrameUploadObjectPath:
+            String(body.startFrameUploadObjectPath ?? '').trim() || generationPayload?.startFrame?.uploadObjectPath,
           audioMode: parseAudioMode(body.audioMode),
           userControls: parseUserControls(body.userControls),
           variantType: parseVariantType(body.variantType)
