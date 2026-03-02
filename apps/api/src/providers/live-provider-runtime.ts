@@ -1189,12 +1189,44 @@ const reconcileVideoPlan = async (input: {
   return normalized;
 };
 
+const flowBeatLooksGeneric = (value: string) => {
+  const text = value.trim().toLowerCase();
+  if (!text) return true;
+  return (
+    /\b(konkrete?r?\s+schritt|zentrales?\s+motiv|kamera\s+folgt|sichtbare\s+weiterentwicklung|hook\s*\+\s*setup|payoff|cta\s*-?szene|eindeutige\s+handlungsaufforderung)\b/.test(
+      text
+    ) || text.length < 28
+  );
+};
+
+const concreteFlowBeatFallback = (input: {
+  index: number;
+  topic: string;
+  explicitHeroSubject: string;
+  brandName?: string;
+}) => {
+  const brandCue = input.brandName ? `Marke sichtbar: ${input.brandName}.` : '';
+  const templates = [
+    `Hook-Shot: Hauptfigur tritt ins Bild, interagiert sofort mit ${input.explicitHeroSubject}; klare Startaktion in den ersten 2 Sekunden. ${brandCue}`,
+    `Kontext-Shot: Reale Alltagsszene zum Thema ${input.topic}; sichtbare Interaktion mit Produkt/Umgebung, ohne Szenen-Reset. ${brandCue}`,
+    `Detail-Shot: Nahaufnahme einer konkreten Nutzungshandlung; Fokuswechsel zeigt Material, Bewegung und Ergebnis klar hintereinander.`,
+    `Entwicklungs-Shot: Zweite Handlung im selben Ort mit neuer Kameraperspektive; Story geht sichtbar vorwärts statt Wiederholung.`,
+    `Ergebnis-Shot: Reaktion der Person auf das Resultat; Nutzen ist im Bild direkt ablesbar, Kontext bleibt konsistent.`,
+    `CTA-Shot: Abschlusshandlung mit Blick zur Kamera; Angebot und nächste Aktion sind klar sichtbar und zum Thema passend. ${brandCue}`
+  ];
+
+  return ensureSentenceEnding(templates[(input.index - 1) % templates.length]);
+};
+
 const buildFallbackSoraPromptBlueprint = (input: {
   technicalSoraPrompt: string;
   hook: string;
   flowBeatsPrompt: string;
   continuityAnchors: string[];
   segmentPlanSeconds: number[];
+  topic: string;
+  explicitHeroSubject: string;
+  brandName?: string;
 }): SoraPromptBlueprint => {
   const segments = input.segmentPlanSeconds.map((seconds, idx) => ({
     index: idx + 1,
@@ -1205,7 +1237,12 @@ const buildFallbackSoraPromptBlueprint = (input: {
     prompt:
       `Segment ${idx + 1}/${input.segmentPlanSeconds.length} (${seconds}s). ` +
       `Use this technical base prompt and move narrative forward without resets: ${input.technicalSoraPrompt}`,
-    userFlowBeat: `Beat ${idx + 1}: ${idx === 0 ? 'starker Hook + Setup' : idx === input.segmentPlanSeconds.length - 1 ? 'Payoff + CTA' : 'sichtbare Weiterentwicklung'}`
+    userFlowBeat: concreteFlowBeatFallback({
+      index: idx + 1,
+      topic: input.topic,
+      explicitHeroSubject: input.explicitHeroSubject,
+      brandName: input.brandName
+    })
   }));
 
   return {
@@ -1217,7 +1254,11 @@ const buildFallbackSoraPromptBlueprint = (input: {
   };
 };
 
-const normalizeSoraPromptBlueprint = (raw: unknown, segmentPlanSeconds: number[]): SoraPromptBlueprint | null => {
+const normalizeSoraPromptBlueprint = (
+  raw: unknown,
+  segmentPlanSeconds: number[],
+  context: { topic: string; explicitHeroSubject: string; brandName?: string }
+): SoraPromptBlueprint | null => {
   if (!raw || typeof raw !== 'object') return null;
   const input = raw as Record<string, unknown>;
 
@@ -1239,7 +1280,15 @@ const normalizeSoraPromptBlueprint = (raw: unknown, segmentPlanSeconds: number[]
     const prompt = String(row.prompt ?? '').trim().slice(0, 3000);
     const startState = String(row.startState ?? '').trim().slice(0, 800);
     const endState = String(row.endState ?? '').trim().slice(0, 800);
-    const userFlowBeat = String(row.userFlowBeat ?? '').trim().slice(0, 320);
+    const userFlowBeatRaw = String(row.userFlowBeat ?? '').trim().slice(0, 320);
+    const userFlowBeat = flowBeatLooksGeneric(userFlowBeatRaw)
+      ? concreteFlowBeatFallback({
+          index,
+          topic: context.topic,
+          explicitHeroSubject: context.explicitHeroSubject,
+          brandName: context.brandName
+        })
+      : userFlowBeatRaw;
     if (!prompt || !startState || !endState || !userFlowBeat) continue;
 
     segmentsByIndex.set(index, {
@@ -1266,7 +1315,10 @@ const normalizeSoraPromptBlueprint = (raw: unknown, segmentPlanSeconds: number[]
   if (!technicalSoraPrompt || alignedSegments.length !== segmentPlanSeconds.length) return null;
 
   const userFlowScriptRaw = String(input.userFlowScript ?? '').trim().slice(0, 4000);
-  const userFlowScript = userFlowScriptRaw || alignedSegments.map((segment) => `${segment.index}. ${segment.userFlowBeat}`).join('\n');
+  const rawLooksGeneric = flowBeatLooksGeneric(userFlowScriptRaw.replace(/\d+[.)]\s*/g, '').slice(0, 280));
+  const userFlowScript = !userFlowScriptRaw || rawLooksGeneric
+    ? alignedSegments.map((segment) => `${segment.index}. ${segment.userFlowBeat}`).join('\n')
+    : userFlowScriptRaw;
 
   return {
     technicalSoraPrompt,
@@ -1290,6 +1342,7 @@ const generateSoraPromptBlueprint = async (input: {
   startFrameTransitionDirective: string;
   intentPrompt: string;
   brandPrompt: string;
+  brandName?: string;
   moodPrompt: string;
   userEditedFlowScript?: string;
 }): Promise<SoraPromptBlueprint> => {
@@ -1309,6 +1362,7 @@ const generateSoraPromptBlueprint = async (input: {
       `Startframe directive: ${input.startFrameDirective}. ` +
       `Startframe transition directive: ${input.startFrameTransitionDirective}. ` +
       `Intent: ${input.intentPrompt}. Brand: ${input.brandPrompt}. Mood: ${input.moodPrompt}. ` +
+      `${input.brandName ? `Visible brand text/logos must use exactly this name when shown: "${input.brandName}". Never invent other bakery/company names. ` : ''}` +
       `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
       `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
       'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
@@ -1321,7 +1375,11 @@ const generateSoraPromptBlueprint = async (input: {
 
   const raw = parseOpenAiResponseText(response);
   const parsed = parseStrictJson<unknown>(raw);
-  const normalized = normalizeSoraPromptBlueprint(parsed, input.segmentPlanSeconds);
+  const normalized = normalizeSoraPromptBlueprint(parsed, input.segmentPlanSeconds, {
+    topic: input.topic,
+    explicitHeroSubject: input.explicitHeroSubject,
+    brandName: input.brandName
+  });
   if (!normalized) {
     throw new ProviderRuntimeError('SORA_PROMPT_BLUEPRINT_INVALID_JSON', { provider: 'openai', fatal: false });
   }
@@ -1631,7 +1689,7 @@ const concreteSceneAction = (input: { topic: string; detail: string; index: numb
     `Shot 3 Detail: Nahe Aufnahme mit Fokuswechsel von Objekt auf Handlung; sichtbarer Mikromoment der Nutzung rund um ${detail}.`,
     `Shot 4 Entwicklung: Perspektivwechsel auf eine zweite Bewegung derselben Szene; der Ablauf geht sichtbar vorwärts ohne Reset auf den Anfang.`,
     `Shot 5 Ergebnis: Reaktionsshot im selben Ort, klare Wirkung im Gesicht/Objekt erkennbar; ${detail} bleibt kontexttreu eingebunden.`,
-    `Shot 6 CTA: Abschlussshot mit direktem Blick zur Kamera, Produkt/Angebot sichtbar und eindeutiger Handlungsaufforderung im Bild.`
+    `Shot 6 CTA: Abschlussshot im selben Laden; die Hauptfigur hält ein konkretes Produkt in die Kamera, zeigt auf ein klar lesbares Angebotsschild und macht eine sichtbare Einladegeste.`
   ];
 
   return ensureSentenceEnding(templates[input.index % templates.length]);
@@ -1713,6 +1771,7 @@ const buildScriptV2ForDraft = async (input: {
         : `Start from generated hero subject: ${inferExplicitHeroSubject(input.topic)}`,
       intentPrompt: renderIntentPrompt(input.creativeIntent).text,
       brandPrompt: renderBrandProfilePrompt(input.brandProfile),
+      brandName: String(input.brandProfile?.companyName ?? '').trim() || undefined,
       moodPrompt: moodPromptMap[input.moodPreset],
       userEditedFlowScript: input.narration
     });
@@ -2837,14 +2896,20 @@ export const runVideoStage = async (input: {
     'Keep the same main subject identity from opening through final shot.'
   ].filter(Boolean);
 
+  const exactBrandName = String(effectiveBrandProfile?.companyName ?? '').trim();
+  const brandTextConstraint = exactBrandName
+    ? `If any visible brand text/logo appears, it must be exactly "${exactBrandName}". Never invent other brand/shop names.`
+    : '';
+
   const outputConstraints = [
     `9:16 vertical output, cinematic but readable for mobile.`,
     `Keep on-screen text inside title-safe area (${safeMarginPercent}% margin).`,
     'No caption text should touch the frame border.',
     'TikTok pace: immediate hook, visibly changing shots, no slow static drift.',
     'No looping/recycling of the same crop or 4-shot pattern; progression must stay forward.',
-    'Never use abstract labels like "central motif"; always name the exact subject/object shown in the shot.'
-  ];
+    'Never use abstract labels like "central motif"; always name the exact subject/object shown in the shot.',
+    brandTextConstraint
+  ].filter(Boolean);
 
   const lightingAnchors = [
     `Mood anchor: ${moodPromptMap[moodPreset]}`,
@@ -2908,6 +2973,7 @@ export const runVideoStage = async (input: {
         startFrameTransitionDirective,
         intentPrompt: renderIntentPrompt(effectiveIntent).text,
         brandPrompt,
+        brandName: exactBrandName || undefined,
         moodPrompt: moodPromptMap[moodPreset],
         userEditedFlowScript: input.generationPayload?.userEditedFlowScript
       });
@@ -2924,7 +2990,10 @@ export const runVideoStage = async (input: {
         hook: hookOpening,
         flowBeatsPrompt,
         continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
-        segmentPlanSeconds
+        segmentPlanSeconds,
+        topic: effectiveTopic,
+        explicitHeroSubject,
+        brandName: exactBrandName || undefined
       });
     }
   })();
