@@ -1156,8 +1156,17 @@ const processVideo = async (job: Job<StagePayload>) => {
     if (result.referenceAsset?.objectPath) {
       await setAssetRef(jobId, 'startFrameReferenceObjectPath', result.referenceAsset.objectPath);
     }
+    if (result.strictStep1ImagePrompt?.objectPath) {
+      await setAssetRef(jobId, 'startframePromptStep1ObjectPath', result.strictStep1ImagePrompt.objectPath);
+    }
     if (result.strictStep1Prompt?.objectPath) {
       await setAssetRef(jobId, 'soraPromptStep1ObjectPath', result.strictStep1Prompt.objectPath);
+    }
+    if (result.strictStep2Prompt?.objectPath) {
+      await setAssetRef(jobId, 'soraPromptStep2ObjectPath', result.strictStep2Prompt.objectPath);
+      await setAssetRef(jobId, 'soraPromptActiveObjectPath', result.strictStep2Prompt.objectPath);
+    } else if (result.strictStep1Prompt?.objectPath) {
+      await setAssetRef(jobId, 'soraPromptActiveObjectPath', result.strictStep1Prompt.objectPath);
     }
     if (result.strictStep1RequestPreview?.objectPath) {
       await setAssetRef(jobId, 'soraPromptStep1RequestObjectPath', result.strictStep1RequestPreview.objectPath);
@@ -1209,7 +1218,10 @@ const processVideo = async (job: Job<StagePayload>) => {
         'SORA_PROMPT_STEP1_STORED',
         JSON.stringify({
           model: result.strictStep1PromptModel,
+          promptSource: result.strictPromptSource ?? 'step1',
+          imagePromptObjectPath: result.strictStep1ImagePrompt?.objectPath ?? null,
           objectPath: result.strictStep1Prompt.objectPath,
+          step2ObjectPath: result.strictStep2Prompt?.objectPath ?? null,
           requestPreviewObjectPath: result.strictStep1RequestPreview?.objectPath ?? null,
           websiteUrl: result.strictStep1WebsiteUrl,
           guidelinePath: result.strictStep1GuidelinePath

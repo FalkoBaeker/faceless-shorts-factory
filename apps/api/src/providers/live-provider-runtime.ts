@@ -1002,11 +1002,16 @@ const readSoraGuidelineStrict = () => {
   return { path, content };
 };
 
+type StrictWebsiteContextBundle = {
+  websiteUrl: string;
+  websiteContext: string;
+};
+
 const extractWebsiteContextWithStrictLlm = async (input: {
   topic: string;
   brandProfile?: BrandProfile;
   creativeIntent: CreativeIntentMatrix;
-}) => {
+}): Promise<StrictWebsiteContextBundle> => {
   const websiteUrl = String(input.brandProfile?.websiteUrl ?? '').trim();
   const fetched = await fetchWebsiteContextTextStrict(websiteUrl);
 
@@ -1037,6 +1042,53 @@ const extractWebsiteContextWithStrictLlm = async (input: {
   };
 };
 
+const buildStrictStep1ImagePrompt = (input: {
+  topic: string;
+  brandProfile?: BrandProfile;
+  creativeIntent: CreativeIntentMatrix;
+  moodPreset: MoodPreset;
+  websiteContext: string;
+}) => {
+  const humorIntent = input.creativeIntent.effects.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
+
+  return (
+    `Nimm diese gesamten Informationen (Branding, User Intent, Energy Level und Topic) und erstelle mir zum "${input.topic}" ein passendes Startframe für ein Tik Tok Video, welches ich über Sora erstellen werde. ` +
+    `Branding Gesamt: ${JSON.stringify(input.brandProfile ?? {})}. ` +
+    `Website Kontext: ${input.websiteContext}. ` +
+    `Energy Level: ${input.creativeIntent.energyMode}. ` +
+    `User Intent (Humor): ${humorIntent}. ` +
+    `MoodPreset: ${input.moodPreset}. ` +
+    'Gib nur eine präzise Bildbeschreibung für das Startframe aus.'
+  );
+};
+
+const createStrictStep1Image = async (prompt: string) => {
+  reserveBudget(0.04, 'image-generation-strict-step1');
+
+  const response = await openAiPostJson('/v1/images/generations', {
+    model: 'gpt-image-1.5',
+    prompt,
+    size: '1024x1024'
+  });
+
+  const data = Array.isArray(response.data) ? (response.data[0] as Record<string, unknown> | undefined) : undefined;
+  const b64 = data?.b64_json;
+  if (typeof b64 !== 'string' || !b64.length) {
+    throw new ProviderRuntimeError('STRICT_STEP1_IMAGE_B64_MISSING', { provider: 'openai', fatal: true });
+  }
+
+  return {
+    bytes: Buffer.from(b64, 'base64'),
+    diagnostics: {
+      configuredPrimaryModel: 'gpt-image-1.5',
+      configuredFallbackModel: null,
+      attemptedModels: ['gpt-image-1.5'],
+      modelUsed: 'gpt-image-1.5',
+      fallbackUsed: false
+    }
+  };
+};
+
 const generateStrictStep1SoraPrompt = async (input: {
   topic: string;
   brandProfile?: BrandProfile;
@@ -1044,24 +1096,20 @@ const generateStrictStep1SoraPrompt = async (input: {
   moodPreset: MoodPreset;
   startFrameImageUrl: string;
   startFrameHint?: string;
+  websiteBundle: StrictWebsiteContextBundle;
 }) => {
   if (!input.startFrameImageUrl) {
     throw new ProviderRuntimeError('STRICT_STEP1_STARTFRAME_IMAGE_MISSING', { provider: 'openai', fatal: true });
   }
 
   const guideline = readSoraGuidelineStrict();
-  const websiteBundle = await extractWebsiteContextWithStrictLlm({
-    topic: input.topic,
-    brandProfile: input.brandProfile,
-    creativeIntent: input.creativeIntent
-  });
 
   const humorIntent = input.creativeIntent.effects.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
   const promptText =
     `Nehme das Startbild (${input.startFrameImageUrl}) und nehme den Branding-Content und die weiteren Inputs und erstelle einen Sora-Prompt, indem du den Sora-Guideline zu Hilfe nimmst. ` +
     `Und erstelle ein virales TikTok-Video zum Thema ${input.topic}. ` +
     `Inputs: Energy Level=${input.creativeIntent.energyMode}, User Intent=${humorIntent}, MoodPreset=${input.moodPreset}, ` +
-    `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
+    `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${input.websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
     `Sora Guideline: ${guideline.content}. ` +
     `Gib nur den finalen Sora-Prompt als reinen Text aus.`;
 
@@ -1090,9 +1138,43 @@ const generateStrictStep1SoraPrompt = async (input: {
   return {
     soraPrompt,
     model: STRICT_PROMPT_ARCHITECT_MODEL,
-    websiteUrl: websiteBundle.websiteUrl,
-    websiteContext: websiteBundle.websiteContext,
+    websiteUrl: input.websiteBundle.websiteUrl,
+    websiteContext: input.websiteBundle.websiteContext,
     guidelinePath: guideline.path
+  };
+};
+
+const generateStrictStep2SoraPrompt = async (input: {
+  previousPrompt: string;
+  userScript: string;
+  topic: string;
+}) => {
+  if (!input.previousPrompt.trim()) {
+    throw new ProviderRuntimeError('STRICT_STEP2_PREVIOUS_PROMPT_MISSING', { provider: 'openai', fatal: true });
+  }
+
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.008, 'llm-strict-step2-sora-prompt');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: STRICT_PROMPT_ARCHITECT_MODEL,
+    input:
+      'Nimm deinen vorigen Sora-Prompt und passe ihn anhand des neuen Skriptwunsches an. ' +
+      `Topic: ${input.topic}. ` +
+      `Voriger Sora-Prompt: ${input.previousPrompt}. ` +
+      `Gewünschtes Skript (User-Edit): ${input.userScript}. ` +
+      'Gib ausschließlich den finalen Sora-Prompt als reinen Text aus.',
+    max_output_tokens: 2200
+  });
+
+  const soraPrompt = parseOpenAiResponseText(response).trim();
+  if (!soraPrompt) {
+    throw new ProviderRuntimeError('STRICT_STEP2_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
+  return {
+    soraPrompt,
+    model: STRICT_PROMPT_ARCHITECT_MODEL
   };
 };
 
@@ -3194,16 +3276,18 @@ export const runVideoStage = async (input: {
     .filter(Boolean)
     .join(' ');
 
-  const imageCompiled = compilePromptV3({
-    sceneIntent: `Create a filmic opening keyframe for topic "${effectiveTopic}". Explicit hero subject: ${explicitHeroSubject}`,
-    hookOpening,
-    flowBeats: flowBeatsPrompt,
-    lightingAnchors,
-    subjectConstraints,
-    outputConstraints,
-    intent: effectiveIntent,
-    includeLegacyControls: legacyUserControlsProvided,
-    legacyControls: legacyUserControls
+  const strictWebsiteBundle = await extractWebsiteContextWithStrictLlm({
+    topic: effectiveTopic,
+    brandProfile: effectiveBrandProfile,
+    creativeIntent: effectiveIntent
+  });
+
+  const strictStep1ImagePromptText = buildStrictStep1ImagePrompt({
+    topic: effectiveTopic,
+    brandProfile: effectiveBrandProfile,
+    creativeIntent: effectiveIntent,
+    moodPreset,
+    websiteContext: strictWebsiteBundle.websiteContext
   });
 
   const videoCompiled = compilePromptV3({
@@ -3227,8 +3311,15 @@ export const runVideoStage = async (input: {
     legacyControls: legacyUserControls
   });
 
-  const imageResult = await createImage(imageCompiled.prompt);
+  const imageResult = await createStrictStep1Image(strictStep1ImagePromptText);
   const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');
+  const strictStep1ImagePromptAsset = await uploadAsset(
+    input.jobId,
+    `jobs/${input.jobId}/assets/startframe-prompt-step1.txt`,
+    Buffer.from(strictStep1ImagePromptText, 'utf8'),
+    'text/plain',
+    'openai-llm'
+  );
   const startFrameImageUrlForArchitect = referenceAsset?.signedUrl ?? imageAsset.signedUrl;
 
   const strictStep1Prompt = await generateStrictStep1SoraPrompt({
@@ -3237,7 +3328,8 @@ export const runVideoStage = async (input: {
     creativeIntent: effectiveIntent,
     moodPreset,
     startFrameImageUrl: startFrameImageUrlForArchitect,
-    startFrameHint: input.generationPayload?.startFrame?.summary ?? startFrameDirective
+    startFrameHint: input.generationPayload?.startFrame?.summary ?? startFrameDirective,
+    websiteBundle: strictWebsiteBundle
   });
 
   const strictStep1PromptText = strictStep1Prompt.soraPrompt.trim();
@@ -3253,6 +3345,33 @@ export const runVideoStage = async (input: {
     'openai-llm'
   );
 
+  const userEditedFlowScript = String(input.generationPayload?.userEditedFlowScript ?? '').trim();
+  let strictActivePromptText = strictStep1PromptText;
+  let strictPromptSource: 'step1' | 'step2' = 'step1';
+  let strictStep2PromptAsset: StoredAsset | null = null;
+
+  if (userEditedFlowScript) {
+    const strictStep2Prompt = await generateStrictStep2SoraPrompt({
+      previousPrompt: strictStep1PromptText,
+      userScript: userEditedFlowScript,
+      topic: effectiveTopic
+    });
+
+    strictActivePromptText = strictStep2Prompt.soraPrompt.trim();
+    if (!strictActivePromptText) {
+      throw new ProviderRuntimeError('STRICT_STEP2_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+    }
+
+    strictPromptSource = 'step2';
+    strictStep2PromptAsset = await uploadAsset(
+      input.jobId,
+      `jobs/${input.jobId}/assets/sora-prompt-step2.txt`,
+      Buffer.from(strictActivePromptText, 'utf8'),
+      'text/plain',
+      'openai-llm'
+    );
+  }
+
   const strictStep1RequestPreviewAsset = await uploadAsset(
     input.jobId,
     `jobs/${input.jobId}/assets/sora-request-step1.txt`,
@@ -3262,9 +3381,10 @@ export const runVideoStage = async (input: {
         'seconds=8',
         'size=720x1280',
         `input_reference_url=${startFrameImageUrlForArchitect}`,
+        `prompt_source=${strictPromptSource}`,
         '',
         'prompt=',
-        strictStep1PromptText
+        strictActivePromptText
       ].join('\n'),
       'utf8'
     ),
@@ -3273,46 +3393,21 @@ export const runVideoStage = async (input: {
   );
 
   const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
-  const promptBlueprint = await (async (): Promise<SoraPromptBlueprint> => {
-    try {
-      return await generateSoraPromptBlueprint({
-        topic: effectiveTopic,
-        targetSeconds: durationConfig.targetSeconds,
-        segmentPlanSeconds,
-        hookOpening,
-        narration: llmText,
-        flowBeatsPrompt,
-        technicalBasePrompt: videoCompiled.prompt,
-        explicitHeroSubject,
-        startFrameDirective,
-        startFrameTransitionDirective,
-        startFrameImageUrl: startFrameImageUrlForArchitect,
-        intentPrompt: renderIntentPrompt(effectiveIntent).text,
-        brandPrompt,
-        brandName: exactBrandName || undefined,
-        moodPrompt: moodPromptMap[moodPreset],
-        userEditedFlowScript: input.generationPayload?.userEditedFlowScript
-      });
-    } catch (error) {
-      logEvent({
-        event: 'sora_prompt_blueprint_fallback',
-        level: 'WARN',
-        jobId: input.jobId,
-        detail: `reason=${String((error as Error)?.message ?? error).slice(0, 220)}`
-      });
-
-      return buildFallbackSoraPromptBlueprint({
-        technicalSoraPrompt: videoCompiled.prompt,
-        hook: hookOpening,
-        flowBeatsPrompt,
-        continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
-        segmentPlanSeconds,
-        topic: effectiveTopic,
-        explicitHeroSubject,
-        brandName: exactBrandName || undefined
-      });
-    }
-  })();
+  const promptBlueprint: SoraPromptBlueprint = {
+    technicalSoraPrompt: strictActivePromptText,
+    userFlowScript: userEditedFlowScript || llmText,
+    hook: hookOpening,
+    continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
+    segments: segmentPlanSeconds.map((seconds, index) => ({
+      index: index + 1,
+      seconds,
+      title: `Segment ${index + 1}`,
+      startState: index === 0 ? 'Startframe-Anchor aktiv' : `Fortsetzung ab Segment ${index}`,
+      endState: index === segmentPlanSeconds.length - 1 ? 'Finaler CTA-Zustand' : 'Übergangszustand für nächstes Segment',
+      prompt: strictActivePromptText,
+      userFlowBeat: `${index + 1}. Fortsetzung der durchgehenden Story ohne Reset`
+    }))
+  };
 
   const segmentReports: MotionSegmentReport[] = [];
   const segmentVideoBytes: Buffer[] = [];
@@ -3330,7 +3425,7 @@ export const runVideoStage = async (input: {
 
     const blueprintSegment = promptBlueprint.segments[index];
 
-    const segmentPrompt = strictStep1PromptText;
+    const segmentPrompt = strictActivePromptText;
 
     const segmentMotionRequirement = scaleMotionRequirementForSegment(motionRequirement, segmentSeconds);
 
@@ -3446,7 +3541,10 @@ export const runVideoStage = async (input: {
     videoPlanV1,
     videoPlanSource,
     videoPlanReconciled,
+    strictStep1ImagePrompt: strictStep1ImagePromptAsset,
     strictStep1Prompt: strictStep1PromptAsset,
+    strictStep2Prompt: strictStep2PromptAsset ?? undefined,
+    strictPromptSource,
     strictStep1RequestPreview: strictStep1RequestPreviewAsset,
     strictStep1PromptModel: strictStep1Prompt.model,
     strictStep1WebsiteUrl: strictStep1Prompt.websiteUrl,
