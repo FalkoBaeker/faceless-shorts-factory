@@ -1003,13 +1003,58 @@ type StrictWebsiteContextBundle = {
   websiteContext: string;
 };
 
+const buildBrandingFallbackContext = (input: {
+  topic: string;
+  brandProfile?: BrandProfile;
+  creativeIntent: CreativeIntentMatrix;
+}) => {
+  const brandJson = JSON.stringify(input.brandProfile ?? {});
+  const intentJson = JSON.stringify(input.creativeIntent ?? {});
+  return (
+    `Fallback Brand Context. Topic: ${input.topic}. ` +
+    `Branding: ${brandJson}. ` +
+    `CreativeIntent: ${intentJson}. ` +
+    'Nutze diese Informationen als Marken- und Inhaltskontext für den Sora-Prompt.'
+  ).slice(0, 1200);
+};
+
 const extractWebsiteContextWithStrictLlm = async (input: {
   topic: string;
   brandProfile?: BrandProfile;
   creativeIntent: CreativeIntentMatrix;
 }): Promise<StrictWebsiteContextBundle> => {
   const websiteUrl = String(input.brandProfile?.websiteUrl ?? '').trim();
-  const fetched = await fetchWebsiteContextTextStrict(websiteUrl);
+
+  if (!websiteUrl) {
+    const fallbackContext = buildBrandingFallbackContext(input);
+    logEvent({
+      event: 'strict_website_context_url_missing_fallback',
+      level: 'WARN',
+      provider: 'web',
+      detail: 'website_url_missing'
+    });
+    return {
+      websiteUrl: '',
+      websiteContext: fallbackContext
+    };
+  }
+
+  let fetched: { normalizedUrl: string; text: string };
+  try {
+    fetched = await fetchWebsiteContextTextStrict(websiteUrl);
+  } catch (error) {
+    const fallbackContext = buildBrandingFallbackContext(input);
+    logEvent({
+      event: 'strict_website_context_fetch_fallback',
+      level: 'WARN',
+      provider: 'web',
+      detail: String((error as Error)?.message ?? error)
+    });
+    return {
+      websiteUrl: websiteUrl,
+      websiteContext: fallbackContext
+    };
+  }
 
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.006, 'llm-strict-step1-website-context');
@@ -1028,13 +1073,24 @@ const extractWebsiteContextWithStrictLlm = async (input: {
   });
 
   const contextText = parseOpenAiResponseText(response).trim();
-  if (!contextText) {
+  const websiteContext = contextText || fetched.text.slice(0, 1200);
+
+  if (!websiteContext.trim()) {
     throw new ProviderRuntimeError('STRICT_STEP1_WEBSITE_CONTEXT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
+  if (!contextText) {
+    logEvent({
+      event: 'strict_website_context_fallback_used',
+      level: 'WARN',
+      provider: 'openai',
+      detail: `url=${fetched.normalizedUrl}`
+    });
   }
 
   return {
     websiteUrl: fetched.normalizedUrl,
-    websiteContext: contextText
+    websiteContext
   };
 };
 
@@ -1045,7 +1101,7 @@ const buildStrictStep1ImagePrompt = (input: {
   moodPreset: MoodPreset;
   websiteContext: string;
 }) => {
-  const humorIntent = input.creativeIntent.effects.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
+  const humorIntent = input.creativeIntent.effectGoals.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
 
   return (
     `Nimm diese gesamten Informationen (Branding, User Intent, Energy Level und Topic) und erstelle mir zum "${input.topic}" ein passendes Startframe für ein Tik Tok Video, welches ich über Sora erstellen werde. ` +
@@ -1100,7 +1156,7 @@ const generateStrictStep1SoraPrompt = async (input: {
 
   const guideline = readSoraGuidelineStrict();
 
-  const humorIntent = input.creativeIntent.effects.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
+  const humorIntent = input.creativeIntent.effectGoals.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
   const promptText =
     `Nehme das Startbild (${input.startFrameImageUrl}) und nehme den Branding-Content und die weiteren Inputs und erstelle einen Sora-Prompt, indem du den Sora-Guideline zu Hilfe nimmst. ` +
     `Und erstelle ein virales TikTok-Video zum Thema ${input.topic}. ` +
@@ -2819,6 +2875,49 @@ const concatVideoSegments = (segments: Buffer[]): Buffer => {
   }
 };
 
+const normalizeReferenceImageForVideo = (imageBytes: Buffer, label: string): Buffer => {
+  const dir = mkdtempSync(join(tmpdir(), `fsf-ref-normalize-${label}-`));
+  const input = join(dir, 'input.png');
+  const output = join(dir, 'normalized.png');
+
+  try {
+    writeFileSync(input, imageBytes);
+
+    const run = spawnSync(
+      'ffmpeg',
+      [
+        '-y',
+        '-loglevel',
+        'error',
+        '-i',
+        input,
+        '-vf',
+        'scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,format=rgb24',
+        '-frames:v',
+        '1',
+        output
+      ],
+      { encoding: 'utf8' }
+    );
+
+    if (run.status !== 0) {
+      throw new ProviderRuntimeError(`REFERENCE_IMAGE_NORMALIZE_FAILED:${run.stderr?.slice(0, 300) ?? 'unknown'}`, {
+        provider: 'ffmpeg',
+        fatal: true
+      });
+    }
+
+    const bytes = readFileSync(output);
+    if (!bytes.length) {
+      throw new ProviderRuntimeError('REFERENCE_IMAGE_NORMALIZE_EMPTY', { provider: 'ffmpeg', fatal: true });
+    }
+
+    return bytes;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 const probeMediaDurationSeconds = (inputPath: string, label: string) => {
   const probe = spawnSync(
     'ffprobe',
@@ -3520,6 +3619,9 @@ export const runVideoStage = async (input: {
     const segmentPrompt = strictActivePromptText;
 
     const segmentMotionRequirement = scaleMotionRequirementForSegment(motionRequirement, segmentSeconds);
+    const normalizedReferenceBytes = nextSegmentReferenceBytes
+      ? normalizeReferenceImageForVideo(nextSegmentReferenceBytes, `segment-${index + 1}`)
+      : null;
 
     const segmentResult = await createVideoWithMotionEnforcement({
       prompt: segmentPrompt,
@@ -3528,9 +3630,9 @@ export const runVideoStage = async (input: {
       calmMode: effectiveIntent.energyMode === 'calm',
       secondsOverride: segmentSeconds,
       segmentLabel: `segment_${index + 1}`,
-      inputReference: nextSegmentReferenceBytes
+      inputReference: normalizedReferenceBytes
         ? {
-            bytes: nextSegmentReferenceBytes,
+            bytes: normalizedReferenceBytes,
             fileName: `segment-${index + 1}-reference.png`,
             mimeType: 'image/png'
           }
