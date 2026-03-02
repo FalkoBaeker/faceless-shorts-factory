@@ -228,6 +228,24 @@ type ScriptV2 = {
   }>;
 };
 
+type SoraPromptBlueprintSegment = {
+  index: number;
+  seconds: number;
+  title?: string;
+  startState: string;
+  endState: string;
+  prompt: string;
+  userFlowBeat: string;
+};
+
+type SoraPromptBlueprint = {
+  technicalSoraPrompt: string;
+  userFlowScript: string;
+  hook: string;
+  continuityAnchors: string[];
+  segments: SoraPromptBlueprintSegment[];
+};
+
 type StoryboardConceptId =
   | 'concept_web_vertical_slice'
   | 'concept_offer_focus'
@@ -1168,6 +1186,144 @@ const reconcileVideoPlan = async (input: {
   if (!normalized) {
     throw new ProviderRuntimeError('VIDEO_PLAN_V1_RECONCILE_INVALID_JSON', { provider: 'openai', fatal: false });
   }
+  return normalized;
+};
+
+const buildFallbackSoraPromptBlueprint = (input: {
+  technicalSoraPrompt: string;
+  hook: string;
+  flowBeatsPrompt: string;
+  continuityAnchors: string[];
+  segmentPlanSeconds: number[];
+}): SoraPromptBlueprint => {
+  const segments = input.segmentPlanSeconds.map((seconds, idx) => ({
+    index: idx + 1,
+    seconds,
+    title: idx === 0 ? 'Hook + Setup' : idx === input.segmentPlanSeconds.length - 1 ? 'Payoff + CTA' : 'Escalation',
+    startState: idx === 0 ? 'Start from selected startframe anchor.' : `Continue directly from segment ${idx} end frame and action.`,
+    endState: idx === input.segmentPlanSeconds.length - 1 ? 'Resolve with clear CTA while preserving subject identity.' : 'End in a clear transition state for next segment.',
+    prompt:
+      `Segment ${idx + 1}/${input.segmentPlanSeconds.length} (${seconds}s). ` +
+      `Use this technical base prompt and move narrative forward without resets: ${input.technicalSoraPrompt}`,
+    userFlowBeat: `Beat ${idx + 1}: ${idx === 0 ? 'starker Hook + Setup' : idx === input.segmentPlanSeconds.length - 1 ? 'Payoff + CTA' : 'sichtbare Weiterentwicklung'}`
+  }));
+
+  return {
+    technicalSoraPrompt: input.technicalSoraPrompt,
+    userFlowScript: segments.map((segment) => `${segment.index}. ${segment.userFlowBeat}`).join('\n'),
+    hook: input.hook,
+    continuityAnchors: input.continuityAnchors,
+    segments
+  };
+};
+
+const normalizeSoraPromptBlueprint = (raw: unknown, segmentPlanSeconds: number[]): SoraPromptBlueprint | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const input = raw as Record<string, unknown>;
+
+  const technicalSoraPrompt = String(input.technicalSoraPrompt ?? '').trim().slice(0, 8000);
+  const hook = String(input.hook ?? '').trim().slice(0, 280);
+  const continuityAnchors = Array.isArray(input.continuityAnchors)
+    ? input.continuityAnchors.map((value) => String(value).trim()).filter(Boolean).slice(0, 16)
+    : [];
+
+  const rawSegments = Array.isArray(input.segments) ? input.segments : [];
+  const segmentsByIndex = new Map<number, SoraPromptBlueprintSegment>();
+
+  for (const entry of rawSegments) {
+    if (!entry || typeof entry !== 'object') continue;
+    const row = entry as Record<string, unknown>;
+    const index = Math.max(1, Math.floor(Number(row.index) || 0));
+    if (!index) continue;
+
+    const prompt = String(row.prompt ?? '').trim().slice(0, 3000);
+    const startState = String(row.startState ?? '').trim().slice(0, 800);
+    const endState = String(row.endState ?? '').trim().slice(0, 800);
+    const userFlowBeat = String(row.userFlowBeat ?? '').trim().slice(0, 320);
+    if (!prompt || !startState || !endState || !userFlowBeat) continue;
+
+    segmentsByIndex.set(index, {
+      index,
+      seconds: Math.min(12, Math.max(4, Math.round(Number(row.seconds) || 0) || segmentPlanSeconds[index - 1] || 8)),
+      title: String(row.title ?? '').trim().slice(0, 120) || undefined,
+      startState,
+      endState,
+      prompt,
+      userFlowBeat
+    });
+  }
+
+  const alignedSegments: SoraPromptBlueprintSegment[] = segmentPlanSeconds.map((seconds, idx) => {
+    const fallback = segmentsByIndex.get(idx + 1);
+    if (!fallback) return null;
+    return {
+      ...fallback,
+      index: idx + 1,
+      seconds
+    };
+  }).filter((segment): segment is SoraPromptBlueprintSegment => Boolean(segment));
+
+  if (!technicalSoraPrompt || alignedSegments.length !== segmentPlanSeconds.length) return null;
+
+  const userFlowScriptRaw = String(input.userFlowScript ?? '').trim().slice(0, 4000);
+  const userFlowScript = userFlowScriptRaw || alignedSegments.map((segment) => `${segment.index}. ${segment.userFlowBeat}`).join('\n');
+
+  return {
+    technicalSoraPrompt,
+    userFlowScript,
+    hook,
+    continuityAnchors,
+    segments: alignedSegments
+  };
+};
+
+const generateSoraPromptBlueprint = async (input: {
+  topic: string;
+  targetSeconds: number;
+  segmentPlanSeconds: number[];
+  hookOpening: string;
+  narration: string;
+  flowBeatsPrompt: string;
+  technicalBasePrompt: string;
+  explicitHeroSubject: string;
+  startFrameDirective: string;
+  startFrameTransitionDirective: string;
+  intentPrompt: string;
+  brandPrompt: string;
+  moodPrompt: string;
+  userEditedFlowScript?: string;
+}): Promise<SoraPromptBlueprint> => {
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.012, 'llm-sora-prompt-blueprint');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: 'gpt-5-mini',
+    input:
+      'Du bist ein Prompt-Architect für Sora. Gib ausschließlich valides JSON zurück, keine Markdown-Texte. ' +
+      `Topic: ${input.topic}. Ziel: ${input.targetSeconds}s TikTok-Video mit durchgehendem Flow. ` +
+      `Segmentplan (hart): ${JSON.stringify(input.segmentPlanSeconds)}. ` +
+      `Hook: ${input.hookOpening}. ` +
+      `Narration: ${input.narration}. ` +
+      `Flow beats: ${input.flowBeatsPrompt}. ` +
+      `Explizites Hero-Subjekt: ${input.explicitHeroSubject}. ` +
+      `Startframe directive: ${input.startFrameDirective}. ` +
+      `Startframe transition directive: ${input.startFrameTransitionDirective}. ` +
+      `Intent: ${input.intentPrompt}. Brand: ${input.brandPrompt}. Mood: ${input.moodPrompt}. ` +
+      `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
+      `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
+      'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
+      'JSON Schema: ' +
+      '{"technicalSoraPrompt":string,"userFlowScript":string,"hook":string,"continuityAnchors":string[],"segments":[{"index":number,"seconds":number,"title":string,"startState":string,"endState":string,"prompt":string,"userFlowBeat":string}]}.',
+    max_output_tokens: 2600
+  });
+
+  const raw = parseOpenAiResponseText(response);
+  const parsed = parseStrictJson<unknown>(raw);
+  const normalized = normalizeSoraPromptBlueprint(parsed, input.segmentPlanSeconds);
+  if (!normalized) {
+    throw new ProviderRuntimeError('SORA_PROMPT_BLUEPRINT_INVALID_JSON', { provider: 'openai', fatal: false });
+  }
+
   return normalized;
 };
 
@@ -2719,6 +2875,42 @@ export const runVideoStage = async (input: {
   const imageResult = await createImage(imageCompiled.prompt);
 
   const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
+  const promptBlueprint = await (async (): Promise<SoraPromptBlueprint> => {
+    try {
+      return await generateSoraPromptBlueprint({
+        topic: effectiveTopic,
+        targetSeconds: durationConfig.targetSeconds,
+        segmentPlanSeconds,
+        hookOpening,
+        narration: llmText,
+        flowBeatsPrompt,
+        technicalBasePrompt: videoCompiled.prompt,
+        explicitHeroSubject,
+        startFrameDirective,
+        startFrameTransitionDirective,
+        intentPrompt: renderIntentPrompt(effectiveIntent).text,
+        brandPrompt,
+        moodPrompt: moodPromptMap[moodPreset],
+        userEditedFlowScript: input.generationPayload?.userEditedFlowScript
+      });
+    } catch (error) {
+      logEvent({
+        event: 'sora_prompt_blueprint_fallback',
+        level: 'WARN',
+        jobId: input.jobId,
+        detail: `reason=${String((error as Error)?.message ?? error).slice(0, 220)}`
+      });
+
+      return buildFallbackSoraPromptBlueprint({
+        technicalSoraPrompt: videoCompiled.prompt,
+        hook: hookOpening,
+        flowBeatsPrompt,
+        continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
+        segmentPlanSeconds
+      });
+    }
+  })();
+
   const segmentReports: MotionSegmentReport[] = [];
   const segmentVideoBytes: Buffer[] = [];
   let continuityCue = referenceSummary
@@ -2732,15 +2924,21 @@ export const runVideoStage = async (input: {
     timelineCursor += segmentSeconds;
     const segmentEnd = timelineCursor;
 
+    const blueprintSegment = promptBlueprint.segments[index];
+
     const segmentPrompt = [
-      videoCompiled.prompt,
-      `Segment ${index + 1}/${segmentPlanSeconds.length} for a single continuous video. Segment duration: ${segmentSeconds}s. Segment window: ${segmentStart}-${segmentEnd}s.`,
+      `Global technical prompt: ${promptBlueprint.technicalSoraPrompt}`,
+      `Segment ${index + 1}/${segmentPlanSeconds.length} for one continuous video. Duration ${segmentSeconds}s. Window ${segmentStart}-${segmentEnd}s.`,
       index === 0
         ? `Shot 1 must start from selected startframe anchor. ${startFrameTransitionDirective}`
         : `Start exactly where segment ${index} ended. Continuity cue: ${continuityCue}.`,
+      blueprintSegment?.startState ? `Required start state: ${blueprintSegment.startState}` : '',
+      blueprintSegment?.endState ? `Required end state: ${blueprintSegment.endState}` : '',
+      blueprintSegment?.prompt ? `Segment directive: ${blueprintSegment.prompt}` : '',
+      promptBlueprint.continuityAnchors.length ? `Continuity anchors: ${promptBlueprint.continuityAnchors.join(' | ')}` : '',
       'This is one continuous narrative across segments, not separate clips.',
       'Advance to a new visual action and camera development; never reset to the opening composition.',
-      'Never create internal loops or repeating 4-shot micro-cycles.'
+      'Never create internal loops or repeating micro-cycles.'
     ]
       .filter(Boolean)
       .join('\n');
@@ -2777,7 +2975,16 @@ export const runVideoStage = async (input: {
         'ffmpeg'
       );
       lastFrameAssetPath = lastFrameAsset.objectPath;
-      continuityCue = `Use the framing/subject continuity from ${lastFrameAsset.signedUrl} and continue motion forward`;
+      continuityCue = [
+        `Use framing/subject continuity from ${lastFrameAsset.signedUrl} and continue motion forward.`,
+        blueprintSegment?.endState ? `Previous segment end-state: ${blueprintSegment.endState}` : ''
+      ]
+        .filter(Boolean)
+        .join(' ');
+    } else {
+      continuityCue = blueprintSegment?.endState
+        ? `Continue from previous segment end-state: ${blueprintSegment.endState}`
+        : continuityCue;
     }
 
     segmentReports.push({
@@ -2846,6 +3053,7 @@ export const runVideoStage = async (input: {
 
     userControls: legacyUserControlsProvided ? legacyUserControls : undefined,
     promptCompiler: videoCompiled.meta,
+    promptBlueprint,
     motionEnforcement: {
       ...finalSegmentMotion,
       minPhasesRequired: requiredTotalPhases,

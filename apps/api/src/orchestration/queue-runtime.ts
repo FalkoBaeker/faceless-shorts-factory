@@ -1253,6 +1253,19 @@ const processVideo = async (job: Job<StagePayload>) => {
       await insertTimeline(jobId, 'USER_CONTROLS_ENFORCED', JSON.stringify(result.userControls));
     }
 
+    if (result.promptBlueprint) {
+      await insertTimeline(
+        jobId,
+        'SORA_PROMPT_BLUEPRINT_APPLIED',
+        JSON.stringify({
+          hook: result.promptBlueprint.hook,
+          continuityAnchors: result.promptBlueprint.continuityAnchors,
+          segmentCount: result.promptBlueprint.segments.length,
+          segmentSeconds: result.promptBlueprint.segments.map((segment: { seconds: number }) => segment.seconds)
+        })
+      );
+    }
+
     await insertTimeline(jobId, 'MOTION_ENFORCED', JSON.stringify(result.motionEnforcement));
 
     await enqueueAudio(job.data);
