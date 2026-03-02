@@ -810,7 +810,8 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
       payload.startFrameReferenceHint ??
       payload.startFrameCandidateId ??
       payload.startFrameStyle ??
-      undefined
+      undefined,
+    startFrameReferenceObjectPath: payload.startFrameUploadObjectPath
   });
 
   return {

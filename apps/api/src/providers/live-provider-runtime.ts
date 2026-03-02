@@ -1371,6 +1371,7 @@ const generateSoraPromptBlueprint = async (input: {
   explicitHeroSubject: string;
   startFrameDirective: string;
   startFrameTransitionDirective: string;
+  startFrameImageUrl?: string;
   intentPrompt: string;
   brandPrompt: string;
   brandName?: string;
@@ -1380,27 +1381,42 @@ const generateSoraPromptBlueprint = async (input: {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.012, 'llm-sora-prompt-blueprint');
 
+  const architectTextPrompt =
+    'Du bist ein Prompt-Architect für Sora. Gib ausschließlich valides JSON zurück, keine Markdown-Texte. ' +
+    `Topic: ${input.topic}. Ziel: ${input.targetSeconds}s TikTok-Video mit durchgehendem Flow. ` +
+    `Segmentplan (hart): ${JSON.stringify(input.segmentPlanSeconds)}. ` +
+    `Hook: ${input.hookOpening}. ` +
+    `Narration: ${input.narration}. ` +
+    `Flow beats: ${input.flowBeatsPrompt}. ` +
+    `Explizites Hero-Subjekt: ${input.explicitHeroSubject}. ` +
+    `Startframe directive: ${input.startFrameDirective}. ` +
+    `Startframe transition directive: ${input.startFrameTransitionDirective}. ` +
+    `${input.startFrameImageUrl ? 'Das angehängte Bild ist das echte Startframe. Shot 1 muss visuell genau davon ausgehen (gleiche Person/Objekte/Framing), bevor der Flow weitergeht. ' : ''}` +
+    `Intent: ${input.intentPrompt}. Brand: ${input.brandPrompt}. Mood: ${input.moodPrompt}. ` +
+    `${input.brandName ? `Visible brand text/logos must use exactly this name when shown: "${input.brandName}". Never invent other bakery/company names. ` : ''}` +
+    `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
+    `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
+    'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
+    'userFlowScript und userFlowBeat müssen auf Deutsch, klar und nicht-technisch sein (was sieht der Zuschauer konkret). ' +
+    'Keine generischen Phrasen wie "konkreter Schritt", "zentrales Motiv", "Kamera folgt" ohne benanntes Objekt/Subjekt. ' +
+    'JSON Schema: ' +
+    '{"technicalSoraPrompt":string,"userFlowScript":string,"hook":string,"continuityAnchors":string[],"segments":[{"index":number,"seconds":number,"title":string,"startState":string,"endState":string,"prompt":string,"userFlowBeat":string}]}. ';
+
+  const architectInput: unknown = input.startFrameImageUrl
+    ? [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: architectTextPrompt },
+            { type: 'input_image', image_url: input.startFrameImageUrl }
+          ]
+        }
+      ]
+    : architectTextPrompt;
+
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-5-mini',
-    input:
-      'Du bist ein Prompt-Architect für Sora. Gib ausschließlich valides JSON zurück, keine Markdown-Texte. ' +
-      `Topic: ${input.topic}. Ziel: ${input.targetSeconds}s TikTok-Video mit durchgehendem Flow. ` +
-      `Segmentplan (hart): ${JSON.stringify(input.segmentPlanSeconds)}. ` +
-      `Hook: ${input.hookOpening}. ` +
-      `Narration: ${input.narration}. ` +
-      `Flow beats: ${input.flowBeatsPrompt}. ` +
-      `Explizites Hero-Subjekt: ${input.explicitHeroSubject}. ` +
-      `Startframe directive: ${input.startFrameDirective}. ` +
-      `Startframe transition directive: ${input.startFrameTransitionDirective}. ` +
-      `Intent: ${input.intentPrompt}. Brand: ${input.brandPrompt}. Mood: ${input.moodPrompt}. ` +
-      `${input.brandName ? `Visible brand text/logos must use exactly this name when shown: "${input.brandName}". Never invent other bakery/company names. ` : ''}` +
-      `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
-      `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
-      'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
-      'userFlowScript und userFlowBeat müssen auf Deutsch, klar und nicht-technisch sein (was sieht der Zuschauer konkret). ' +
-      'Keine generischen Phrasen wie "konkreter Schritt", "zentrales Motiv", "Kamera folgt" ohne benanntes Objekt/Subjekt. ' +
-      'JSON Schema: ' +
-      '{"technicalSoraPrompt":string,"userFlowScript":string,"hook":string,"continuityAnchors":string[],"segments":[{"index":number,"seconds":number,"title":string,"startState":string,"endState":string,"prompt":string,"userFlowBeat":string}]}.',
+    input: architectInput,
     max_output_tokens: 2600
   });
 
@@ -1634,6 +1650,7 @@ export const generateScriptDraft = async (input: {
   creativeIntent?: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
   startFrameHint?: string;
+  startFrameReferenceObjectPath?: string;
   regenerate?: boolean;
 }) => {
   await runProviderHealthchecks();
@@ -1674,7 +1691,8 @@ export const generateScriptDraft = async (input: {
     moodPreset,
     creativeIntent: effectiveIntent,
     brandProfile: input.brandProfile,
-    startFrameHint: input.startFrameHint
+    startFrameHint: input.startFrameHint,
+    startFrameReferenceObjectPath: input.startFrameReferenceObjectPath
   });
 
   return {
@@ -1763,6 +1781,7 @@ const buildScriptV2ForDraft = async (input: {
   creativeIntent: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
   startFrameHint?: string;
+  startFrameReferenceObjectPath?: string;
 }): Promise<ScriptV2> => {
   try {
     const { targetSeconds } = resolveVariantDurations(input.variantType);
@@ -1787,6 +1806,20 @@ const buildScriptV2ForDraft = async (input: {
       .filter(Boolean)
       .join(' | ');
 
+    let startFrameImageUrl: string | undefined;
+    if (input.startFrameReferenceObjectPath) {
+      try {
+        startFrameImageUrl = await supabaseSignedUrl(input.startFrameReferenceObjectPath);
+      } catch (error) {
+        logEvent({
+          event: 'draft_startframe_image_url_failed',
+          level: 'WARN',
+          provider: 'supabase',
+          detail: `reason=${String((error as Error)?.message ?? error).slice(0, 180)}`
+        });
+      }
+    }
+
     const blueprint = await generateSoraPromptBlueprint({
       topic: input.topic,
       targetSeconds,
@@ -1800,6 +1833,7 @@ const buildScriptV2ForDraft = async (input: {
       startFrameTransitionDirective: input.startFrameHint
         ? `Start from uploaded/selected startframe context: ${input.startFrameHint}`
         : `Start from generated hero subject: ${inferExplicitHeroSubject(input.topic)}`,
+      startFrameImageUrl,
       intentPrompt: renderIntentPrompt(input.creativeIntent).text,
       brandPrompt: renderBrandProfilePrompt(input.brandProfile),
       brandName: String(input.brandProfile?.companyName ?? '').trim() || undefined,
@@ -3006,6 +3040,8 @@ export const runVideoStage = async (input: {
   });
 
   const imageResult = await createImage(imageCompiled.prompt);
+  const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');
+  const startFrameImageUrlForArchitect = referenceAsset?.signedUrl ?? imageAsset.signedUrl;
 
   const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
   const promptBlueprint = await (async (): Promise<SoraPromptBlueprint> => {
@@ -3021,6 +3057,7 @@ export const runVideoStage = async (input: {
         explicitHeroSubject,
         startFrameDirective,
         startFrameTransitionDirective,
+        startFrameImageUrl: startFrameImageUrlForArchitect,
         intentPrompt: renderIntentPrompt(effectiveIntent).text,
         brandPrompt,
         brandName: exactBrandName || undefined,
@@ -3167,7 +3204,6 @@ export const runVideoStage = async (input: {
   const concatenatedVideoBytes = concatVideoSegments(segmentVideoBytes);
   const finalSegmentMotion = probeMotion(concatenatedVideoBytes, 'segment_concatenated');
 
-  const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');
   const videoAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/segment.mp4`, concatenatedVideoBytes, 'video/mp4', 'openai-video');
 
   const totalAttempts = segmentReports.reduce((sum, item) => sum + item.attemptCount, 0);
