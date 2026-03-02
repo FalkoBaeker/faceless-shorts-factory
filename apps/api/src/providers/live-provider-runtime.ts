@@ -9,12 +9,10 @@ import {
   normalizeCreativeIntent,
   deriveLegacyMoodPresetFromIntent,
   normalizeStoryboardLight,
-  resolveHookTemplateId,
   type UserControlProfile,
   type CreativeIntentMatrix,
   type StoryboardLight,
-  type ShotStyleTag,
-  type HookTemplateId
+  type ShotStyleTag
 } from '../services/creative-consistency.ts';
 import { logEvent } from '../utils/app-logger.ts';
 
@@ -380,7 +378,7 @@ const resolveMoodPreset = (mood?: string): MoodPreset => {
 type PromptCompilerMeta = {
   intentRules: string[];
   hookRule: string | null;
-  hookTemplateId: HookTemplateId | null;
+  hookTemplateId: string | null;
   firstSecondQualityThreshold: 'strict' | 'relaxed';
   shotStyleSet: ShotStyleTag[];
   safetyConstraints: string[];
@@ -446,21 +444,17 @@ const renderLegacyUserControlPrompt = (controls: UserControlProfile) =>
   ].join(' ');
 
 const renderIntentPrompt = (intent: CreativeIntentMatrix) => {
-  const effectLine = intent.effectGoals
-    .map((entry) => `${entry.id}(w=${Number(entry.weight ?? 1).toFixed(1)})`)
-    .join(', ');
-  const narrativeLine = intent.narrativeFormats
-    .map((entry) => `${entry.id}(w=${Number(entry.weight ?? 1).toFixed(1)})`)
-    .join(', ');
   const shotStyleSet = selectShotStyleSet(intent);
 
   return {
     text: [
-      `Creative Intent Effect Goals: ${effectLine || 'default'}.`,
-      `Creative Intent Narrative Formats: ${narrativeLine || 'default'}.`,
-      `Creative Intent Energy Mode: ${intent.energyMode ?? 'auto'}.`,
-      `Shot style library: ${shotStyleSet.map((tag) => shotStylePromptLibrary[tag]).join(' ')}`
-    ].join(' '),
+      `Effect goals: ${intent.effectGoals.map((entry) => entry.id).join(', ') || 'default'}.`,
+      `Narrative formats: ${intent.narrativeFormats.map((entry) => entry.id).join(', ') || 'default'}.`,
+      `Energy mode: ${intent.energyMode ?? 'auto'}.`,
+      `Visual language: ${shotStyleSet.map((tag) => shotStylePromptLibrary[tag]).join(' ')}`
+    ]
+      .filter(Boolean)
+      .join(' '),
     shotStyleSet
   };
 };
@@ -482,7 +476,6 @@ const renderStoryboardLightPrompt = (storyboardLight?: StoryboardLight) => {
     });
 
   return [
-    'Storyboard Light (user-edited beats):',
     ...beatLines,
     storyboardLight.hookHint ? `Hook hint: ${storyboardLight.hookHint}` : '',
     storyboardLight.ctaHint ? `CTA hint: ${storyboardLight.ctaHint}` : '',
@@ -501,92 +494,59 @@ const renderBrandProfilePrompt = (brandProfile?: BrandProfile) => {
     brandProfile.valueProposition ? `Value proposition: ${brandProfile.valueProposition}.` : '',
     brandProfile.audienceHint ? `Audience hint: ${brandProfile.audienceHint}.` : '',
     brandProfile.websiteUrl ? `Website: ${brandProfile.websiteUrl}.` : '',
-    brandProfile.ctaStyle ? `CTA style preference: ${brandProfile.ctaStyle}.` : '',
-    brandProfile.primaryColorHex ? `Primary brand color: ${brandProfile.primaryColorHex}.` : '',
-    brandProfile.secondaryColorHex ? `Secondary brand color: ${brandProfile.secondaryColorHex}.` : ''
+    brandProfile.ctaStyle ? `CTA style preference: ${brandProfile.ctaStyle}.` : ''
   ];
 
   return segments.filter(Boolean).join(' ');
 };
 
-const hookTemplateLibrary: Record<HookTemplateId, { ruleId: string; prompt: string }> = {
-  hook_offer_urgency: {
-    ruleId: 'HOOK_TEMPLATE_OFFER_URGENCY',
-    prompt: 'Hook template (offer/urgency): Open with immediate scarcity or time-bound value in second one.'
-  },
-  hook_problem_pain: {
-    ruleId: 'HOOK_TEMPLATE_PROBLEM_PAIN',
-    prompt: 'Hook template (problem/pain): Start with a painful relatable moment before any explanation.'
-  },
-  hook_social_proof: {
-    ruleId: 'HOOK_TEMPLATE_SOCIAL_PROOF',
-    prompt: 'Hook template (social proof): Open with a concrete customer signal or trust marker instantly.'
-  },
-  hook_curiosity: {
-    ruleId: 'HOOK_TEMPLATE_CURIOSITY',
-    prompt: 'Hook template (curiosity): Open with a provocative question or unexpected claim in first second.'
-  },
-  hook_fun_pattern_break: {
-    ruleId: 'HOOK_TEMPLATE_FUN_PATTERN_BREAK',
-    prompt: 'Hook template (fun/pattern-break): Start with an intentional pattern interrupt or playful surprise.'
-  },
-  hook_default: {
-    ruleId: 'HOOK_TEMPLATE_DEFAULT',
-    prompt: 'Hook template (default): First second must contain a concrete trigger and clear narrative pull.'
+const buildFlowBeatsPrompt = (input: { storyboardLight?: StoryboardLight; fallbackScript?: string }) => {
+  const beats = input.storyboardLight?.beats?.slice().sort((a, b) => a.order - b.order) ?? [];
+  if (beats.length) {
+    return beats.map((beat) => `${beat.order}) ${beat.action}`).join(' | ');
   }
+
+  const fallback = String(input.fallbackScript ?? '').trim();
+  if (!fallback) return '1) Hook | 2) Core value | 3) Proof | 4) CTA';
+
+  const segments = fallback
+    .split(/(?<=[.!?…])\s+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((segment, index) => `${index + 1}) ${segment}`);
+
+  return segments.length ? segments.join(' | ') : '1) Hook | 2) Core value | 3) Proof | 4) CTA';
 };
 
-const compilePromptV2 = (input: {
-  baseSegments: string[];
+const compilePromptV3 = (input: {
+  sceneIntent: string;
+  hookOpening: string;
+  flowBeats: string;
+  lightingAnchors?: string;
+  subjectConstraints: string[];
+  outputConstraints: string[];
   intent: CreativeIntentMatrix;
-  safetyConstraints: string[];
   includeLegacyControls: boolean;
   legacyControls: UserControlProfile;
 }) => {
-  const promptParts = [...input.baseSegments];
-  const appliedRules: string[] = [];
-  const suppressedRules: string[] = [];
-
   const intentPrompt = renderIntentPrompt(input.intent);
-  promptParts.push(intentPrompt.text);
+  const calmMode = input.intent.energyMode === 'calm';
 
-  const hookTemplateId = resolveHookTemplateId(input.intent);
-  const hookTemplate = hookTemplateLibrary[hookTemplateId] ?? hookTemplateLibrary.hook_default;
-
-  let hookRule: string | null = hookTemplate.ruleId;
-  if (input.intent.energyMode === 'calm') {
-    hookRule = null;
-    suppressedRules.push('HOOK_ENHANCER_SUPPRESSED_CALM_MODE');
-    suppressedRules.push(hookTemplate.ruleId);
-  } else {
-    promptParts.push('Hook enhancer: first second must open with a sharp visual trigger and immediate narrative tension.');
-    promptParts.push(hookTemplate.prompt);
-    promptParts.push('Hook quality threshold: first line must be immediately concrete, high-contrast and scroll-stopping.');
-    appliedRules.push('HOOK_ENHANCER_APPLIED');
-    appliedRules.push(hookTemplate.ruleId);
-    appliedRules.push('HOOK_FIRST_SECOND_QUALITY_THRESHOLD_STRICT');
-  }
-
-  if (input.intent.energyMode === 'calm') {
-    suppressedRules.push('MOTION_VARIATION_ENHANCER_SUPPRESSED_CALM_MODE');
-  } else {
-    promptParts.push('Motion/variation enhancer: avoid repetitive loop-like framing, force visual progression every 1-2 beats.');
-    appliedRules.push('MOTION_VARIATION_ENHANCER_APPLIED');
-  }
-
-  promptParts.push('Shot diversity enhancer: rotate shot types across beats and avoid repeating the same camera pattern in sequence.');
-  appliedRules.push('SHOT_DIVERSITY_ENHANCER_APPLIED');
+  const sections = [
+    `Scene/Intent: ${input.sceneIntent}. ${intentPrompt.text}`,
+    `Hook (0-2s): ${input.hookOpening}`,
+    `Flow-beats: ${input.flowBeats}`,
+    input.lightingAnchors ? `Lighting/visual anchors: ${input.lightingAnchors}` : '',
+    input.subjectConstraints.length ? `Subject constraints: ${input.subjectConstraints.join(' | ')}` : '',
+    input.outputConstraints.length ? `Output constraints: ${input.outputConstraints.join(' | ')}` : ''
+  ].filter(Boolean);
 
   if (input.includeLegacyControls) {
-    promptParts.push(renderLegacyUserControlPrompt(input.legacyControls));
-    appliedRules.push('LEGACY_USER_CONTROLS_MAPPED_TO_INTENT');
+    sections.push(`Legacy controls mapped: ${renderLegacyUserControlPrompt(input.legacyControls)}`);
   }
 
-  for (const constraint of input.safetyConstraints) {
-    promptParts.push(constraint);
-  }
-
-  const prompt = promptParts.filter(Boolean).join(' ');
+  const prompt = sections.join('\n');
 
   const meta: PromptCompilerMeta = {
     intentRules: [
@@ -594,14 +554,14 @@ const compilePromptV2 = (input: {
       ...input.intent.narrativeFormats.map((entry) => `narrative:${entry.id}`),
       `energy:${input.intent.energyMode ?? 'auto'}`
     ],
-    hookRule,
-    hookTemplateId: input.intent.energyMode === 'calm' ? null : hookTemplateId,
-    firstSecondQualityThreshold: input.intent.energyMode === 'calm' ? 'relaxed' : 'strict',
+    hookRule: calmMode ? null : 'HOOK_OPENING_INTEGRATED_V3',
+    hookTemplateId: null,
+    firstSecondQualityThreshold: calmMode ? 'relaxed' : 'strict',
     shotStyleSet: intentPrompt.shotStyleSet,
-    safetyConstraints: input.safetyConstraints,
-    calmExceptionApplied: input.intent.energyMode === 'calm',
-    appliedRules,
-    suppressedRules
+    safetyConstraints: input.outputConstraints,
+    calmExceptionApplied: calmMode,
+    appliedRules: ['PROMPT_COMPILER_V3_APPLIED', calmMode ? 'CALM_MODE_RELAXED_HOOK' : 'HOOK_0_2_REQUIRED'],
+    suppressedRules: calmMode ? ['STRICT_HOOK_PUSH_SUPPRESSED_CALM_MODE'] : []
   };
 
   return { prompt, meta };
@@ -2189,45 +2149,73 @@ export const runVideoStage = async (input: {
   const llmText = draft.script;
   const storyboardPrompt = renderStoryboardLightPrompt(storyboardLight);
   const brandPrompt = renderBrandProfilePrompt(effectiveBrandProfile);
+  const hookOpening =
+    videoPlanV1?.hookOpening?.trim() ||
+    storyboardLight?.hookHint?.trim() ||
+    llmText.split(/[.!?…]/)[0]?.trim() ||
+    `Achtung: ${effectiveTopic}.`;
 
-  const safetyConstraints = [
-    `If on-screen text appears, keep it inside a title-safe area (${safeMarginPercent}% margin from all edges).`,
+  const flowBeatsPrompt = buildFlowBeatsPrompt({
+    storyboardLight,
+    fallbackScript: llmText
+  });
+
+  const hasExplicitStartFrameReference = Boolean(
+    referenceAsset ||
+      input.startFramePromptOverride?.trim() ||
+      input.generationPayload?.startFrame?.customPrompt?.trim() ||
+      input.generationPayload?.startFrame?.summary?.trim()
+  );
+  const startFrameDirective = hasExplicitStartFrameReference ? startFramePrompt : '';
+
+  const subjectConstraints = [
+    ...(videoPlanV1?.subjectConstraints ?? []),
+    'Keep the same main subject identity from opening through final shot.'
+  ].filter(Boolean);
+
+  const outputConstraints = [
+    `9:16 vertical output, cinematic but readable for mobile.`,
+    `Keep on-screen text inside title-safe area (${safeMarginPercent}% margin).`,
     'No caption text should touch the frame border.'
   ];
 
-  const imageCompiled = compilePromptV2({
-    baseSegments: [
-      `Create a 9:16 keyframe image for this topic: ${effectiveTopic}.`,
-      `Storyboard concept: ${concept.label}. ${concept.imageDirection}`,
-      `Mood: ${moodPromptMap[moodPreset]}`,
-      startFramePrompt,
-      storyboardPrompt,
-      brandPrompt,
-      videoPlanV1 ? `Subject constraints: ${(videoPlanV1.subjectConstraints ?? []).join(' | ')}` : '',
-      `Keep composition center-safe with at least ${safeMarginPercent}% margin on all sides.`,
-      `Narration context: ${llmText}`
-    ],
+  const lightingAnchors = [
+    `Mood anchor: ${moodPromptMap[moodPreset]}`,
+    brandPrompt,
+    startFrameDirective,
+    storyboardPrompt
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const imageCompiled = compilePromptV3({
+    sceneIntent: `Create a filmic opening keyframe for topic "${effectiveTopic}"`,
+    hookOpening,
+    flowBeats: flowBeatsPrompt,
+    lightingAnchors,
+    subjectConstraints,
+    outputConstraints,
     intent: effectiveIntent,
-    safetyConstraints,
     includeLegacyControls: legacyUserControlsProvided,
     legacyControls: legacyUserControls
   });
 
-  const videoCompiled = compilePromptV2({
-    baseSegments: [
-      `Create a vertical social video about: ${effectiveTopic}.`,
-      `Storyboard concept: ${concept.label}. ${concept.videoDirection}`,
-      `Mood: ${moodPromptMap[moodPreset]}`,
+  const videoCompiled = compilePromptV3({
+    sceneIntent: `Create a cinematic social short about "${effectiveTopic}" with clear narrative momentum`,
+    hookOpening,
+    flowBeats: flowBeatsPrompt,
+    lightingAnchors: [
+      lightingAnchors,
       motionGuardByVariant[input.variantType],
-      `Hard motion target: minimum ${motionRequirement.minPhases} movement phases, max static shot ${motionRequirement.maxStaticSeconds} seconds.`,
-      startFramePrompt,
-      storyboardPrompt,
-      brandPrompt,
-      videoPlanV1 ? `Prompt directives: ${(videoPlanV1.promptDirectives ?? []).join(' | ')}` : '',
-      `Narration text: ${llmText}`
-    ],
+      `Motion target: >=${motionRequirement.minPhases} movement phases, static shots <=${motionRequirement.maxStaticSeconds}s`,
+      videoPlanV1?.promptDirectives?.length ? `Directives: ${videoPlanV1.promptDirectives.join(' | ')}` : '',
+      `Narration: ${llmText}`
+    ]
+      .filter(Boolean)
+      .join(' '),
+    subjectConstraints,
+    outputConstraints,
     intent: effectiveIntent,
-    safetyConstraints,
     includeLegacyControls: legacyUserControlsProvided,
     legacyControls: legacyUserControls
   });

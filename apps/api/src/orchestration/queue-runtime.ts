@@ -1226,6 +1226,7 @@ const processVideo = async (job: Job<StagePayload>) => {
       );
     }
 
+    await insertTimeline(jobId, 'PROMPT_COMPILER_V3_APPLIED', JSON.stringify(result.promptCompiler));
     await insertTimeline(jobId, 'PROMPT_COMPILER_V2_APPLIED', JSON.stringify(result.promptCompiler));
     await insertTimeline(jobId, 'HOOK_ENHANCER_APPLIED', JSON.stringify({ rule: result.promptCompiler.hookRule ?? null }));
     await insertTimeline(

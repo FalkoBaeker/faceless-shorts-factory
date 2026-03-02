@@ -217,7 +217,9 @@ const mapBrandProfileForApi = (
 };
 
 const buildExplainability = (timeline: Array<{ at: string; event: string; detail?: string }>) => {
-  const compilerEvent = [...timeline].reverse().find((event) => event.event === 'PROMPT_COMPILER_V2_APPLIED');
+  const compilerEvent =
+    [...timeline].reverse().find((event) => event.event === 'PROMPT_COMPILER_V3_APPLIED') ??
+    [...timeline].reverse().find((event) => event.event === 'PROMPT_COMPILER_V2_APPLIED');
   const compilerDetail = parseTimelineDetail(compilerEvent?.detail);
 
   const intentRules = Array.isArray(compilerDetail?.intentRules)
