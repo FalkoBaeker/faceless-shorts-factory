@@ -198,6 +198,12 @@ export type ScriptDraftRequest = {
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
+  startFrameStyle?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+  startFrameCandidateId?: string;
+  startFrameCustomPrompt?: string;
+  startFrameReferenceHint?: string;
+  startFrameUploadObjectPath?: string;
+  startFrameSummary?: string;
 };
 
 export type ScriptDraftResponse = {

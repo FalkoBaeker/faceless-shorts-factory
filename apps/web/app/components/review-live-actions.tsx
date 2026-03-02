@@ -297,16 +297,42 @@ export function ReviewLiveActions() {
     };
   }, [uploadedStartFrame, selectedStartFrameCandidate]);
 
+  const activeStartframeSummary = useMemo(() => {
+    if (uploadedStartFrame) {
+      return {
+        style: 'owner_portrait' as const,
+        candidateId: undefined,
+        customPrompt: `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) als Startbild verwenden; falls Kontext abweicht nur als 0-2s Opening-Anchor nutzen und dann auf Topic-Motiv schwenken.`,
+        referenceHint: uploadedStartFrame.fileName,
+        uploadObjectPath: uploadedStartFrame.objectPath,
+        summary: `Upload: ${uploadedStartFrame.fileName}`
+      };
+    }
+
+    if (selectedStartFrameCandidate) {
+      return {
+        style: selectedStartFrameCandidate.style,
+        candidateId: selectedStartFrameCandidate.candidateId,
+        customPrompt: undefined,
+        referenceHint: selectedStartFrameCandidate.label,
+        uploadObjectPath: undefined,
+        summary: `Kandidat: ${selectedStartFrameCandidate.label} — ${selectedStartFrameCandidate.description}`
+      };
+    }
+
+    return null;
+  }, [uploadedStartFrame, selectedStartFrameCandidate]);
+
   const generationBlocker = useMemo(() => {
     if (!brandProfile.companyName?.trim()) return 'Bitte Brand Onboarding mit Firmenname speichern.';
     if (!effectGoals.length) return 'Bitte mindestens ein Creative-Intent-Ziel wählen.';
-    if (!scriptAccepted || !scriptDraft.trim() || !flowDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
-    if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Startframe wählen oder eigenes Bild hochladen.';
+    if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Bitte zuerst Startframe wählen oder eigenes Bild hochladen.';
     if (startFramePolicy?.decision === 'block') {
       return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
     }
+    if (!scriptAccepted || !scriptDraft.trim() || !flowDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
     return null;
-  }, [brandProfile.companyName, effectGoals.length, scriptAccepted, scriptDraft, flowDraft, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy]);
+  }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, scriptAccepted, scriptDraft, flowDraft]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
@@ -374,9 +400,13 @@ export function ReviewLiveActions() {
       if (preflight.decision === 'block') {
         setStatus(`Startframe-Policy blockiert: ${preflight.userMessage} (${preflight.reasonCode}). ${preflight.remediation}`);
       } else if (preflight.decision === 'fallback') {
-        setStatus(`Startframe-Policy Fallback aktiv (${preflight.reasonCode}). Effektiv: ${preflight.effectiveStartFrameLabel ?? preflight.effectiveStartFrameStyle}.`);
+        setStatus(`Startframe-Policy Fallback aktiv (${preflight.reasonCode}). Effektiv: ${preflight.effectiveStartFrameLabel ?? preflight.effectiveStartFrameStyle}. Ablauf danach neu generieren.`);
       } else {
-        setStatus(input.sourceLabel ? `Startframe aktiv (${input.sourceLabel}). Policy-Preflight bestanden.` : 'Startframe-Policy-Preflight bestanden.');
+        setStatus(
+          input.sourceLabel
+            ? `Startframe aktiv (${input.sourceLabel}). Policy-Preflight bestanden. Ablauf danach neu generieren.`
+            : 'Startframe-Policy-Preflight bestanden. Ablauf danach neu generieren.'
+        );
       }
     } catch (error) {
       setStartFramePolicy(null);
@@ -391,8 +421,18 @@ export function ReviewLiveActions() {
       return;
     }
 
+    if (!activeStartframeSummary) {
+      setStatus('Bitte zuerst ein Startbild wählen/hochladen. Der Ablauf wird darauf aufgebaut.');
+      return;
+    }
+
+    if (startFramePolicy?.decision === 'block') {
+      setStatus(`Startframe blockiert: ${startFramePolicy.userMessage} ${startFramePolicy.remediation}`);
+      return;
+    }
+
     setBusy(true);
-    setStatus('Erzeuge Ablauf ...');
+    setStatus('Erzeuge Ablauf aus Branding + Motiv + Creative Intent + Startbild ...');
     try {
       const draft = await createScriptDraft(token, {
         topic,
@@ -400,7 +440,13 @@ export function ReviewLiveActions() {
         organizationId,
         moodPreset,
         creativeIntent,
-        brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined
+        brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
+        startFrameStyle: activeStartframeSummary.style,
+        startFrameCandidateId: activeStartframeSummary.candidateId,
+        startFrameCustomPrompt: activeStartframeSummary.customPrompt,
+        startFrameReferenceHint: activeStartframeSummary.referenceHint,
+        startFrameUploadObjectPath: activeStartframeSummary.uploadObjectPath,
+        startFrameSummary: activeStartframeSummary.summary
       });
 
       const normalizedScriptV2 = draft.scriptV2 ?? buildScriptV2FromFlowDraft({
@@ -418,12 +464,10 @@ export function ReviewLiveActions() {
         estimatedSeconds: draft.estimatedSeconds,
         suggestedWords: draft.suggestedWords
       });
-      resetStartFrameCandidates();
-      resetUploadedReference();
 
       setStatus(
         draft.withinTarget
-          ? `Ablauf bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s). Bitte akzeptieren oder bearbeiten.`
+          ? `Ablauf bereit (${Math.round(draft.estimatedSeconds)}s von ${draft.targetSeconds}s) — basiert auf dem gewählten Startbild. Bitte akzeptieren oder bearbeiten.`
           : `Ablauf zu lang (${Math.round(draft.estimatedSeconds)}s). Bitte kürzen oder neu generieren.`
       );
     } catch (error) {
@@ -440,18 +484,13 @@ export function ReviewLiveActions() {
     }
 
     setScriptAccepted(true);
-    setStatus('Ablauf akzeptiert. Als Nächstes: Startframe-Kandidaten erzeugen oder eigenes Bild hochladen.');
+    setStatus('Ablauf akzeptiert. Als Nächstes: Video erstellen. Bei Motiv-/Intent-Änderung Ablauf neu generieren.');
   };
 
   const prepareStartFrames = async () => {
     const token = readStoredToken();
     if (!token) {
       setStatus('Bitte zuerst auf der Startseite einloggen.');
-      return;
-    }
-
-    if (!scriptAccepted) {
-      setStatus('Bitte zuerst Ablauf akzeptieren, bevor du Startframe-Kandidaten erzeugst.');
       return;
     }
 
@@ -470,7 +509,8 @@ export function ReviewLiveActions() {
       setSelectedStartFrameCandidateId('');
       setUploadedStartFrame(null);
       setStartFramePolicy(null);
-      setStatus('Startframe-Kandidaten bereit. Bitte visuell auswählen oder eigenes Bild nutzen.');
+      setScriptAccepted(false);
+      setStatus('Startframe-Kandidaten bereit. Bitte visuell auswählen oder eigenes Bild nutzen. Danach Ablauf generieren.');
     } catch (error) {
       setStatus(`Startframe-Kandidaten fehlgeschlagen: ${asApiMessage(error)}`);
     } finally {
@@ -523,6 +563,7 @@ export function ReviewLiveActions() {
         mimeType: uploaded.mimeType
       });
       setSelectedStartFrameCandidateId('');
+      setScriptAccepted(false);
 
       await runStartFramePolicyPreflight({
         style: 'owner_portrait',
@@ -555,7 +596,7 @@ export function ReviewLiveActions() {
 
     try {
       const customPrompt = uploadedStartFrame
-        ? `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) ist hochgeladen: ${uploadedStartFrame.objectPath}. Nutze dieses Motiv als Startframe und als visuelle Leitplanke.`
+        ? `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) ist hochgeladen: ${uploadedStartFrame.objectPath}. Nutze es als Opening-Anchor (0-2s); danach auf Topic-/Intent-konforme Szene überblenden, falls Kontext abweicht.`
         : undefined;
 
       const fallbackStyle = 'storefront_hero' as const;
@@ -650,7 +691,7 @@ export function ReviewLiveActions() {
       <h2 id="review-live-title" className="section-title">
         Fast-MVP Flow (ECHTE API-Daten)
       </h2>
-      <p className="section-copy">Topic → Branding/Intent → Ablauf generieren → Ablauf akzeptieren/bearbeiten → Startframe wählen → Video erstellen.</p>
+      <p className="section-copy">Topic → Branding → Motiv/Creative Intent → Startframe wählen/hochladen → Ablauf generieren → Ablauf akzeptieren/bearbeiten → Video erstellen.</p>
 
       <div className="auth-form-grid" style={{ gridTemplateColumns: '1fr' }}>
         <label className="auth-field">
@@ -765,10 +806,16 @@ export function ReviewLiveActions() {
       </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
-        Ablauf / Skript
+        Ablauf / Skript (erst nach Startframe)
       </h3>
       <div className="action-row" style={{ marginTop: 8 }}>
-        <button className="button-ghost" type="button" disabled={busy} onClick={prepareScript}>
+        <button
+          className="button-ghost"
+          type="button"
+          disabled={busy || !activeStartframeSummary}
+          onClick={prepareScript}
+          title={activeStartframeSummary ? 'Ablauf aus gewähltem Startbild erzeugen' : 'Erst Startframe wählen/hochladen'}
+        >
           Ablauf generieren
         </button>
         <button className="button" type="button" disabled={busy || !scriptDraft.trim()} onClick={acceptScript}>
@@ -835,7 +882,7 @@ export function ReviewLiveActions() {
       ) : null}
 
       <div className="action-row" style={{ marginTop: 8 }}>
-        <button className="button-ghost" type="button" disabled={busy || startFrameBusy || !scriptAccepted} onClick={prepareStartFrames}>
+        <button className="button-ghost" type="button" disabled={busy || startFrameBusy} onClick={prepareStartFrames}>
           {startFrameBusy ? 'Erzeuge Kandidaten ...' : '3 Startframe-Kandidaten erzeugen'}
         </button>
       </div>
@@ -852,6 +899,7 @@ export function ReviewLiveActions() {
                 onClick={() => {
                   setSelectedStartFrameCandidateId(candidate.candidateId);
                   setUploadedStartFrame(null);
+                  setScriptAccepted(false);
                   void runStartFramePolicyPreflight({
                     candidateId: candidate.candidateId,
                     style: candidate.style,

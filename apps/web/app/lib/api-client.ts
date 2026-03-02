@@ -373,6 +373,12 @@ export const createScriptDraft = (
     moodPreset: MoodPreset;
     creativeIntent?: CreativeIntentPayload;
     brandProfile?: BrandProfilePayload;
+    startFrameStyle?: 'storefront_hero' | 'product_macro' | 'owner_portrait' | 'hands_at_work' | 'before_after_split';
+    startFrameCandidateId?: string;
+    startFrameCustomPrompt?: string;
+    startFrameReferenceHint?: string;
+    startFrameUploadObjectPath?: string;
+    startFrameSummary?: string;
   }
 ) =>
   requestJson<ScriptDraftPayload>('/v1/script/draft', {

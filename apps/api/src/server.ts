@@ -593,7 +593,20 @@ export const buildApiServer = () =>
           organizationId: String(body.organizationId ?? '').trim() || undefined,
           moodPreset: parseMoodPreset(body.moodPreset),
           creativeIntent: parseCreativeIntent(body.creativeIntent),
-          brandProfile: parseBrandProfile(body.brandProfile)
+          brandProfile: parseBrandProfile(body.brandProfile),
+          startFrameStyle: String(body.startFrameStyle ?? '').trim()
+            ? (String(body.startFrameStyle) as
+                | 'storefront_hero'
+                | 'product_macro'
+                | 'owner_portrait'
+                | 'hands_at_work'
+                | 'before_after_split')
+            : undefined,
+          startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
+          startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
+          startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
+          startFrameUploadObjectPath: String(body.startFrameUploadObjectPath ?? '').trim() || undefined,
+          startFrameSummary: String(body.startFrameSummary ?? '').trim() || undefined
         });
         return sendJson(res, 200, draft);
       }

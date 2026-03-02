@@ -316,6 +316,60 @@ const inferExplicitHeroSubject = (topic: string) => {
   return `eine klar benannte Hauptperson mit dem Kernprodukt aus dem Thema "${topic}" im realen Nutzungskontext`;
 };
 
+const stopwordsDe = new Set([
+  'der',
+  'die',
+  'das',
+  'und',
+  'oder',
+  'mit',
+  'für',
+  'von',
+  'ein',
+  'eine',
+  'einer',
+  'eines',
+  'ist',
+  'im',
+  'in',
+  'auf',
+  'zu',
+  'den',
+  'dem',
+  'des',
+  'an',
+  'am',
+  'bei',
+  'als',
+  'auch',
+  'noch',
+  'nur'
+]);
+
+const tokenSetForOverlap = (text: string) =>
+  new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !stopwordsDe.has(token))
+  );
+
+const referenceLikelyOffContext = (topic: string, referenceSummary: string) => {
+  const topicTokens = tokenSetForOverlap(topic);
+  const refTokens = tokenSetForOverlap(referenceSummary);
+  if (!topicTokens.size || !refTokens.size) return false;
+
+  let overlap = 0;
+  for (const token of topicTokens) {
+    if (refTokens.has(token)) overlap += 1;
+  }
+
+  const ratio = overlap / Math.max(1, topicTokens.size);
+  return ratio < 0.15;
+};
+
 const motionGuardByVariant: Record<VariantType, string> = {
   SHORT_15: 'Motion-Guard: mindestens 5 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.',
   MASTER_30: 'Motion-Guard: mindestens 8 klar erkennbare Bewegungsphasen, kein statischer Shot länger als 2.5 Sekunden.'
@@ -1202,7 +1256,8 @@ const createScriptFromLlm = async (
   variantType: VariantType,
   moodPreset: MoodPreset,
   creativeIntent?: CreativeIntentMatrix,
-  brandProfile?: BrandProfile
+  brandProfile?: BrandProfile,
+  startFrameHint?: string
 ) => {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.01, 'llm-script');
@@ -1212,6 +1267,9 @@ const createScriptFromLlm = async (
   const moodPrompt = moodPromptMap[moodPreset];
   const intentPrompt = creativeIntent ? renderIntentPrompt(creativeIntent).text : '';
   const brandPrompt = renderBrandProfilePrompt(brandProfile);
+  const startFramePrompt = String(startFrameHint ?? '').trim()
+    ? `Startbild-Kontext (muss in Hook/Ablauf berücksichtigt werden): ${String(startFrameHint).trim()}.`
+    : '';
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
@@ -1221,6 +1279,7 @@ const createScriptFromLlm = async (
       `${moodPrompt} ` +
       `${intentPrompt} ` +
       `${brandPrompt} ` +
+      `${startFramePrompt} ` +
       'Das Skript muss mit einem vollständigen, abgeschlossenen Satz enden. ' +
       'In der ersten Sekunde muss der Hook spürbar sein, außer im calm-mode. ' +
       'Gib nur den gesprochenen Text aus, ohne Überschrift oder Bulletpoints. Schreibe in kurzen, schnellen Sätzen (TikTok-Tempo), ohne Füller.',
@@ -1270,6 +1329,7 @@ export const generateScriptDraft = async (input: {
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
+  startFrameHint?: string;
   regenerate?: boolean;
 }) => {
   await runProviderHealthchecks();
@@ -1279,7 +1339,14 @@ export const generateScriptDraft = async (input: {
   const { targetSeconds } = resolveVariantDurations(input.variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
 
-  let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset, effectiveIntent, input.brandProfile);
+  let script = await createScriptFromLlm(
+    input.topic,
+    input.variantType,
+    moodPreset,
+    effectiveIntent,
+    input.brandProfile,
+    input.startFrameHint
+  );
   script = finalizeScriptLanguage(script, input.brandProfile);
   let estimatedSeconds = estimateSpeechSeconds(script);
 
@@ -1300,7 +1367,8 @@ export const generateScriptDraft = async (input: {
     topic: input.topic,
     narration: script,
     creativeIntent: effectiveIntent,
-    brandProfile: input.brandProfile
+    brandProfile: input.brandProfile,
+    startFrameHint: input.startFrameHint
   });
 
   return {
@@ -1386,12 +1454,14 @@ const buildScriptV2ForDraft = async (input: {
   narration: string;
   creativeIntent: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
+  startFrameHint?: string;
 }): Promise<ScriptV2> => {
   try {
     const plan = await generateVideoPlan({
       topic: input.topic,
       creativeIntent: input.creativeIntent,
       brandProfile: input.brandProfile,
+      startFrameHint: input.startFrameHint,
       userEditedFlowScript: input.narration
     });
 
@@ -2217,6 +2287,14 @@ export const runVideoStage = async (input: {
     .filter(Boolean)
     .join(' ');
 
+  const explicitHeroSubject = inferExplicitHeroSubject(effectiveTopic);
+  const referenceOffContext = Boolean(referenceSummary && referenceLikelyOffContext(effectiveTopic, referenceSummary));
+  const startFrameTransitionDirective = referenceAsset
+    ? referenceOffContext
+      ? `Uploaded reference is likely off-context vs topic. Use it only as opening visual anchor for second 0-2, then transition camera and scene to ${explicitHeroSubject}.`
+      : `Use uploaded reference as shot-1 anchor and keep continuity with ${explicitHeroSubject} for following beats.`
+    : `Generated startframe must explicitly show ${explicitHeroSubject} from shot 1.`;
+
   const scriptFromV2 = (() => {
     const v2 = input.approvedScriptV2;
     if (!v2 || !Array.isArray(v2.scenes) || !v2.scenes.length) return '';
@@ -2447,14 +2525,14 @@ export const runVideoStage = async (input: {
 
   const lightingAnchors = [
     `Mood anchor: ${moodPromptMap[moodPreset]}`,
+    `Explicit hero subject to show: ${explicitHeroSubject}.`,
+    startFrameTransitionDirective,
     brandPrompt,
     startFrameDirective,
     storyboardPrompt
   ]
     .filter(Boolean)
     .join(' ');
-
-  const explicitHeroSubject = inferExplicitHeroSubject(effectiveTopic);
 
   const imageCompiled = compilePromptV3({
     sceneIntent: `Create a filmic opening keyframe for topic "${effectiveTopic}". Explicit hero subject: ${explicitHeroSubject}`,

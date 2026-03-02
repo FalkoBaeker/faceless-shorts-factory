@@ -803,7 +803,14 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
     variantType,
     moodPreset,
     creativeIntent,
-    brandProfile: effectiveBrandProfile
+    brandProfile: effectiveBrandProfile,
+    startFrameHint:
+      payload.startFrameSummary ??
+      payload.startFrameCustomPrompt ??
+      payload.startFrameReferenceHint ??
+      payload.startFrameCandidateId ??
+      payload.startFrameStyle ??
+      undefined
   });
 
   return {
