@@ -19,7 +19,8 @@ import {
   type MoodPreset,
   type StartFrameCandidatePayload,
   type StartFramePreflightPayload,
-  type StoryboardLightPayload
+  type StoryboardLightPayload,
+  type ScriptV2Payload
 } from '../lib/api-client';
 import { readStoredToken } from '../lib/session-store';
 
@@ -44,26 +45,82 @@ const deriveMoodFromIntent = (intent: CreativeIntentPayload): MoodPreset => {
   return 'commercial_cta';
 };
 
-const buildStoryboardFromScript = (script: string): StoryboardLightPayload => {
+const fallbackFlowFromScript = (script: string) => {
   const sentences = script
     .split(/(?<=[.!?…])\s+/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, 5);
 
-  const beats = (sentences.slice(0, 4).length ? sentences.slice(0, 4) : ['Hook eröffnen', 'Kernnutzen zeigen', 'CTA Abschluss']).map(
-    (sentence, index) => ({
-      beatId: `beat_${index + 1}`,
-      order: index + 1,
-      action: sentence,
-      visualHint: index === 0 ? 'Schneller visueller Einstieg' : undefined
+  const source = sentences.length ? sentences : ['Hook eröffnen', 'Kernnutzen zeigen', 'CTA Abschluss'];
+  return source.map((sentence, index) => ({ order: index + 1, action: sentence }));
+};
+
+const toFlowDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string) => {
+  const scenes = scriptV2?.scenes?.length
+    ? scriptV2.scenes
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .map((scene) => ({ order: scene.order, action: String(scene.action ?? '').trim() }))
+        .filter((scene) => scene.action.length)
+    : fallbackFlowFromScript(fallbackScript);
+
+  return scenes.map((scene) => `${scene.order}. ${scene.action}`).join('\n');
+};
+
+const buildScriptV2FromFlowDraft = (input: {
+  flowDraft: string;
+  narration: string;
+  draft?: ScriptV2Payload;
+  topic: string;
+}): ScriptV2Payload => {
+  const parsedScenes = input.flowDraft
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const stripped = line.replace(/^\d+[.)]\s*/, '').trim();
+      if (!stripped) return null;
+      return { order: index + 1, action: stripped };
     })
-  );
+    .filter((scene): scene is { order: number; action: string } => Boolean(scene));
+
+  const scenes = parsedScenes.length ? parsedScenes : fallbackFlowFromScript(input.narration);
+
+  return {
+    language: input.draft?.language ?? 'de',
+    openingHook: input.draft?.openingHook ?? scenes[0]?.action ?? `Stop scrolling: ${input.topic}.`,
+    narration: input.narration,
+    scenes: scenes.map((scene) => ({
+      order: scene.order,
+      action: scene.action,
+      onScreenText: undefined,
+      lines: undefined
+    }))
+  };
+};
+
+const buildStoryboardFromScriptV2 = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string): StoryboardLightPayload => {
+  const scenes = scriptV2?.scenes?.length
+    ? scriptV2.scenes
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .map((scene) => String(scene.action ?? '').trim())
+        .filter(Boolean)
+    : fallbackFlowFromScript(fallbackScript).map((scene) => scene.action);
+
+  const beats = scenes.slice(0, 5).map((action, index) => ({
+    beatId: `beat_${index + 1}`,
+    order: index + 1,
+    action,
+    visualHint: index === 0 ? 'Schneller visueller Einstieg mit klarer Hook' : 'Neue sichtbare Handlung, kein Repeat-Shot'
+  }));
 
   return {
     beats,
-    hookHint: beats[0]?.action,
+    hookHint: scriptV2?.openingHook || beats[0]?.action,
     ctaHint: beats[beats.length - 1]?.action,
-    pacingHint: 'dynamic'
+    pacingHint: 'fast_tiktok'
   };
 };
 
@@ -118,6 +175,8 @@ export function ReviewLiveActions() {
   >(null);
 
   const [scriptDraft, setScriptDraft] = useState('');
+  const [scriptV2Draft, setScriptV2Draft] = useState<ScriptV2Payload | undefined>(undefined);
+  const [flowDraft, setFlowDraft] = useState('');
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
 
@@ -209,13 +268,13 @@ export function ReviewLiveActions() {
   const generationBlocker = useMemo(() => {
     if (!brandProfile.companyName?.trim()) return 'Bitte Brand Onboarding mit Firmenname speichern.';
     if (!effectGoals.length) return 'Bitte mindestens ein Creative-Intent-Ziel wählen.';
-    if (!scriptAccepted || !scriptDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
+    if (!scriptAccepted || !scriptDraft.trim() || !flowDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
     if (!selectedStartFrameCandidate && !uploadedStartFrame) return 'Startframe wählen oder eigenes Bild hochladen.';
     if (startFramePolicy?.decision === 'block') {
       return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
     }
     return null;
-  }, [brandProfile.companyName, effectGoals.length, scriptAccepted, scriptDraft, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy]);
+  }, [brandProfile.companyName, effectGoals.length, scriptAccepted, scriptDraft, flowDraft, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
@@ -312,7 +371,15 @@ export function ReviewLiveActions() {
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined
       });
 
+      const normalizedScriptV2 = draft.scriptV2 ?? buildScriptV2FromFlowDraft({
+        flowDraft: toFlowDraftText(undefined, draft.script),
+        narration: draft.script,
+        topic
+      });
+
       setScriptDraft(draft.script);
+      setScriptV2Draft(normalizedScriptV2);
+      setFlowDraft(toFlowDraftText(normalizedScriptV2, draft.script));
       setScriptAccepted(false);
       setScriptMeta({
         targetSeconds: draft.targetSeconds,
@@ -335,7 +402,7 @@ export function ReviewLiveActions() {
   };
 
   const acceptScript = () => {
-    if (!scriptDraft.trim()) {
+    if (!scriptDraft.trim() || !flowDraft.trim()) {
       setStatus('Ablauf ist leer. Bitte zuerst Ablauf generieren.');
       return;
     }
@@ -460,6 +527,12 @@ export function ReviewLiveActions() {
         : undefined;
 
       const fallbackStyle = 'storefront_hero' as const;
+      const approvedScriptV2 = buildScriptV2FromFlowDraft({
+        flowDraft,
+        narration: scriptDraft.trim(),
+        draft: scriptV2Draft,
+        topic
+      });
 
       const preflight = await preflightStartFrame(token, {
         topic,
@@ -516,11 +589,12 @@ export function ReviewLiveActions() {
                 ? `Kandidat: ${selectedStartFrameCandidate.label}`
                 : 'no-startframe'
           },
-          userEditedFlowScript: scriptDraft.trim() || undefined
+          userEditedFlowScript: flowDraft.trim() || undefined
         },
-        storyboardLight: buildStoryboardFromScript(scriptDraft),
+        storyboardLight: buildStoryboardFromScriptV2(approvedScriptV2, scriptDraft),
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
         approvedScript: scriptDraft.trim(),
+        approvedScriptV2,
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
         startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
         startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
@@ -671,15 +745,30 @@ export function ReviewLiveActions() {
       </div>
 
       <label className="auth-field" style={{ marginTop: 8 }}>
-        <span>Ablauf-/Skripttext (ein Block, editierbar)</span>
+        <span>Voiceover-Text (gesprochen, editierbar)</span>
         <textarea
           value={scriptDraft}
           onChange={(event) => {
-            setScriptDraft(event.target.value);
+            const value = event.target.value;
+            setScriptDraft(value);
+            setScriptV2Draft((prev) => (prev ? { ...prev, narration: value } : prev));
             setScriptAccepted(false);
           }}
           rows={8}
           placeholder="Erzeuge zuerst einen Ablauf-Entwurf."
+        />
+      </label>
+
+      <label className="auth-field" style={{ marginTop: 8 }}>
+        <span>Ablauf (was sieht der Zuschauer, editierbar)</span>
+        <textarea
+          value={flowDraft}
+          onChange={(event) => {
+            setFlowDraft(event.target.value);
+            setScriptAccepted(false);
+          }}
+          rows={8}
+          placeholder="1. Hook-Shot ...\n2. Sichtbare Handlung ..."
         />
       </label>
 

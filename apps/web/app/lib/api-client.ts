@@ -43,8 +43,27 @@ export type SelectConceptPayload = {
   estimatedSeconds: 30 | 60;
 };
 
+export type ScriptV2Payload = {
+  language?: string;
+  openingHook?: string;
+  narration?: string;
+  scenes: Array<{
+    order: number;
+    action: string;
+    lines?: Array<{
+      speaker: string;
+      text: string;
+      tone?: string;
+      startHintSeconds?: number;
+      endHintSeconds?: number;
+    }>;
+    onScreenText?: string;
+  }>;
+};
+
 export type ScriptDraftPayload = {
   script: string;
+  scriptV2?: ScriptV2Payload;
   targetSeconds: number;
   estimatedSeconds: number;
   withinTarget: boolean;
@@ -423,6 +442,7 @@ export const selectConcept = (
     storyboardLight?: StoryboardLightPayload;
     brandProfile?: BrandProfilePayload;
     approvedScript: string;
+    approvedScriptV2?: ScriptV2Payload;
     startFrameCandidateId?: string;
     startFrameStyle?:
       | 'storefront_hero'
@@ -449,6 +469,7 @@ export const selectConcept = (
       storyboardLight: payload.storyboardLight,
       brandProfile: payload.brandProfile,
       approvedScript: payload.approvedScript,
+      approvedScriptV2: payload.approvedScriptV2,
       startFrameCandidateId: payload.startFrameCandidateId,
       startFrameStyle: payload.startFrameStyle,
       startFrameCustomLabel: payload.startFrameCustomLabel,

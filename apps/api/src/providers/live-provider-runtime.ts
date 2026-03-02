@@ -200,6 +200,21 @@ type VideoPlanV1 = {
   promptDirectives: string[];
 };
 
+type ScriptV2 = {
+  language?: string;
+  openingHook?: string;
+  narration?: string;
+  scenes: Array<{
+    order: number;
+    action: string;
+    lines?: Array<{
+      speaker: string;
+      text: string;
+    }>;
+    onScreenText?: string;
+  }>;
+};
+
 type StoryboardConceptId =
   | 'concept_web_vertical_slice'
   | 'concept_offer_focus'
@@ -1256,9 +1271,16 @@ export const generateScriptDraft = async (input: {
 
   const condensed = durationRepairAttempts > 0;
   const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
+  const scriptV2 = await buildScriptV2ForDraft({
+    topic: input.topic,
+    narration: script,
+    creativeIntent: effectiveIntent,
+    brandProfile: input.brandProfile
+  });
 
   return {
     script,
+    scriptV2,
     moodPreset,
     creativeIntent: effectiveIntent,
     targetSeconds,
@@ -1267,6 +1289,94 @@ export const generateScriptDraft = async (input: {
     withinTarget,
     condensed
   };
+};
+
+const fallbackScriptV2FromNarration = (topic: string, narration: string): ScriptV2 => {
+  const sentences = narration
+    .split(/(?<=[.!?…])\s+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+
+  const sourceSentences = sentences.length
+    ? sentences
+    : [`${topic} sofort sichtbar machen.`, 'Kernnutzen konkret zeigen.', 'Mit klarem CTA abschließen.'];
+
+  const scenes = sourceSentences.map((sentence, index) => {
+    const cleaned = sentence.replace(/[.!?…]+$/g, '').trim();
+    const action =
+      index === 0
+        ? `Hook-Shot: ${topic} sofort visuell zeigen (${cleaned || 'starker Einstieg'}).`
+        : `Szene ${index + 1}: Zeige eine konkrete sichtbare Handlung zu: ${cleaned || topic}.`;
+
+    return {
+      order: index + 1,
+      action: ensureSentenceEnding(action)
+    };
+  });
+
+  const openingHook = ensureSentenceEnding(sourceSentences[0] ?? `Stop scrolling: ${topic}.`);
+
+  return {
+    language: 'de',
+    openingHook,
+    narration,
+    scenes
+  };
+};
+
+const buildScriptV2ForDraft = async (input: {
+  topic: string;
+  narration: string;
+  creativeIntent: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
+}): Promise<ScriptV2> => {
+  try {
+    const plan = await generateVideoPlan({
+      topic: input.topic,
+      creativeIntent: input.creativeIntent,
+      brandProfile: input.brandProfile,
+      userEditedFlowScript: input.narration
+    });
+
+    const scenes = plan.script.scenes
+      .slice(0, 8)
+      .map((scene, index) => ({
+        order: Number.isFinite(scene.order) ? Math.max(1, Math.floor(scene.order)) : index + 1,
+        action: ensureSentenceEnding(String(scene.action ?? '').trim()),
+        lines: scene.lines?.length
+          ? scene.lines
+              .map((line) => ({
+                speaker: String(line.speaker ?? '').trim().slice(0, 40),
+                text: String(line.text ?? '').trim().slice(0, 180)
+              }))
+              .filter((line) => line.speaker && line.text)
+          : undefined,
+        onScreenText: String(scene.onScreenText ?? '').trim().slice(0, 120) || undefined
+      }))
+      .filter((scene) => scene.action.length >= 8)
+      .sort((a, b) => a.order - b.order);
+
+    if (!scenes.length) {
+      return fallbackScriptV2FromNarration(input.topic, input.narration);
+    }
+
+    return {
+      language: 'de',
+      openingHook: ensureSentenceEnding(plan.hookOpening || `Stop scrolling: ${input.topic}.`),
+      narration: input.narration,
+      scenes
+    };
+  } catch (error) {
+    logEvent({
+      event: 'script_v2_draft_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: `reason=${String((error as Error)?.message ?? error).slice(0, 180)}`
+    });
+
+    return fallbackScriptV2FromNarration(input.topic, input.narration);
+  }
 };
 
 const createImage = async (prompt: string) => {

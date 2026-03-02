@@ -808,6 +808,7 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
 
   return {
     script: draft.script,
+    scriptV2: normalizeScriptV2((draft as { scriptV2?: ScriptV2 }).scriptV2),
     targetSeconds: draft.targetSeconds,
     estimatedSeconds: draft.estimatedSeconds,
     withinTarget: draft.withinTarget,
