@@ -1159,6 +1159,9 @@ const processVideo = async (job: Job<StagePayload>) => {
     if (result.strictStep1Prompt?.objectPath) {
       await setAssetRef(jobId, 'soraPromptStep1ObjectPath', result.strictStep1Prompt.objectPath);
     }
+    if (result.strictStep1RequestPreview?.objectPath) {
+      await setAssetRef(jobId, 'soraPromptStep1RequestObjectPath', result.strictStep1RequestPreview.objectPath);
+    }
 
     await insertTimeline(
       jobId,
@@ -1207,6 +1210,7 @@ const processVideo = async (job: Job<StagePayload>) => {
         JSON.stringify({
           model: result.strictStep1PromptModel,
           objectPath: result.strictStep1Prompt.objectPath,
+          requestPreviewObjectPath: result.strictStep1RequestPreview?.objectPath ?? null,
           websiteUrl: result.strictStep1WebsiteUrl,
           guidelinePath: result.strictStep1GuidelinePath
         })

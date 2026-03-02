@@ -2129,8 +2129,8 @@ const createVideo = async (
   const created = await openAiPostMultipart(
     '/v1/videos',
     {
-      model,
       prompt,
+      model,
       seconds,
       size: '720x1280'
     },
@@ -3240,10 +3240,34 @@ export const runVideoStage = async (input: {
     startFrameHint: input.generationPayload?.startFrame?.summary ?? startFrameDirective
   });
 
+  const strictStep1PromptText = strictStep1Prompt.soraPrompt.trim();
+  if (!strictStep1PromptText) {
+    throw new ProviderRuntimeError('STRICT_STEP1_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
   const strictStep1PromptAsset = await uploadAsset(
     input.jobId,
     `jobs/${input.jobId}/assets/sora-prompt-step1.txt`,
-    Buffer.from(strictStep1Prompt.soraPrompt, 'utf8'),
+    Buffer.from(strictStep1PromptText, 'utf8'),
+    'text/plain',
+    'openai-llm'
+  );
+
+  const strictStep1RequestPreviewAsset = await uploadAsset(
+    input.jobId,
+    `jobs/${input.jobId}/assets/sora-request-step1.txt`,
+    Buffer.from(
+      [
+        'model=sora-2',
+        'seconds=8',
+        'size=720x1280',
+        `input_reference_url=${startFrameImageUrlForArchitect}`,
+        '',
+        'prompt=',
+        strictStep1PromptText
+      ].join('\n'),
+      'utf8'
+    ),
     'text/plain',
     'openai-llm'
   );
@@ -3306,22 +3330,7 @@ export const runVideoStage = async (input: {
 
     const blueprintSegment = promptBlueprint.segments[index];
 
-    const segmentPrompt = [
-      `Global technical prompt: ${promptBlueprint.technicalSoraPrompt}`,
-      `Segment ${index + 1}/${segmentPlanSeconds.length} for one continuous video. Duration ${segmentSeconds}s. Window ${segmentStart}-${segmentEnd}s.`,
-      index === 0
-        ? `Shot 1 must start from selected startframe anchor. ${startFrameTransitionDirective}`
-        : `Start exactly where segment ${index} ended. Continuity cue: ${continuityCue}.`,
-      blueprintSegment?.startState ? `Required start state: ${blueprintSegment.startState}` : '',
-      blueprintSegment?.endState ? `Required end state: ${blueprintSegment.endState}` : '',
-      blueprintSegment?.prompt ? `Segment directive: ${blueprintSegment.prompt}` : '',
-      promptBlueprint.continuityAnchors.length ? `Continuity anchors: ${promptBlueprint.continuityAnchors.join(' | ')}` : '',
-      'This is one continuous narrative across segments, not separate clips.',
-      'Advance to a new visual action and camera development; never reset to the opening composition.',
-      'Never create internal loops or repeating micro-cycles.'
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const segmentPrompt = strictStep1PromptText;
 
     const segmentMotionRequirement = scaleMotionRequirementForSegment(motionRequirement, segmentSeconds);
 
@@ -3438,6 +3447,7 @@ export const runVideoStage = async (input: {
     videoPlanSource,
     videoPlanReconciled,
     strictStep1Prompt: strictStep1PromptAsset,
+    strictStep1RequestPreview: strictStep1RequestPreviewAsset,
     strictStep1PromptModel: strictStep1Prompt.model,
     strictStep1WebsiteUrl: strictStep1Prompt.websiteUrl,
     strictStep1WebsiteContext: strictStep1Prompt.websiteContext,
