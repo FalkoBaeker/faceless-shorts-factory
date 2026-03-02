@@ -526,10 +526,17 @@ const parseScriptV2 = (raw: unknown): ScriptV2 | undefined => {
   };
 };
 
+const normalizeCaptionOrthography = (text: string) =>
+  text
+    .replace(/\bnäckster\b/gi, 'nächster')
+    .replace(/\bnaechster\b/gi, 'nächster')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 const splitLegacyCaptionSegments = (script: string | undefined) => {
   if (!script) return [] as string[];
 
-  return script
+  return normalizeCaptionOrthography(script)
     .split(/[.!?…]/)
     .map((segment) => segment.trim())
     .filter(Boolean)
@@ -537,7 +544,7 @@ const splitLegacyCaptionSegments = (script: string | undefined) => {
     .slice(0, 24);
 };
 
-const prepareCaptionV2Payload = (storyboard: StoryboardSelection) => {
+const prepareCaptionV2Payload = (storyboard: StoryboardSelection, fallbackScript?: string) => {
   const dialogLines = (storyboard.approvedScriptV2?.scenes ?? [])
     .flatMap((scene) => scene.lines ?? [])
     .map((line) => ({
@@ -548,7 +555,7 @@ const prepareCaptionV2Payload = (storyboard: StoryboardSelection) => {
     .slice(0, 24);
 
   const dialogSegments = dialogLines.map((line) => `${line.speaker}: ${line.text}`.slice(0, 180));
-  const narrationSegments = splitLegacyCaptionSegments(storyboard.approvedScript);
+  const narrationSegments = splitLegacyCaptionSegments(storyboard.approvedScript ?? fallbackScript);
 
   const fallbackToNarration = dialogSegments.length < 2;
   const mode = fallbackToNarration ? 'narration' : 'dialog';
@@ -1331,6 +1338,7 @@ const processAssembly = async (job: Job<StagePayload>) => {
 
     const videoObjectPath = await getAssetRef(jobId, 'videoObjectPath');
     const audioObjectPath = await getAssetRef(jobId, 'audioObjectPath');
+    const finalScript = await getAssetRef(jobId, 'script');
     if (!videoObjectPath || !audioObjectPath) {
       throw new UnrecoverableError(`HARD_FAILURE:assembly:ASSET_REF_MISSING:${jobId}`);
     }
@@ -1362,7 +1370,7 @@ const processAssembly = async (job: Job<StagePayload>) => {
       })
     );
 
-    const captionPrepared = prepareCaptionV2Payload(storyboard);
+    const captionPrepared = prepareCaptionV2Payload(storyboard, finalScript ?? undefined);
 
     await insertTimeline(
       jobId,

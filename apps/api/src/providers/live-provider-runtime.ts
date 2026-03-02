@@ -424,14 +424,19 @@ const resolveMotionRequirement = (
   intent?: CreativeIntentMatrix
 ): { minPhases: number; maxStaticSeconds: number } => {
   const baseMin = variantType === 'MASTER_30' ? 8 : 5;
+  const isCalm = intent?.energyMode === 'calm';
   const intentBoost =
     intent?.energyMode === 'high' ||
     (intent?.effectGoals ?? []).some((entry) => ['sell_conversion', 'urgency_offer', 'cringe_hook'].includes(entry.id))
       ? 1
       : 0;
 
-  const minPhases = Math.max(4, baseMin + motionBoostByControl[controls.motionIntensity] + intentBoost);
-  const maxStaticSeconds = controls.shotPace === 'fast' ? 2 : controls.shotPace === 'relaxed' ? 3 : 2.5;
+  const calmPhaseAdjustment = isCalm ? -2 : 0;
+  const minPhases = Math.max(3, baseMin + motionBoostByControl[controls.motionIntensity] + intentBoost + calmPhaseAdjustment);
+
+  const baseMaxStaticSeconds = controls.shotPace === 'fast' ? 2 : controls.shotPace === 'relaxed' ? 3 : 2.5;
+  const maxStaticSeconds = roundSeconds(baseMaxStaticSeconds + (isCalm ? 0.8 : 0));
+
   return { minPhases, maxStaticSeconds };
 };
 
@@ -1125,6 +1130,30 @@ const ensureSentenceEnding = (text: string) => {
   return `${trimmed}.`;
 };
 
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const normalizeOrthographyLight = (text: string) => {
+  const normalized = text
+    .replace(/\bnäckster\b/gi, 'nächster')
+    .replace(/\bnaechster\b/gi, 'nächster')
+    .replace(/\buber\b/gi, 'über')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return ensureSentenceEnding(normalized);
+};
+
+const applyBrandTermLock = (text: string, brandProfile?: BrandProfile) => {
+  const brandTerm = String(brandProfile?.companyName ?? '').trim();
+  if (!brandTerm) return text;
+
+  const pattern = new RegExp(escapeRegex(brandTerm), 'gi');
+  return text.replace(pattern, brandTerm);
+};
+
+const finalizeScriptLanguage = (text: string, brandProfile?: BrandProfile) =>
+  applyBrandTermLock(normalizeOrthographyLight(text), brandProfile);
+
 const createScriptFromLlm = async (
   topic: string,
   variantType: VariantType,
@@ -1158,7 +1187,7 @@ const createScriptFromLlm = async (
   if (!text) {
     throw new ProviderRuntimeError('LLM_EMPTY_OUTPUT', { provider: 'openai', fatal: true });
   }
-  return ensureSentenceEnding(text);
+  return finalizeScriptLanguage(text, brandProfile);
 };
 
 const condenseScriptToTarget = async (
@@ -1188,8 +1217,8 @@ const condenseScriptToTarget = async (
   });
 
   const text = parseOpenAiResponseText(response);
-  if (!text) return script;
-  return ensureSentenceEnding(text);
+  if (!text) return finalizeScriptLanguage(script, brandProfile);
+  return finalizeScriptLanguage(text, brandProfile);
 };
 
 export const generateScriptDraft = async (input: {
@@ -1208,15 +1237,21 @@ export const generateScriptDraft = async (input: {
   const targetWords = Math.round(targetSeconds * 2.35);
 
   let script = await createScriptFromLlm(input.topic, input.variantType, moodPreset, effectiveIntent, input.brandProfile);
+  script = finalizeScriptLanguage(script, input.brandProfile);
   let estimatedSeconds = estimateSpeechSeconds(script);
-  let condensed = false;
 
-  if (estimatedSeconds > targetSeconds * 1.08) {
-    script = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset, effectiveIntent, input.brandProfile);
+  const maxDurationRepairAttempts = Math.max(1, Math.min(2, Number(process.env.SCRIPT_AUTO_REPAIR_ATTEMPTS ?? 2)));
+  let durationRepairAttempts = 0;
+
+  while (estimatedSeconds > targetSeconds * 1.08 && durationRepairAttempts < maxDurationRepairAttempts) {
+    const condensedScript = await condenseScriptToTarget(script, targetSeconds, targetWords, moodPreset, effectiveIntent, input.brandProfile);
+    durationRepairAttempts += 1;
+    if (condensedScript.trim() === script.trim()) break;
+    script = finalizeScriptLanguage(condensedScript, input.brandProfile);
     estimatedSeconds = estimateSpeechSeconds(script);
-    condensed = true;
   }
 
+  const condensed = durationRepairAttempts > 0;
   const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
 
   return {
@@ -1613,9 +1648,13 @@ const createVideoWithMotionEnforcement = async (input: {
   prompt: string;
   variantType: VariantType;
   requirement: { minPhases: number; maxStaticSeconds: number };
+  calmMode?: boolean;
 }) => {
-  const maxAttempts = Math.max(1, Number(process.env.MOTION_ENFORCEMENT_ATTEMPTS ?? 2));
-  const staticTolerance = parseRangeFloat(process.env.MOTION_STATIC_TOLERANCE_SECONDS ?? 0.15, 0.15, 0, 1.2);
+  const baseAttempts = Math.max(1, Number(process.env.MOTION_ENFORCEMENT_ATTEMPTS ?? 2));
+  const maxAttempts = input.calmMode ? Math.min(4, baseAttempts + 1) : baseAttempts;
+  const baseStaticTolerance = parseRangeFloat(process.env.MOTION_STATIC_TOLERANCE_SECONDS ?? 0.15, 0.15, 0, 1.2);
+  const staticTolerance = input.calmMode ? Math.min(1.8, baseStaticTolerance + 0.35) : baseStaticTolerance;
+  const requiredMinPhases = input.calmMode ? Math.max(3, input.requirement.minPhases - 1) : input.requirement.minPhases;
 
   let attempt = 0;
   let prompt = input.prompt;
@@ -1628,7 +1667,7 @@ const createVideoWithMotionEnforcement = async (input: {
     const metrics = probeMotion(video.bytes, `segment_attempt_${attempt}`);
 
     const withinThreshold =
-      metrics.motionPhases >= input.requirement.minPhases &&
+      metrics.motionPhases >= requiredMinPhases &&
       metrics.longestStaticSeconds <= input.requirement.maxStaticSeconds + staticTolerance;
 
     lastVideo = video;
@@ -1639,8 +1678,8 @@ const createVideoWithMotionEnforcement = async (input: {
         video,
         enforcement: {
           ...metrics,
-          minPhasesRequired: input.requirement.minPhases,
-          maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds),
+          minPhasesRequired: requiredMinPhases,
+          maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds + staticTolerance),
           withinThreshold: true,
           attempts: attempt
         } as MotionEnforcement
@@ -1650,14 +1689,34 @@ const createVideoWithMotionEnforcement = async (input: {
     if (attempt < maxAttempts) {
       prompt = [
         input.prompt,
-        `Retry with stronger motion: ensure at least ${input.requirement.minPhases} distinct movement phases and no static shot longer than ${input.requirement.maxStaticSeconds}s.`
+        `Retry with stronger motion: ensure at least ${requiredMinPhases} distinct movement phases and no static shot longer than ${roundSeconds(input.requirement.maxStaticSeconds + staticTolerance)}s.`
       ].join(' ');
     }
   }
 
-  if (lastMetrics) {
+  const nearMissPhaseSlack = Math.max(0, Number(process.env.MOTION_NEAR_MISS_PHASE_SLACK ?? 1));
+  const nearMissStaticSlack = parseRangeFloat(process.env.MOTION_NEAR_MISS_STATIC_SLACK_SECONDS ?? 0.8, 0.8, 0, 2.5);
+
+  if (lastMetrics && lastVideo) {
+    const nearMissAccepted =
+      lastMetrics.motionPhases >= requiredMinPhases - nearMissPhaseSlack &&
+      lastMetrics.longestStaticSeconds <= roundSeconds(input.requirement.maxStaticSeconds + staticTolerance + nearMissStaticSlack);
+
+    if (nearMissAccepted) {
+      return {
+        video: lastVideo,
+        enforcement: {
+          ...lastMetrics,
+          minPhasesRequired: requiredMinPhases,
+          maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds + staticTolerance),
+          withinThreshold: false,
+          attempts: maxAttempts
+        } as MotionEnforcement
+      };
+    }
+
     throw new ProviderRuntimeError(
-      `MOTION_ENFORCEMENT_FAILED:phases=${lastMetrics.motionPhases}/${input.requirement.minPhases}:longest_static=${lastMetrics.longestStaticSeconds}s>${input.requirement.maxStaticSeconds}s`,
+      `MOTION_ENFORCEMENT_FAILED:phases=${lastMetrics.motionPhases}/${requiredMinPhases}:longest_static=${lastMetrics.longestStaticSeconds}s>${roundSeconds(input.requirement.maxStaticSeconds + staticTolerance)}s`,
       { provider: 'motion', fatal: true }
     );
   }
@@ -1676,8 +1735,8 @@ const createVideoWithMotionEnforcement = async (input: {
         motionPhases: 0,
         longestStaticSeconds: 0
       }),
-      minPhasesRequired: input.requirement.minPhases,
-      maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds),
+      minPhasesRequired: requiredMinPhases,
+      maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds + staticTolerance),
       withinThreshold: false,
       attempts: maxAttempts
     } as MotionEnforcement
@@ -2120,24 +2179,39 @@ export const runVideoStage = async (input: {
           brandProfile: effectiveBrandProfile
         });
 
-  if (!draft.withinTarget) {
+  const maxDurationRepairAttempts = Math.max(1, Math.min(2, Number(process.env.SCRIPT_AUTO_REPAIR_ATTEMPTS ?? 2)));
+  let durationRepairAttempts = 0;
+
+  while (!draft.withinTarget && durationRepairAttempts < maxDurationRepairAttempts) {
+    const previousScript = draft.script;
     const condensedScript = await condenseScriptToTarget(
-      draft.script,
+      previousScript,
       durationConfig.targetSeconds,
       Math.round(durationConfig.targetSeconds * 2.35),
       moodPreset,
       effectiveIntent,
       effectiveBrandProfile
     );
-    const estimatedSeconds = estimateSpeechSeconds(condensedScript);
+
+    durationRepairAttempts += 1;
+    const normalized = finalizeScriptLanguage(condensedScript, effectiveBrandProfile);
+    const estimatedSeconds = estimateSpeechSeconds(normalized);
+
     draft = {
       ...draft,
-      script: ensureSentenceEnding(condensedScript),
+      script: normalized,
       estimatedSeconds,
       withinTarget: estimatedSeconds <= durationConfig.targetSeconds * 1.08,
       condensed: true
     };
+
+    if (normalized.trim() === previousScript.trim()) break;
   }
+
+  draft = {
+    ...draft,
+    script: finalizeScriptLanguage(draft.script, effectiveBrandProfile)
+  };
 
   if (!draft.withinTarget) {
     throw new ProviderRuntimeError(`SCRIPT_DURATION_EXCEEDS_TARGET:${draft.estimatedSeconds}s>${draft.targetSeconds}s`, {
@@ -2149,11 +2223,22 @@ export const runVideoStage = async (input: {
   const llmText = draft.script;
   const storyboardPrompt = renderStoryboardLightPrompt(storyboardLight);
   const brandPrompt = renderBrandProfilePrompt(effectiveBrandProfile);
-  const hookOpening =
+  const initialHookOpening =
     videoPlanV1?.hookOpening?.trim() ||
     storyboardLight?.hookHint?.trim() ||
     llmText.split(/[.!?…]/)[0]?.trim() ||
     `Achtung: ${effectiveTopic}.`;
+
+  const hookAutoRepairAttempts = Math.max(1, Math.min(2, Number(process.env.HOOK_AUTO_REPAIR_ATTEMPTS ?? 2)));
+  let repairedHookOpening = initialHookOpening;
+
+  for (let hookAttempt = 0; hookAttempt < hookAutoRepairAttempts; hookAttempt += 1) {
+    const strongEnough = repairedHookOpening.trim().length >= 14 || effectiveIntent.energyMode === 'calm';
+    if (strongEnough) break;
+    repairedHookOpening = `Achtung: ${effectiveTopic} – in Sekunden siehst du die Lösung.`;
+  }
+
+  const hookOpening = ensureSentenceEnding(repairedHookOpening);
 
   const flowBeatsPrompt = buildFlowBeatsPrompt({
     storyboardLight,
@@ -2224,7 +2309,8 @@ export const runVideoStage = async (input: {
   const motionVideo = await createVideoWithMotionEnforcement({
     prompt: videoCompiled.prompt,
     variantType: input.variantType,
-    requirement: motionRequirement
+    requirement: motionRequirement,
+    calmMode: effectiveIntent.energyMode === 'calm'
   });
 
   const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');

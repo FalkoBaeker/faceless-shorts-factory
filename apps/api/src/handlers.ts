@@ -545,7 +545,13 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
         storyboardLight
       });
 
-  if (!consistency.ok) {
+  const retryableConsistencyReasonSet = new Set(['HOOK_FIRST_SECOND_QUALITY', 'INTENT_SCRIPT_ALIGNMENT_SCORE_MIN']);
+  const consistencyDeferredForAutoRepair =
+    !consistency.ok &&
+    consistency.reasons.length > 0 &&
+    consistency.reasons.every((reason) => retryableConsistencyReasonSet.has(reason));
+
+  if (!consistency.ok && !consistencyDeferredForAutoRepair) {
     throw new Error(`CREATIVE_CONSISTENCY_FAILED:${consistency.reasons.join('|')}`);
   }
 
@@ -684,19 +690,23 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
 
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
-    event: 'CONSISTENCY_CHECK_PASSED',
+    event: consistencyDeferredForAutoRepair ? 'CONSISTENCY_CHECK_DEFERRED' : 'CONSISTENCY_CHECK_PASSED',
     detail: JSON.stringify({
       score: consistency.score,
-      checks: consistency.checks
+      checks: consistency.checks,
+      deferred: consistencyDeferredForAutoRepair,
+      reasons: consistency.reasons
     })
   });
 
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
-    event: 'CONSISTENCY_V2_PASSED',
+    event: consistencyDeferredForAutoRepair ? 'CONSISTENCY_V2_DEFERRED' : 'CONSISTENCY_V2_PASSED',
     detail: JSON.stringify({
       score: consistency.score,
-      checks: consistency.checks
+      checks: consistency.checks,
+      deferred: consistencyDeferredForAutoRepair,
+      reasons: consistency.reasons
     })
   });
 
@@ -867,7 +877,11 @@ export const generateHandler = async (jobId: string, options?: { forceFail?: boo
   }
 
   const consistencyChecked = existing.timeline.some(
-    (event) => event.event === 'CONSISTENCY_CHECK_PASSED' || event.event === 'CONSISTENCY_V2_PASSED'
+    (event) =>
+      event.event === 'CONSISTENCY_CHECK_PASSED' ||
+      event.event === 'CONSISTENCY_V2_PASSED' ||
+      event.event === 'CONSISTENCY_CHECK_DEFERRED' ||
+      event.event === 'CONSISTENCY_V2_DEFERRED'
   );
   if (!consistencyChecked) {
     throw new Error('CREATIVE_CONSISTENCY_REQUIRED');
