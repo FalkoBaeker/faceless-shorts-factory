@@ -946,18 +946,18 @@ const fallbackVideoPlanV1 = (topic: string, userEditedFlowScript?: string): Vide
   return {
     hookOpening: `Achtung: ${topic}.`,
     flowBeats: [
-      { order: 1, beat: `Hook sofort: ${topic}` },
-      { order: 2, beat: 'Problem präzise zeigen' },
-      { order: 3, beat: 'Lösung in klaren Schritten zeigen' },
-      { order: 4, beat: 'Konkreter CTA als Abschluss' }
+      { order: 1, beat: `Hook in Bewegung rund um ${topic}` },
+      { order: 2, beat: 'Konkrete Problemszene im Alltag' },
+      { order: 3, beat: 'Lösungsschritt mit sichtbarer Veränderung' },
+      { order: 4, beat: 'Abschlussbild mit klarem CTA' }
     ],
     script: {
       narration: ensureSentenceEnding(narration),
       scenes: [
-        { order: 1, action: `Hook sofort: ${topic}` },
-        { order: 2, action: 'Problem sichtbar machen' },
-        { order: 3, action: 'Lösung demonstrieren' },
-        { order: 4, action: 'CTA klar aussprechen' }
+        { order: 1, action: `Vertikale Kamerafahrt auf das zentrale Motiv von ${topic}, sofortige Bewegung im Bild.` },
+        { order: 2, action: 'Alltagsszene mit klar erkennbarem Problem, fokussiert auf eine Person im echten Kontext.' },
+        { order: 3, action: 'Sichtbarer Lösungsschritt in Nahaufnahme mit Vorher/Nachher-Effekt im selben Bewegungsfluss.' },
+        { order: 4, action: 'Abschlussshot mit Produkt/Angebot im Zentrum und klarer CTA-Situation im Bild.' }
       ]
     },
     subjectConstraints: ['Subjekt über alle Beats konsistent halten.', 'Markenstil in Sprache und Visuals stabil halten.'],
@@ -988,6 +988,8 @@ const generateVideoPlan = async (input: {
       `Pflicht: hookOpening muss in Sekunde 0-2 funktionieren. 4-6 flowBeats. ` +
       `Pflicht: script.scenes muss konkrete, sichtbare Handlungen enthalten (kein reines Umschreiben der Narration). ` +
       `Pflicht: jede Szene braucht klar unterschiedliche Bildsprache/Shot-Idee, keine Wiederholung desselben Ausschnitts. ` +
+      `Verboten in script.scenes.action: Meta-Formulierungen wie \"Zeige...\", \"Szene X:\" oder abstrakte Platzhalter ohne Shot-Detail. ` +
+      `Jede action muss als konkrete Shot-Beschreibung formuliert sein (Subjekt + sichtbare Bewegung + Kontext). ` +
       `Verboten als Default-Motiv: \"hands at work\", außer es steht explizit im Topic/User-Input. ` +
       `JSON-Schema: {"hookOpening":string,"flowBeats":[{"order":number,"beat":string,"visualHint"?:string,"onScreenTextHint"?:string}],"script":{"narration":string,"scenes":[{"order":number,"action":string,"lines"?:[{"speaker":string,"text":string}],"onScreenText"?:string}]},"subjectConstraints":string[],"promptDirectives":string[]}`,
     max_output_tokens: 1200
@@ -1291,6 +1293,40 @@ export const generateScriptDraft = async (input: {
   };
 };
 
+const sceneActionLooksMeta = (action: string) => {
+  const value = action.trim().toLowerCase();
+  return (
+    /^szene\s*\d+[:.)]?/.test(value) ||
+    /^\s*(zeige|zeigen|zeig|darstellen|präsentiere|visualisiere)\b/.test(value) ||
+    value.includes('konkrete sichtbare handlung')
+  );
+};
+
+const extractActionDetail = (action: string, fallback: string) => {
+  const base = action
+    .replace(/^\s*szene\s*\d+[:.)]?\s*/i, '')
+    .replace(/^\s*(zeige|zeigen|zeig|darstellen|präsentiere|visualisiere)\s+/i, '')
+    .replace(/^\s*(eine\s+)?(konkrete\s+)?(sichtbare\s+)?handlung\s*(zu\s*:?\s*)?/i, '')
+    .replace(/^\s*zu\s*:?\s*/i, '')
+    .trim();
+
+  return (base || fallback).replace(/[.!?…]+$/g, '').trim();
+};
+
+const concreteSceneAction = (input: { topic: string; detail: string; index: number }) => {
+  const detail = input.detail || input.topic;
+  const templates = [
+    `Hook in Bewegung: Vertikale Kamerafahrt auf das zentrale Motiv zu "${input.topic}", schnelle Annäherung und klarer Fokus im 9:16-Bild.`,
+    `Halbtotale im realen Kontext: Eine Person interagiert sichtbar mit dem Angebot; Fokus auf ${detail}.`,
+    `Nahe Detailaufnahme mit Handlung: Hände, Produkt oder Material in Aktion; ${detail} ist klar erkennbar.`,
+    `POV-Übergang mit Tempo: Kamera folgt einem konkreten Schritt vom Problem zur Lösung; ${detail}.`,
+    `Reaktionsshot auf das Ergebnis: sichtbarer Vorher/Nachher-Effekt rund um ${detail}, keine statische Totale.`,
+    `Abschluss mit CTA-Szene: klare Endhandlung im echten Nutzungskontext, zentraler Fokus auf ${detail}.`
+  ];
+
+  return ensureSentenceEnding(templates[input.index % templates.length]);
+};
+
 const fallbackScriptV2FromNarration = (topic: string, narration: string): ScriptV2 => {
   const sentences = narration
     .split(/(?<=[.!?…])\s+/)
@@ -1300,18 +1336,13 @@ const fallbackScriptV2FromNarration = (topic: string, narration: string): Script
 
   const sourceSentences = sentences.length
     ? sentences
-    : [`${topic} sofort sichtbar machen.`, 'Kernnutzen konkret zeigen.', 'Mit klarem CTA abschließen.'];
+    : [`${topic} sofort sichtbar machen.`, 'Kernnutzen konkret machen.', 'Mit klarem CTA abschließen.'];
 
   const scenes = sourceSentences.map((sentence, index) => {
     const cleaned = sentence.replace(/[.!?…]+$/g, '').trim();
-    const action =
-      index === 0
-        ? `Hook-Shot: ${topic} sofort visuell zeigen (${cleaned || 'starker Einstieg'}).`
-        : `Szene ${index + 1}: Zeige eine konkrete sichtbare Handlung zu: ${cleaned || topic}.`;
-
     return {
       order: index + 1,
-      action: ensureSentenceEnding(action)
+      action: concreteSceneAction({ topic, detail: cleaned || topic, index })
     };
   });
 
@@ -1341,19 +1372,30 @@ const buildScriptV2ForDraft = async (input: {
 
     const scenes = plan.script.scenes
       .slice(0, 8)
-      .map((scene, index) => ({
-        order: Number.isFinite(scene.order) ? Math.max(1, Math.floor(scene.order)) : index + 1,
-        action: ensureSentenceEnding(String(scene.action ?? '').trim()),
-        lines: scene.lines?.length
-          ? scene.lines
-              .map((line) => ({
-                speaker: String(line.speaker ?? '').trim().slice(0, 40),
-                text: String(line.text ?? '').trim().slice(0, 180)
-              }))
-              .filter((line) => line.speaker && line.text)
-          : undefined,
-        onScreenText: String(scene.onScreenText ?? '').trim().slice(0, 120) || undefined
-      }))
+      .map((scene, index) => {
+        const rawAction = String(scene.action ?? '').trim();
+        const repairedAction = sceneActionLooksMeta(rawAction)
+          ? concreteSceneAction({
+              topic: input.topic,
+              detail: extractActionDetail(rawAction, input.narration),
+              index
+            })
+          : ensureSentenceEnding(rawAction);
+
+        return {
+          order: Number.isFinite(scene.order) ? Math.max(1, Math.floor(scene.order)) : index + 1,
+          action: repairedAction,
+          lines: scene.lines?.length
+            ? scene.lines
+                .map((line) => ({
+                  speaker: String(line.speaker ?? '').trim().slice(0, 40),
+                  text: String(line.text ?? '').trim().slice(0, 180)
+                }))
+                .filter((line) => line.speaker && line.text)
+            : undefined,
+          onScreenText: String(scene.onScreenText ?? '').trim().slice(0, 120) || undefined
+        };
+      })
       .filter((scene) => scene.action.length >= 8)
       .sort((a, b) => a.order - b.order);
 

@@ -45,25 +45,38 @@ const deriveMoodFromIntent = (intent: CreativeIntentPayload): MoodPreset => {
   return 'commercial_cta';
 };
 
-const fallbackFlowFromScript = (script: string) => {
+const concreteFallbackAction = (input: { topic: string; sentence: string; index: number }) => {
+  const detail = input.sentence.replace(/[.!?…]+$/g, '').trim() || input.topic;
+  const templates = [
+    `Hook in Bewegung: Kamera fährt vertikal auf das Hauptmotiv zu "${input.topic}", sofortiger Fokus im Bildzentrum.`,
+    `Halbtotale im Alltag: Eine Person interagiert sichtbar mit dem Angebot; klar erkennbar: ${detail}.`,
+    `Detailshot mit Dynamik: Nahaufnahme von Produkt/Material in Aktion; ${detail}.`,
+    `POV-Übergang: Kamera folgt einem konkreten Schritt vom Problem zur Lösung; ${detail}.`,
+    `Reaktionsshot: sichtbares Ergebnis im echten Kontext, deutlicher Effekt rund um ${detail}.`
+  ];
+
+  return templates[input.index % templates.length];
+};
+
+const fallbackFlowFromScript = (script: string, topic: string) => {
   const sentences = script
     .split(/(?<=[.!?…])\s+/)
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(0, 5);
 
-  const source = sentences.length ? sentences : ['Hook eröffnen', 'Kernnutzen zeigen', 'CTA Abschluss'];
-  return source.map((sentence, index) => ({ order: index + 1, action: sentence }));
+  const source = sentences.length ? sentences : ['Hook eröffnen', 'Kernnutzen klar machen', 'CTA Abschluss'];
+  return source.map((sentence, index) => ({ order: index + 1, action: concreteFallbackAction({ topic, sentence, index }) }));
 };
 
-const toFlowDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string) => {
+const toFlowDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string, topic: string) => {
   const scenes = scriptV2?.scenes?.length
     ? scriptV2.scenes
         .slice()
         .sort((a, b) => a.order - b.order)
         .map((scene) => ({ order: scene.order, action: String(scene.action ?? '').trim() }))
         .filter((scene) => scene.action.length)
-    : fallbackFlowFromScript(fallbackScript);
+    : fallbackFlowFromScript(fallbackScript, topic);
 
   return scenes.map((scene) => `${scene.order}. ${scene.action}`).join('\n');
 };
@@ -85,7 +98,7 @@ const buildScriptV2FromFlowDraft = (input: {
     })
     .filter((scene): scene is { order: number; action: string } => Boolean(scene));
 
-  const scenes = parsedScenes.length ? parsedScenes : fallbackFlowFromScript(input.narration);
+  const scenes = parsedScenes.length ? parsedScenes : fallbackFlowFromScript(input.narration, input.topic);
 
   return {
     language: input.draft?.language ?? 'de',
@@ -100,14 +113,18 @@ const buildScriptV2FromFlowDraft = (input: {
   };
 };
 
-const buildStoryboardFromScriptV2 = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string): StoryboardLightPayload => {
+const buildStoryboardFromScriptV2 = (
+  scriptV2: ScriptV2Payload | undefined,
+  fallbackScript: string,
+  topic: string
+): StoryboardLightPayload => {
   const scenes = scriptV2?.scenes?.length
     ? scriptV2.scenes
         .slice()
         .sort((a, b) => a.order - b.order)
         .map((scene) => String(scene.action ?? '').trim())
         .filter(Boolean)
-    : fallbackFlowFromScript(fallbackScript).map((scene) => scene.action);
+    : fallbackFlowFromScript(fallbackScript, topic).map((scene) => scene.action);
 
   const beats = scenes.slice(0, 5).map((action, index) => ({
     beatId: `beat_${index + 1}`,
@@ -372,14 +389,14 @@ export function ReviewLiveActions() {
       });
 
       const normalizedScriptV2 = draft.scriptV2 ?? buildScriptV2FromFlowDraft({
-        flowDraft: toFlowDraftText(undefined, draft.script),
+        flowDraft: toFlowDraftText(undefined, draft.script, topic),
         narration: draft.script,
         topic
       });
 
       setScriptDraft(draft.script);
       setScriptV2Draft(normalizedScriptV2);
-      setFlowDraft(toFlowDraftText(normalizedScriptV2, draft.script));
+      setFlowDraft(toFlowDraftText(normalizedScriptV2, draft.script, topic));
       setScriptAccepted(false);
       setScriptMeta({
         targetSeconds: draft.targetSeconds,
@@ -591,7 +608,7 @@ export function ReviewLiveActions() {
           },
           userEditedFlowScript: flowDraft.trim() || undefined
         },
-        storyboardLight: buildStoryboardFromScriptV2(approvedScriptV2, scriptDraft),
+        storyboardLight: buildStoryboardFromScriptV2(approvedScriptV2, scriptDraft, topic),
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
         approvedScript: scriptDraft.trim(),
         approvedScriptV2,
