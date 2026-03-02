@@ -1156,6 +1156,9 @@ const processVideo = async (job: Job<StagePayload>) => {
     if (result.referenceAsset?.objectPath) {
       await setAssetRef(jobId, 'startFrameReferenceObjectPath', result.referenceAsset.objectPath);
     }
+    if (result.strictStep1Prompt?.objectPath) {
+      await setAssetRef(jobId, 'soraPromptStep1ObjectPath', result.strictStep1Prompt.objectPath);
+    }
 
     await insertTimeline(
       jobId,
@@ -1196,6 +1199,18 @@ const processVideo = async (job: Job<StagePayload>) => {
     await insertTimeline(jobId, 'ASSET_VIDEO_STORED', buildAssetDetail('video', result.video));
     if (result.referenceAsset) {
       await insertTimeline(jobId, 'ASSET_STARTFRAME_REFERENCE_STORED', buildAssetDetail('startframe_reference', result.referenceAsset));
+    }
+    if (result.strictStep1Prompt) {
+      await insertTimeline(
+        jobId,
+        'SORA_PROMPT_STEP1_STORED',
+        JSON.stringify({
+          model: result.strictStep1PromptModel,
+          objectPath: result.strictStep1Prompt.objectPath,
+          websiteUrl: result.strictStep1WebsiteUrl,
+          guidelinePath: result.strictStep1GuidelinePath
+        })
+      );
     }
 
     if (result.brandProfile) {

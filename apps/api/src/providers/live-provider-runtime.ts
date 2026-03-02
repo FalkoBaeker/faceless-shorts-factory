@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { extname, join } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadEnvFiles } from '../config/env-loader.ts';
@@ -66,6 +66,8 @@ const rpmWindows: Record<'llm' | 'tts' | 'video', number[]> = {
 };
 
 const dailySpend = new Map<string, number>();
+
+const STRICT_PROMPT_ARCHITECT_MODEL = 'gpt-5-mini';
 
 const cfg = {
   llmProvider: process.env.LLM_PROVIDER ?? 'openai',
@@ -914,6 +916,184 @@ const openAiGetBinary = async (path: string) => {
     throwProviderError('openai', res.status, buffer.toString('utf8'));
   }
   return buffer;
+};
+
+const normalizeWebsiteUrl = (raw: string) => {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+};
+
+const htmlToReadableText = (html: string) =>
+  html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const fetchWebsiteContextTextStrict = async (websiteUrl: string) => {
+  const normalized = normalizeWebsiteUrl(websiteUrl);
+  if (!normalized) {
+    throw new ProviderRuntimeError('STRICT_STEP1_WEBSITE_URL_MISSING', { provider: 'web', fatal: true });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch(normalized, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'user-agent': 'faceless-shorts-factory/strict-step1 (+prompt-architect)'
+      },
+      signal: controller.signal
+    });
+
+    const html = await response.text();
+    if (!response.ok) {
+      throw new ProviderRuntimeError(`STRICT_STEP1_WEBSITE_FETCH_FAILED:${response.status}`, { provider: 'web', fatal: true, status: response.status });
+    }
+
+    const text = htmlToReadableText(html).slice(0, 14000);
+    if (text.length < 120) {
+      throw new ProviderRuntimeError('STRICT_STEP1_WEBSITE_TEXT_TOO_SHORT', { provider: 'web', fatal: true });
+    }
+
+    return { normalizedUrl: normalized, text };
+  } catch (error) {
+    if (error instanceof ProviderRuntimeError) throw error;
+    throw new ProviderRuntimeError(`STRICT_STEP1_WEBSITE_FETCH_ERROR:${String((error as Error)?.message ?? error).slice(0, 180)}`, {
+      provider: 'web',
+      fatal: true
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const resolveSoraGuidelinePathStrict = () => {
+  const explicit = String(process.env.SORA_GUIDELINE_PATH ?? '').trim();
+  const candidates = [
+    explicit || null,
+    resolve(process.cwd(), 'docs', 'SORA_GUIDELINE.md'),
+    resolve(process.cwd(), '..', 'docs', 'SORA_GUIDELINE.md'),
+    resolve(process.cwd(), '..', '..', 'docs', 'SORA_GUIDELINE.md')
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new ProviderRuntimeError('STRICT_STEP1_SORA_GUIDELINE_MISSING', { provider: 'config', fatal: true });
+};
+
+const readSoraGuidelineStrict = () => {
+  const path = resolveSoraGuidelinePathStrict();
+  const content = readFileSync(path, 'utf8').trim();
+  if (content.length < 120) {
+    throw new ProviderRuntimeError('STRICT_STEP1_SORA_GUIDELINE_TOO_SHORT', { provider: 'config', fatal: true });
+  }
+  return { path, content };
+};
+
+const extractWebsiteContextWithStrictLlm = async (input: {
+  topic: string;
+  brandProfile?: BrandProfile;
+  creativeIntent: CreativeIntentMatrix;
+}) => {
+  const websiteUrl = String(input.brandProfile?.websiteUrl ?? '').trim();
+  const fetched = await fetchWebsiteContextTextStrict(websiteUrl);
+
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.006, 'llm-strict-step1-website-context');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: STRICT_PROMPT_ARCHITECT_MODEL,
+    input:
+      'Extrahiere aus Branding + Website-Content einen kompakten Brand-Context für einen Sora-Prompt. ' +
+      'Gib nur klaren Fließtext zurück (max 1200 Zeichen), keine Bulletpoints, kein JSON. ' +
+      `Topic: ${input.topic}. ` +
+      `Creative intent: ${JSON.stringify(input.creativeIntent)}. ` +
+      `Branding JSON: ${JSON.stringify(input.brandProfile ?? {})}. ` +
+      `Website URL: ${fetched.normalizedUrl}. ` +
+      `Website text excerpt: ${fetched.text}`,
+    max_output_tokens: 700
+  });
+
+  const contextText = parseOpenAiResponseText(response).trim();
+  if (!contextText) {
+    throw new ProviderRuntimeError('STRICT_STEP1_WEBSITE_CONTEXT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
+  return {
+    websiteUrl: fetched.normalizedUrl,
+    websiteContext: contextText
+  };
+};
+
+const generateStrictStep1SoraPrompt = async (input: {
+  topic: string;
+  brandProfile?: BrandProfile;
+  creativeIntent: CreativeIntentMatrix;
+  moodPreset: MoodPreset;
+  startFrameImageUrl: string;
+  startFrameHint?: string;
+}) => {
+  if (!input.startFrameImageUrl) {
+    throw new ProviderRuntimeError('STRICT_STEP1_STARTFRAME_IMAGE_MISSING', { provider: 'openai', fatal: true });
+  }
+
+  const guideline = readSoraGuidelineStrict();
+  const websiteBundle = await extractWebsiteContextWithStrictLlm({
+    topic: input.topic,
+    brandProfile: input.brandProfile,
+    creativeIntent: input.creativeIntent
+  });
+
+  const humorIntent = input.creativeIntent.effects.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
+  const promptText =
+    `Nehme das Startbild (${input.startFrameImageUrl}) und nehme den Branding-Content und die weiteren Inputs und erstelle einen Sora-Prompt, indem du den Sora-Guideline zu Hilfe nimmst. ` +
+    `Und erstelle ein virales TikTok-Video zum Thema ${input.topic}. ` +
+    `Inputs: Energy Level=${input.creativeIntent.energyMode}, User Intent=${humorIntent}, MoodPreset=${input.moodPreset}, ` +
+    `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
+    `Sora Guideline: ${guideline.content}. ` +
+    `Gib nur den finalen Sora-Prompt als reinen Text aus.`;
+
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.012, 'llm-strict-step1-sora-prompt');
+
+  const response = await openAiPostJson('/v1/responses', {
+    model: STRICT_PROMPT_ARCHITECT_MODEL,
+    input: [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: promptText },
+          { type: 'input_image', image_url: input.startFrameImageUrl }
+        ]
+      }
+    ],
+    max_output_tokens: 2400
+  });
+
+  const soraPrompt = parseOpenAiResponseText(response).trim();
+  if (!soraPrompt) {
+    throw new ProviderRuntimeError('STRICT_STEP1_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+  }
+
+  return {
+    soraPrompt,
+    model: STRICT_PROMPT_ARCHITECT_MODEL,
+    websiteUrl: websiteBundle.websiteUrl,
+    websiteContext: websiteBundle.websiteContext,
+    guidelinePath: guideline.path
+  };
 };
 
 const supabaseHeaders = (contentType?: string) => {
@@ -3051,6 +3231,23 @@ export const runVideoStage = async (input: {
   const imageAsset = await uploadAsset(input.jobId, `jobs/${input.jobId}/assets/keyframe.png`, imageResult.bytes, 'image/png', 'openai-image');
   const startFrameImageUrlForArchitect = referenceAsset?.signedUrl ?? imageAsset.signedUrl;
 
+  const strictStep1Prompt = await generateStrictStep1SoraPrompt({
+    topic: effectiveTopic,
+    brandProfile: effectiveBrandProfile,
+    creativeIntent: effectiveIntent,
+    moodPreset,
+    startFrameImageUrl: startFrameImageUrlForArchitect,
+    startFrameHint: input.generationPayload?.startFrame?.summary ?? startFrameDirective
+  });
+
+  const strictStep1PromptAsset = await uploadAsset(
+    input.jobId,
+    `jobs/${input.jobId}/assets/sora-prompt-step1.txt`,
+    Buffer.from(strictStep1Prompt.soraPrompt, 'utf8'),
+    'text/plain',
+    'openai-llm'
+  );
+
   const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
   const promptBlueprint = await (async (): Promise<SoraPromptBlueprint> => {
     try {
@@ -3240,6 +3437,11 @@ export const runVideoStage = async (input: {
     videoPlanV1,
     videoPlanSource,
     videoPlanReconciled,
+    strictStep1Prompt: strictStep1PromptAsset,
+    strictStep1PromptModel: strictStep1Prompt.model,
+    strictStep1WebsiteUrl: strictStep1Prompt.websiteUrl,
+    strictStep1WebsiteContext: strictStep1Prompt.websiteContext,
+    strictStep1GuidelinePath: strictStep1Prompt.guidelinePath,
 
     userControls: legacyUserControlsProvided ? legacyUserControls : undefined,
     promptCompiler: videoCompiled.meta,
