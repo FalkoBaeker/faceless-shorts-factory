@@ -2793,10 +2793,52 @@ const extensionForMime = (mimeType: string) => {
 };
 
 const thumbnailCache = new Map<string, StoredAsset>();
-const simulatedStartframeThumbnailPng = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i9xQAAAAASUVORK5CYII=',
-  'base64'
-);
+
+const clampColor = (value: number) => Math.max(28, Math.min(230, value));
+
+const hexByte = (value: number) => clampColor(value).toString(16).padStart(2, '0');
+
+const deriveSimulatedThumbColors = (seed: string) => {
+  const normalized = seed.replace(/[^a-f0-9]/gi, '').toLowerCase().padEnd(12, '7').slice(0, 12);
+  const bg = {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16)
+  };
+  const accent = {
+    r: parseInt(normalized.slice(6, 8), 16),
+    g: parseInt(normalized.slice(8, 10), 16),
+    b: parseInt(normalized.slice(10, 12), 16)
+  };
+  const bgHex = `${hexByte(bg.r)}${hexByte(bg.g)}${hexByte(bg.b)}`;
+  const accentHex = `${hexByte(accent.r)}${hexByte(accent.g)}${hexByte(accent.b)}`;
+  return { bgHex, accentHex };
+};
+
+const createSimulatedStartframeThumbnailBytes = (seed: string) => {
+  const { bgHex, accentHex } = deriveSimulatedThumbColors(seed);
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-sim-thumb-'));
+  const outputPath = join(dir, 'thumb.png');
+
+  try {
+    const filter = [
+      `color=c=0x${bgHex}:s=720x1280:d=1`,
+      `drawbox=x=24:y=24:w=672:h=1232:color=0x${accentHex}@0.28:t=3`,
+      `drawbox=x=72:y=84:w=576:h=300:color=0x${accentHex}@0.36:t=fill`,
+      `drawbox=x=108:y=460:w=504:h=190:color=white@0.20:t=fill`,
+      `drawbox=x=132:y=720:w=456:h=420:color=0x${accentHex}@0.24:t=fill`
+    ].join(',');
+
+    const run = spawnSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', filter, '-frames:v', '1', outputPath], { encoding: 'utf8' });
+    if (run.status !== 0) {
+      const stderr = String(run.stderr ?? '').split(/\r?\n/).filter(Boolean).slice(-6).join(' | ').slice(0, 500);
+      throw new ProviderRuntimeError(`SIM_THUMBNAIL_FFMPEG_FAILED:${stderr || 'unknown'}`, { provider: 'ffmpeg', fatal: true });
+    }
+    return readFileSync(outputPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
 
 const buildStartFrameThumbnailSignature = (input: {
   candidateId: string;
@@ -2810,6 +2852,7 @@ const buildStartFrameThumbnailSignature = (input: {
   brandProfile?: BrandProfile;
   contextSignature?: string;
 }) => {
+  const modeSignature = simulationProviderFallbackEnabled() ? 'simulated' : `real:${cfg.openaiImageModel}`;
   const brandSignature = JSON.stringify({
     companyName: input.brandProfile?.companyName ?? '',
     websiteUrl: input.brandProfile?.websiteUrl ?? '',
@@ -2827,6 +2870,7 @@ const buildStartFrameThumbnailSignature = (input: {
     .trim()
     .toLowerCase();
   const canonical = [
+    modeSignature,
     input.candidateId.trim().toLowerCase(),
     input.topic.trim().toLowerCase(),
     input.style,
@@ -2907,7 +2951,7 @@ export const generateStartFrameThumbnail = async (input: {
       const simulatedAsset = await uploadAsset(
         'catalog-startframe',
         objectPath,
-        simulatedStartframeThumbnailPng,
+        createSimulatedStartframeThumbnailBytes(promptSignature),
         'image/png',
         'simulated-image-thumbnail'
       );
