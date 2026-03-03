@@ -605,6 +605,7 @@ export const buildApiServer = () =>
           startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || undefined,
           startFrameCustomPrompt: String(body.startFrameCustomPrompt ?? '').trim() || undefined,
           startFrameReferenceHint: String(body.startFrameReferenceHint ?? '').trim() || undefined,
+          startFrameImageUrl: String(body.startFrameImageUrl ?? '').trim() || undefined,
           startFrameUploadObjectPath: String(body.startFrameUploadObjectPath ?? '').trim() || undefined,
           startFrameSummary: String(body.startFrameSummary ?? '').trim() || undefined
         });
@@ -655,9 +656,11 @@ export const buildApiServer = () =>
         const body = await readJsonBody(req);
         const candidates = await createStartFrameCandidatesHandler({
           topic: String(body.topic ?? ''),
+          organizationId: String(body.organizationId ?? '').trim() || undefined,
           conceptId: String(body.conceptId ?? '').trim() || undefined,
           moodPreset: parseMoodPreset(body.moodPreset),
           creativeIntent: parseCreativeIntent(body.creativeIntent),
+          brandProfile: parseBrandProfile(body.brandProfile),
           limit: Number(body.limit ?? 3)
         });
         return sendJson(res, 200, candidates);

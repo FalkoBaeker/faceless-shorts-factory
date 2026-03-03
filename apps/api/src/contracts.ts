@@ -202,6 +202,7 @@ export type ScriptDraftRequest = {
   startFrameCandidateId?: string;
   startFrameCustomPrompt?: string;
   startFrameReferenceHint?: string;
+  startFrameImageUrl?: string;
   startFrameUploadObjectPath?: string;
   startFrameSummary?: string;
 };
@@ -232,9 +233,11 @@ export type StartFrameUploadResponse = {
 
 export type StartFrameCandidatesRequest = {
   topic: string;
+  organizationId?: string;
   conceptId?: string;
   moodPreset?: MoodPreset;
   creativeIntent?: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
   limit?: number;
 };
 
@@ -246,6 +249,7 @@ export type StartFrameCandidatesResponse = {
     description: string;
     prompt: string;
     thumbnailUrl: string;
+    thumbnailObjectPath?: string;
   }>;
 };
 

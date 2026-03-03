@@ -469,8 +469,12 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   const customPrompt = String(payload.startFrameCustomPrompt ?? generationPayload?.startFrame?.customPrompt ?? '').trim();
   const customLabel = String(payload.startFrameCustomLabel ?? '').trim() || 'Eigenes Referenzbild';
   const customReferenceHint = String(payload.startFrameReferenceHint ?? generationPayload?.startFrame?.referenceHint ?? '').trim();
+  const selectedCandidateId = String(payload.startFrameCandidateId ?? generationPayload?.startFrame?.candidateId ?? '').trim() || undefined;
   const uploadObjectPath = String(payload.startFrameUploadObjectPath ?? generationPayload?.startFrame?.uploadObjectPath ?? '').trim();
-  const hasUploadedReference = uploadObjectPath.length > 0;
+  const hasReferenceObjectPath = uploadObjectPath.length > 0;
+  const hasCandidateBackedReference = hasReferenceObjectPath && Boolean(selectedCandidateId) && customPrompt.length === 0;
+  const hasUploadedReference = hasReferenceObjectPath && !hasCandidateBackedReference;
+  const referenceObjectPath = hasReferenceObjectPath ? uploadObjectPath : undefined;
   const startFrameMode = hasUploadedReference ? 'uploaded_asset' : customPrompt.length > 0 ? 'uploaded_reference' : 'generated_candidate';
   const effectiveStartFrameSource = hasUploadedReference || customPrompt.length > 0 ? 'uploaded_asset' : 'generated_candidate';
 
@@ -491,7 +495,8 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
           conceptId,
           moodPreset,
           creativeIntent,
-          startFrameCandidateId: payload.startFrameCandidateId ?? generationPayload?.startFrame?.candidateId,
+          brandProfile: brandProfile ?? undefined,
+          startFrameCandidateId: selectedCandidateId,
           startFrameStyle: payload.startFrameStyle ?? generationPayload?.startFrame?.style
         });
 
@@ -601,7 +606,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       effectiveStartFrameSource,
       precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE',
       startFrameReferenceHint: customReferenceHint || undefined,
-      startFrameReferenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined,
+      startFrameReferenceObjectPath: referenceObjectPath,
       startFramePolicy: {
         decision: startFramePolicy.decision,
         reasonCode: startFramePolicy.reasonCode,
@@ -760,7 +765,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       precedenceRuleApplied: 'UPLOAD_WINS_OVER_CANDIDATE',
       policyDecision: startFramePolicy.decision,
       policyReasonCode: startFramePolicy.reasonCode,
-      referenceObjectPath: hasUploadedReference ? uploadObjectPath : undefined
+      referenceObjectPath
     })
   });
 
@@ -812,6 +817,7 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
       payload.startFrameCandidateId ??
       payload.startFrameStyle ??
       undefined,
+    startFrameImageUrl: payload.startFrameImageUrl,
     startFrameReferenceObjectPath: payload.startFrameUploadObjectPath
   });
 
@@ -834,12 +840,16 @@ export const createStartFrameCandidatesHandler = async (
   const fallbackMoodPreset = payload.moodPreset ?? 'commercial_cta';
   const moodPreset = deriveLegacyMoodPresetFromIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId ?? 'concept_web_vertical_slice');
   const creativeIntent = normalizeCreativeIntent(payload.creativeIntent, fallbackMoodPreset, payload.conceptId ?? 'concept_web_vertical_slice');
+  const organizationId = String(payload.organizationId ?? '').trim();
+  const persistedBrandProfile = organizationId ? mapBrandProfileForApi(getBrandProfile(organizationId)) : null;
+  const brandProfile = payload.brandProfile ?? persistedBrandProfile ?? undefined;
 
   const baseCandidates = buildStartFrameCandidates({
     topic,
     conceptId: payload.conceptId,
     moodPreset,
     creativeIntent,
+    brandProfile,
     limit: payload.limit
   });
   const contextSignature = createHash('sha1')
@@ -847,7 +857,8 @@ export const createStartFrameCandidatesHandler = async (
       JSON.stringify({
         conceptId: payload.conceptId ?? 'concept_web_vertical_slice',
         moodPreset,
-        creativeIntent
+        creativeIntent,
+        brandProfile
       })
     )
     .digest('hex')
@@ -861,14 +872,18 @@ export const createStartFrameCandidatesHandler = async (
         style: candidate.style,
         label: candidate.label,
         description: candidate.description,
+        prompt: candidate.prompt,
         moodPreset,
+        creativeIntent,
+        brandProfile,
         contextSignature
       });
 
       if (!generated?.signedUrl) return candidate;
       return {
         ...candidate,
-        thumbnailUrl: generated.signedUrl
+        thumbnailUrl: generated.signedUrl,
+        thumbnailObjectPath: generated.objectPath
       };
     })
   );

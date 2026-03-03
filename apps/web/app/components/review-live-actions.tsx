@@ -308,6 +308,7 @@ export function ReviewLiveActions() {
         candidateId: undefined,
         customPrompt: `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) als Startbild verwenden; falls Kontext abweicht nur als 0-2s Opening-Anchor nutzen und dann auf Topic-Motiv schwenken.`,
         referenceHint: uploadedStartFrame.fileName,
+        imageUrl: uploadedStartFrame.signedUrl,
         uploadObjectPath: uploadedStartFrame.objectPath,
         summary: `Upload: ${uploadedStartFrame.fileName}`
       };
@@ -319,7 +320,8 @@ export function ReviewLiveActions() {
         candidateId: selectedStartFrameCandidate.candidateId,
         customPrompt: undefined,
         referenceHint: selectedStartFrameCandidate.label,
-        uploadObjectPath: undefined,
+        imageUrl: selectedStartFrameCandidate.thumbnailUrl,
+        uploadObjectPath: selectedStartFrameCandidate.thumbnailObjectPath,
         summary: `Kandidat: ${selectedStartFrameCandidate.label} — ${selectedStartFrameCandidate.description}`
       };
     }
@@ -449,6 +451,7 @@ export function ReviewLiveActions() {
         startFrameCandidateId: activeStartframeSummary.candidateId,
         startFrameCustomPrompt: activeStartframeSummary.customPrompt,
         startFrameReferenceHint: activeStartframeSummary.referenceHint,
+        startFrameImageUrl: activeStartframeSummary.imageUrl,
         startFrameUploadObjectPath: activeStartframeSummary.uploadObjectPath,
         startFrameSummary: activeStartframeSummary.summary
       });
@@ -503,9 +506,11 @@ export function ReviewLiveActions() {
     try {
       const response = await createStartFrameCandidates(token, {
         topic,
+        organizationId,
         conceptId,
         moodPreset,
         creativeIntent,
+        brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
         limit: 3
       });
 
@@ -602,6 +607,8 @@ export function ReviewLiveActions() {
       const customPrompt = uploadedStartFrame
         ? `Nutzer-Referenzbild (${uploadedStartFrame.fileName}) ist hochgeladen: ${uploadedStartFrame.objectPath}. Nutze es als Opening-Anchor (0-2s); danach auf Topic-/Intent-konforme Szene überblenden, falls Kontext abweicht.`
         : undefined;
+      const startFrameReferenceObjectPath = uploadedStartFrame?.objectPath ?? selectedStartFrameCandidate?.thumbnailObjectPath;
+      const startFrameReferenceHint = uploadedStartFrame?.fileName ?? selectedStartFrameCandidate?.label;
 
       const fallbackStyle = 'storefront_hero' as const;
       const approvedScriptV2 = buildScriptV2FromFlowDraft({
@@ -658,8 +665,8 @@ export function ReviewLiveActions() {
             style: selectedStartFrameCandidate?.style ?? fallbackStyle,
             candidateId: selectedStartFrameCandidate?.candidateId,
             customPrompt,
-            uploadObjectPath: uploadedStartFrame?.objectPath,
-            referenceHint: uploadedStartFrame?.fileName,
+            uploadObjectPath: startFrameReferenceObjectPath,
+            referenceHint: startFrameReferenceHint,
             summary: uploadedStartFrame
               ? `Upload: ${uploadedStartFrame.fileName}`
               : selectedStartFrameCandidate
@@ -676,8 +683,8 @@ export function ReviewLiveActions() {
         startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
         startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
         startFrameCustomPrompt: customPrompt,
-        startFrameReferenceHint: uploadedStartFrame?.fileName,
-        startFrameUploadObjectPath: uploadedStartFrame?.objectPath,
+        startFrameReferenceHint: startFrameReferenceHint,
+        startFrameUploadObjectPath: startFrameReferenceObjectPath,
         audioMode: 'voiceover'
       });
 

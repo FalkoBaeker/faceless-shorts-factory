@@ -77,6 +77,7 @@ export type StartFrameCandidatePayload = {
   description: string;
   prompt: string;
   thumbnailUrl: string;
+  thumbnailObjectPath?: string;
 };
 
 export type StartFrameCandidatesPayload = {
@@ -377,6 +378,7 @@ export const createScriptDraft = (
     startFrameCandidateId?: string;
     startFrameCustomPrompt?: string;
     startFrameReferenceHint?: string;
+    startFrameImageUrl?: string;
     startFrameUploadObjectPath?: string;
     startFrameSummary?: string;
   }
@@ -406,9 +408,11 @@ export const createStartFrameCandidates = (
   token: string,
   payload: {
     topic: string;
+    organizationId?: string;
     conceptId: string;
     moodPreset: MoodPreset;
     creativeIntent?: CreativeIntentPayload;
+    brandProfile?: BrandProfilePayload;
     limit?: number;
   }
 ) =>

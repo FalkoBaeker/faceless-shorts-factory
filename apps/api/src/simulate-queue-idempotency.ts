@@ -1,12 +1,29 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startApiServer } from './server.ts';
+import { closeQueueRuntime } from './orchestration/queue-runtime.ts';
 
-const waitForStatus = async (base: string, jobId: string, expected: string, timeoutMs = 20_000) => {
+if (!process.env.SIM_PROVIDER_FALLBACK) process.env.SIM_PROVIDER_FALLBACK = 'true';
+
+const resolveWaitTimeoutMs = () => {
+  const simTimeoutMs = Number(process.env.SIM_WAIT_TIMEOUT_MS ?? 0);
+  if (Number.isFinite(simTimeoutMs) && simTimeoutMs > 0) return Math.floor(simTimeoutMs);
+  const e2eTimeoutMs = Number(process.env.E2E_JOB_TIMEOUT_MS ?? 0);
+  const videoStageTimeoutMs = Number(process.env.VIDEO_STAGE_TIMEOUT_MS ?? 0);
+  const stageWithHeadroomMs = Number.isFinite(videoStageTimeoutMs) && videoStageTimeoutMs > 0 ? videoStageTimeoutMs + 120_000 : 0;
+  const e2eFallbackMs = Number.isFinite(e2eTimeoutMs) && e2eTimeoutMs > 0 ? Math.floor(e2eTimeoutMs) : 0;
+  return Math.max(600_000, e2eFallbackMs, stageWithHeadroomMs);
+};
+
+const waitForStatus = async (base: string, jobId: string, expected: string, timeoutMs = resolveWaitTimeoutMs()) => {
+  const terminalStatuses = new Set(['READY', 'FAILED', 'PUBLISHED']);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const res = await fetch(`${base}/v1/jobs/${jobId}`);
     const job = await res.json();
     if (job.status === expected) return job;
+    if (terminalStatuses.has(String(job.status))) {
+      throw new Error(`JOB_TERMINAL_STATUS_UNEXPECTED:${jobId}:${expected}:${String(job.status)}`);
+    }
     await sleep(200);
   }
   throw new Error(`JOB_TIMEOUT:${jobId}:${expected}`);
@@ -73,7 +90,13 @@ const run = async () => {
     );
   } finally {
     server.close();
+    void closeQueueRuntime();
   }
 };
 
-run();
+run()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

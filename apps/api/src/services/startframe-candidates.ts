@@ -5,6 +5,18 @@ type MoodPreset = 'commercial_cta' | 'problem_solution' | 'testimonial' | 'humor
 type CreativeIntent = {
   effectGoals?: Array<{ id?: string; weight?: number }>;
   narrativeFormats?: Array<{ id?: string; weight?: number }>;
+  energyMode?: 'auto' | 'high' | 'calm';
+};
+
+type BrandProfile = {
+  companyName: string;
+  websiteUrl?: string;
+  brandTone?: string;
+  audienceHint?: string;
+  valueProposition?: string;
+  ctaStyle?: 'soft' | 'balanced' | 'strong';
+  primaryColorHex?: string;
+  secondaryColorHex?: string;
 };
 
 type StartFrameStyle =
@@ -21,6 +33,7 @@ export type StartFrameCandidate = {
   description: string;
   prompt: string;
   thumbnailUrl: string;
+  thumbnailObjectPath?: string;
 };
 
 const styleCatalog: Record<
@@ -99,6 +112,45 @@ const makeCandidateId = (input: { topic: string; conceptId?: string; moodPreset:
   return `sfc_${input.style}_${hash}`;
 };
 
+const compact = (value: unknown, max = 220) => String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
+
+const buildBrandFocusText = (brandProfile?: BrandProfile) => {
+  if (!brandProfile?.companyName?.trim()) return '';
+  const parts = [
+    `Marke: ${compact(brandProfile.companyName, 80)}.`,
+    brandProfile.brandTone ? `Ton: ${compact(brandProfile.brandTone, 90)}.` : '',
+    brandProfile.valueProposition ? `Nutzenversprechen: ${compact(brandProfile.valueProposition, 140)}.` : '',
+    brandProfile.audienceHint ? `Zielgruppe: ${compact(brandProfile.audienceHint, 120)}.` : ''
+  ].filter(Boolean);
+  return parts.join(' ');
+};
+
+const buildIntentFocusText = (creativeIntent?: CreativeIntent) => {
+  if (!creativeIntent) return '';
+  const effectGoals = (creativeIntent.effectGoals ?? [])
+    .map((entry) => compact(entry.id, 40))
+    .filter(Boolean)
+    .slice(0, 6);
+  const narrativeFormats = (creativeIntent.narrativeFormats ?? [])
+    .map((entry) => compact(entry.id, 40))
+    .filter(Boolean)
+    .slice(0, 4);
+  const energyMode = compact(creativeIntent.energyMode ?? '', 12);
+  const parts = [
+    effectGoals.length ? `Wirkziel: ${effectGoals.join(', ')}.` : '',
+    narrativeFormats.length ? `Narrativ: ${narrativeFormats.join(', ')}.` : '',
+    energyMode ? `Energy: ${energyMode}.` : ''
+  ].filter(Boolean);
+  return parts.join(' ');
+};
+
+const buildEntityLockRule = (topic: string) =>
+  [
+    `Topic-Lock (verbindlich): "${compact(topic, 240)}".`,
+    'Wenn das Topic eine konkrete Unterkategorie nennt (z. B. Rasse, Produkttyp, Modell, Material), muss genau diese Unterkategorie gezeigt werden.',
+    'Keine Ersetzung durch generische oder benachbarte Kategorien.'
+  ].join(' ');
+
 const rankStyles = (input: { topic: string; conceptId?: string; moodPreset: MoodPreset; creativeIntent?: CreativeIntent }) => {
   const base = [...moodToStylePriority[input.moodPreset]];
   const conceptKey = String(input.conceptId ?? '').toLowerCase();
@@ -169,6 +221,7 @@ export const buildStartFrameCandidates = (input: {
   conceptId?: string;
   moodPreset?: string;
   creativeIntent?: CreativeIntent;
+  brandProfile?: BrandProfile;
   limit?: number;
 }): StartFrameCandidate[] => {
   const topic = String(input.topic ?? '').trim();
@@ -185,12 +238,32 @@ export const buildStartFrameCandidates = (input: {
 
   return styles.map((style) => {
     const entry = styleCatalog[style];
+    const brandFocus = buildBrandFocusText(input.brandProfile);
+    const intentFocus = buildIntentFocusText(input.creativeIntent);
+    const entityLockRule = buildEntityLockRule(topic);
+    const description = [
+      entry.description,
+      `Fokus: ${compact(topic, 120)}.`,
+      input.brandProfile?.companyName ? `Marke: ${compact(input.brandProfile.companyName, 80)}.` : ''
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const prompt = [
+      entry.prompt,
+      `Topic-Fokus: ${compact(topic, 240)}.`,
+      brandFocus,
+      intentFocus,
+      entityLockRule
+    ]
+      .filter(Boolean)
+      .join(' ');
+
     return {
       candidateId: makeCandidateId({ topic, conceptId: input.conceptId, moodPreset, style }),
       style,
       label: entry.label,
-      description: entry.description,
-      prompt: entry.prompt,
+      description: compact(description, 360),
+      prompt: compact(prompt, 1200),
       thumbnailUrl: buildThumbnail({ style, label: entry.label, topic })
     };
   });
@@ -201,6 +274,7 @@ export const resolveSelectedStartFrame = (input: {
   conceptId?: string;
   moodPreset?: string;
   creativeIntent?: CreativeIntent;
+  brandProfile?: BrandProfile;
   startFrameCandidateId?: string;
   startFrameStyle?: string;
 }) => {
@@ -209,6 +283,7 @@ export const resolveSelectedStartFrame = (input: {
     conceptId: input.conceptId,
     moodPreset: input.moodPreset,
     creativeIntent: input.creativeIntent,
+    brandProfile: input.brandProfile,
     limit: 5
   });
 

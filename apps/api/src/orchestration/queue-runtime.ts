@@ -1562,17 +1562,56 @@ export const closeQueueRuntime = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
 
+  const withTimeout = async (label: string, task: Promise<unknown>, timeoutMs = 8_000) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        task,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            logEvent({
+              event: 'queue_runtime_close_timeout',
+              level: 'WARN',
+              detail: label
+            });
+            resolve();
+          }, timeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   try {
-    await Promise.all(workers.map((worker) => worker.close(true).catch(() => undefined)));
-    await Promise.all(queueEvents.map((events) => events.close().catch(() => undefined)));
-    await Promise.all(
-      [videoQueue.close(), audioQueue.close(), assemblyQueue.close(), publishQueue.close(), deadLetterQueue.close()].map((p) =>
-        p.catch(() => undefined)
-      )
-    );
-    await Promise.all(workerConnections.map((connection) => connection.quit().catch(() => undefined)));
-    await redis.quit().catch(() => undefined);
+    await Promise.all(workers.map((worker) => withTimeout(`worker:${worker.name}`, worker.close(true).catch(() => undefined))));
+    await Promise.all(queueEvents.map((events) => withTimeout(`queue_events`, events.close().catch(() => undefined))));
+    await Promise.all([
+      withTimeout('video_queue', videoQueue.close().catch(() => undefined)),
+      withTimeout('audio_queue', audioQueue.close().catch(() => undefined)),
+      withTimeout('assembly_queue', assemblyQueue.close().catch(() => undefined)),
+      withTimeout('publish_queue', publishQueue.close().catch(() => undefined)),
+      withTimeout('deadletter_queue', deadLetterQueue.close().catch(() => undefined))
+    ]);
+    await Promise.all(workerConnections.map((connection) => withTimeout('worker_connection', connection.quit().catch(() => undefined))));
+    await withTimeout('redis', redis.quit().catch(() => undefined));
+    for (const queue of [videoQueue, audioQueue, assemblyQueue, publishQueue, deadLetterQueue]) {
+      (queue as unknown as { disconnect?: () => void }).disconnect?.();
+    }
+    for (const events of queueEvents) {
+      (events as unknown as { disconnect?: () => void }).disconnect?.();
+    }
+    for (const worker of workers) {
+      (worker as unknown as { disconnect?: () => void }).disconnect?.();
+    }
+    for (const connection of workerConnections) {
+      connection.disconnect();
+    }
+    redis.disconnect();
   } finally {
+    workers.length = 0;
+    queueEvents.length = 0;
+    workerConnections.length = 0;
     initialized = false;
     shuttingDown = false;
   }
