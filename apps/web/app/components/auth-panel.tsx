@@ -100,8 +100,10 @@ export function AuthPanel() {
 
     try {
       const supabase = getSupabaseBrowserClient();
-      const origin = typeof window !== 'undefined' ? window.location.origin : '';
-      const redirectTo = `${origin}/auth/callback`;
+      const configuredSiteUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? '').trim();
+      const baseUrl = configuredSiteUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+      const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+      const redirectTo = `${normalizedBaseUrl}/auth/callback`;
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { redirectTo }

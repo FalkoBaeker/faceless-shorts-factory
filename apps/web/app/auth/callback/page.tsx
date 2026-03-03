@@ -34,7 +34,14 @@ export default function AuthCallbackPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          setMessage(`OAuth callback fehlgeschlagen: ${String((error as Error)?.message ?? error)}`);
+          const detail = String((error as Error)?.message ?? error);
+          if (detail.includes('PKCE code verifier not found')) {
+            setMessage(
+              'OAuth callback fehlgeschlagen: PKCE verifier fehlt. Bitte Login erneut starten und dabei auf demselben Host bleiben (z. B. nur localhost:3000, nicht zwischen localhost und 127.0.0.1 wechseln), denselben Tab verwenden und keine Storage/Cookies löschen.'
+            );
+          } else {
+            setMessage(`OAuth callback fehlgeschlagen: ${detail}`);
+          }
         }
       }
     };
