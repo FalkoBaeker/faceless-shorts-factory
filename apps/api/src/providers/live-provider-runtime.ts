@@ -1414,6 +1414,7 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
     'Jeder Szenenblock muss eine konkrete Kamerabewegung enthalten (z. B. Schwenk, Zoom, Push-in, Schnitt auf, POV-Wechsel) und eine sichtbare Handlung. ' +
     'Szene 1 muss direkt das Startframe-Motiv als Hook aufgreifen und die visuelle Kontinuität sichern. ' +
     'Wenn im Motiv eine Person sichtbar ist, muss die Person konsistent weitergeführt werden (keine Motivwechsel ohne Begründung). ' +
+    'Niemals "(kein VO)" schreiben. Jede Szene muss eine konkrete Zeile in "Dialog/Voiceover:" enthalten. ' +
     'Keine generischen Aussagen wie "zeige etwas zum Thema", sondern präzise visuelle Beats. ' +
     'Dialog/Voiceover soll kurz, natürlich und TikTok-tauglich sein. ' +
     `Sora-Prompt: ${input.soraPrompt}. ` +
@@ -1435,8 +1436,20 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
 };
 
 const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
-  const blockCandidates = script
-    .split(/\n\s*\n+/)
+  const normalizedScript = script
+    .replace(/\r/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/^[\t ]*[*-]\s*/gm, '')
+    .replace(/\s+(?=(?:\d+[.)]\s*)?(?:szene|scene|shot)\s*\d+\s*[:.)-]?)/gi, '\n\n')
+    .replace(/\s+(?=(?:kamera|bild\/aktion|dialog\/voiceover|dialog|voiceover)\s*:)/gi, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const sceneByHeader = normalizedScript.match(
+    /(?:^|\n)(?:\d+[.)]\s*)?(?:szene|scene|shot)\s*\d+[\s\S]*?(?=(?:\n(?:\d+[.)]\s*)?(?:szene|scene|shot)\s*\d+)|$)/gi
+  );
+
+  const blockCandidates = (sceneByHeader?.length ? sceneByHeader : normalizedScript.split(/\n\s*\n+/))
     .map((block) => block.trim())
     .filter(Boolean);
 
@@ -1460,10 +1473,12 @@ const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
           continue;
         }
 
-        const dialogMatch = line.match(/^(?:dialog(?:ue)?|voiceover|sprecher)\s*[:\-]\s*(.*)$/i);
+        const dialogMatch = line.match(/^(?:dialog(?:ue)?(?:\/voiceover)?|voiceover|sprecher)\s*[:\-]\s*(.*)$/i);
         if (dialogMatch) {
           const text = dialogMatch[1]?.trim();
-          if (text) dialogLines.push({ speaker: 'Voice', text: ensureSentenceEnding(text.replace(/^"+|"+$/g, '')) });
+          if (text && !/^\(?kein\s*vo\)?$/i.test(text)) {
+            dialogLines.push({ speaker: 'Voice', text: ensureSentenceEnding(text.replace(/^"+|"+$/g, '')) });
+          }
           continue;
         }
 
@@ -1476,7 +1491,9 @@ const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
       return {
         order: index + 1,
         action,
-        lines: dialogLines.length ? dialogLines : undefined,
+        lines: dialogLines.length
+          ? dialogLines
+          : [{ speaker: 'Voice', text: 'Wir zeigen jetzt den nächsten klaren Schritt.' }],
         onScreenText: undefined
       };
     })
