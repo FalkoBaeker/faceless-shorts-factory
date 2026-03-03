@@ -1384,24 +1384,40 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
 
   if (simulationProviderFallbackEnabled()) {
     const topic = input.topic.trim() || 'dein Thema';
-    const targetSeconds = Math.max(10, Math.min(90, Math.round(input.targetSeconds)));
-    const cta = `Jetzt informieren und den naechsten Schritt mit ${topic} starten.`;
+    const cta = `Jetzt informieren und den nächsten Schritt mit ${topic} starten.`;
     return [
-      `Hook: Stop scrolling - ${topic} in ${targetSeconds} Sekunden klar erklaert.`,
-      `Zeige zuerst den klaren Einstieg ins Motiv, dann den wichtigsten Nutzen fuer die Zielgruppe.`,
-      `Danach ein konkretes Vorher-Nachher oder einen sichtbaren Beweis in einer neuen Szene.`,
-      `Zum Schluss klare Handlungsaufforderung: ${cta}`
-    ].join(' ');
+      '1. Szene 1',
+      'Kamera: Nahstart auf das gewählte Startbildmotiv, dann langsamer Push-in.',
+      `Bild/Aktion: Die Hauptfigur eröffnet mit einer klaren Hook zum Thema "${topic}".`,
+      'Dialog/Voiceover: "Stopp kurz - das musst du sehen."',
+      '',
+      '2. Szene 2',
+      'Kamera: Schwenk nach rechts auf das Kernprodukt bzw. den zentralen Nutzen.',
+      'Bild/Aktion: Sichtbare Anwendung im realen Kontext, kein statischer Stand.',
+      'Dialog/Voiceover: "Genau hier liegt der Unterschied im Alltag."',
+      '',
+      '3. Szene 3',
+      'Kamera: Schnitt auf Detailaufnahme, dann kurzer Pullback für Kontext.',
+      'Bild/Aktion: Konkreter Beweis/Resultat im Bild, klare Veränderung sichtbar.',
+      `Dialog/Voiceover: "${cta}"`
+    ].join('\n');
   }
 
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.008, 'llm-strict-viewer-script');
   const viewerScriptInput =
-    'Erstelle aus diesem Sora-Prompt ein für Zuschauer geeignetes Skript. ' +
-    'Keine technischen Lens-/Kamera-Parameter, aber klar beschreiben, was nacheinander im Video passiert, inklusive Dialogen, Bewegungen und Schnitten. ' +
+    'Erstelle aus diesem Sora-Prompt ein publikumsnahes Ablaufskript auf Deutsch. ' +
     `Topic: ${input.topic}. Ziel-Länge ca. ${input.targetSeconds}s. ` +
+    'Pflichtformat (nur dieses Format ausgeben): ' +
+    'Mehrere Szenenblöcke mit jeweils einer Überschrift wie "1. Szene 1", danach in neuen Zeilen: ' +
+    '"Kamera: ...", "Bild/Aktion: ...", "Dialog/Voiceover: ...". ' +
+    'Jeder Szenenblock muss eine konkrete Kamerabewegung enthalten (z. B. Schwenk, Zoom, Push-in, Schnitt auf, POV-Wechsel) und eine sichtbare Handlung. ' +
+    'Szene 1 muss direkt das Startframe-Motiv als Hook aufgreifen und die visuelle Kontinuität sichern. ' +
+    'Wenn im Motiv eine Person sichtbar ist, muss die Person konsistent weitergeführt werden (keine Motivwechsel ohne Begründung). ' +
+    'Keine generischen Aussagen wie "zeige etwas zum Thema", sondern präzise visuelle Beats. ' +
+    'Dialog/Voiceover soll kurz, natürlich und TikTok-tauglich sein. ' +
     `Sora-Prompt: ${input.soraPrompt}. ` +
-    'Gib nur das finale Skript als Fließtext aus.';
+    'Gib nur das finale Szenen-Skript aus, ohne Einleitung und ohne Markdown.';
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const response = await openAiPostJson('/v1/responses', {
@@ -1419,6 +1435,62 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
 };
 
 const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
+  const blockCandidates = script
+    .split(/\n\s*\n+/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const structuredScenes = blockCandidates
+    .map((block, index) => {
+      const rawLines = block
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/^[-*•]\s*/, '').trim());
+
+      if (!rawLines.length) return null;
+
+      const actionParts: string[] = [];
+      const dialogLines: Array<{ speaker: string; text: string }> = [];
+
+      for (const line of rawLines) {
+        const sceneHeader = line.match(/^(?:\d+[.)]\s*)?(?:szene|scene|shot)\s*\d+\s*[:.)-]?\s*(.*)$/i);
+        if (sceneHeader) {
+          if (sceneHeader[1]?.trim()) actionParts.push(`Szene: ${sceneHeader[1].trim()}`);
+          continue;
+        }
+
+        const dialogMatch = line.match(/^(?:dialog(?:ue)?|voiceover|sprecher)\s*[:\-]\s*(.*)$/i);
+        if (dialogMatch) {
+          const text = dialogMatch[1]?.trim();
+          if (text) dialogLines.push({ speaker: 'Voice', text: ensureSentenceEnding(text.replace(/^"+|"+$/g, '')) });
+          continue;
+        }
+
+        actionParts.push(line);
+      }
+
+      const action = ensureSentenceEnding(actionParts.join(' ').replace(/\s+/g, ' ').trim());
+      if (action.length < 12) return null;
+
+      return {
+        order: index + 1,
+        action,
+        lines: dialogLines.length ? dialogLines : undefined,
+        onScreenText: undefined
+      };
+    })
+    .filter((scene): scene is ScriptV2['scenes'][number] => Boolean(scene));
+
+  if (structuredScenes.length) {
+    return {
+      language: 'de',
+      openingHook: structuredScenes[0]?.action,
+      narration: script,
+      scenes: structuredScenes
+    };
+  }
+
   const sentences = script
     .split(/(?<=[.!?…])\s+/)
     .map((entry) => entry.trim())
@@ -2160,16 +2232,25 @@ const condenseScriptToTarget = async (
 
   const intentPrompt = creativeIntent ? renderIntentPrompt(creativeIntent).text : '';
   const brandPrompt = renderBrandProfilePrompt(brandProfile);
+  const structuredScript = /(?:^|\n)\s*(?:\d+[.)]\s*)?(?:szene|scene|shot)\s*\d+|(?:^|\n)\s*(?:kamera|bild\/aktion|dialog|voiceover)\s*:/im.test(
+    script
+  );
 
   const response = await openAiPostJson('/v1/responses', {
     model: 'gpt-4o-mini',
     input:
-      `Kürze dieses deutsche Voiceover-Skript auf maximal ${targetWords} Wörter (ca. ${targetSeconds} Sekunden). ` +
+      `Kürze dieses deutsche ${structuredScript ? 'Ablaufskript' : 'Voiceover-Skript'} auf maximal ${targetWords} Wörter (ca. ${targetSeconds} Sekunden). ` +
       `${moodPromptMap[moodPreset]} ` +
       `${intentPrompt} ` +
       `${brandPrompt} ` +
       'Bewahre den roten Faden und einen klaren CTA. Der letzte Satz muss vollständig sein. ' +
-      `Text: """${script}""". Gib nur den finalen gesprochenen Text aus.`,
+      `${
+        structuredScript
+          ? 'Bewahre das Szenenformat mit Kamera/Bild-Aktion/Dialog und halte die Reihenfolge der Szenen stabil. '
+          : ''
+      }` +
+      `Text: """${script}""". ` +
+      `${structuredScript ? 'Gib nur das gekürzte Szenen-Skript aus.' : 'Gib nur den finalen gesprochenen Text aus.'}`,
     max_output_tokens: Math.max(180, Math.round(targetWords * 2.2))
   });
 

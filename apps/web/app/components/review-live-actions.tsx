@@ -88,36 +88,61 @@ const fallbackFlowFromScript = (script: string, topic: string) => {
   return source.map((sentence, index) => ({ order: index + 1, action: concreteFallbackAction({ topic, sentence, index }) }));
 };
 
-const toFlowDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string, topic: string) => {
-  const scenes = scriptV2?.scenes?.length
+const stripScenePrefix = (value: string) =>
+  value
+    .replace(/^\s*(szene|scene|shot)\s*\d+\s*[:.)-]?\s*/i, '')
+    .replace(/^\s*\d+\s*[.)-]\s*/, '')
+    .trim();
+
+const toUnifiedScriptDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string, topic: string) => {
+  const scenes: Array<{ order: number; action: string; lines?: ScriptV2Payload['scenes'][number]['lines'] }> = scriptV2?.scenes?.length
     ? scriptV2.scenes
         .slice()
         .sort((a, b) => a.order - b.order)
-        .map((scene) => ({ order: scene.order, action: String(scene.action ?? '').trim() }))
+        .map((scene) => ({
+          order: scene.order,
+          action: String(scene.action ?? '').trim(),
+          lines: Array.isArray(scene.lines) ? scene.lines : []
+        }))
         .filter((scene) => scene.action.length)
-    : fallbackFlowFromScript(fallbackScript, topic);
+    : fallbackFlowFromScript(fallbackScript, topic).map((scene) => ({
+        order: scene.order,
+        action: scene.action,
+        lines: undefined
+      }));
 
-  return scenes.map((scene) => `${scene.order}. ${scene.action}`).join('\n');
+  return scenes
+    .map((scene) => {
+      const core = `${scene.order}. ${scene.action}`;
+      const lines = scene.lines?.length ? scene.lines.map((entry) => `   Dialog ${entry.speaker}: "${entry.text}"`) : [];
+      return [core, ...lines].join('\n');
+    })
+    .join('\n\n');
 };
 
-const buildScriptV2FromFlowDraft = (input: {
-  flowDraft: string;
+const buildScriptV2FromUnifiedDraft = (input: {
+  unifiedDraft: string;
   narration: string;
   draft?: ScriptV2Payload;
   topic: string;
 }): ScriptV2Payload => {
-  const parsedScenes = input.flowDraft
-    .split(/\n+/)
-    .map((line) => line.trim())
+  const blocks = input.unifiedDraft
+    .split(/\n\s*\n+/)
+    .map((entry) => entry.trim())
     .filter(Boolean)
-    .map((line, index) => {
-      const stripped = line.replace(/^\d+[.)]\s*/, '').trim();
-      if (!stripped) return null;
+    .map((block, index) => {
+      const merged = block
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(' ');
+      const stripped = stripScenePrefix(merged);
+      if (!stripped.length) return null;
       return { order: index + 1, action: stripped };
     })
     .filter((scene): scene is { order: number; action: string } => Boolean(scene));
 
-  const scenes = parsedScenes.length ? parsedScenes : fallbackFlowFromScript(input.narration, input.topic);
+  const scenes = blocks.length ? blocks : fallbackFlowFromScript(input.narration, input.topic);
 
   return {
     language: input.draft?.language ?? 'de',
@@ -212,7 +237,6 @@ export function ReviewLiveActions() {
 
   const [scriptDraft, setScriptDraft] = useState('');
   const [scriptV2Draft, setScriptV2Draft] = useState<ScriptV2Payload | undefined>(undefined);
-  const [flowDraft, setFlowDraft] = useState('');
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
 
@@ -336,9 +360,9 @@ export function ReviewLiveActions() {
     if (startFramePolicy?.decision === 'block') {
       return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
     }
-    if (!scriptAccepted || !scriptDraft.trim() || !flowDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
+    if (!scriptAccepted || !scriptDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
     return null;
-  }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, scriptAccepted, scriptDraft, flowDraft]);
+  }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, scriptAccepted, scriptDraft]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
@@ -456,15 +480,14 @@ export function ReviewLiveActions() {
         startFrameSummary: activeStartframeSummary.summary
       });
 
-      const normalizedScriptV2 = draft.scriptV2 ?? buildScriptV2FromFlowDraft({
-        flowDraft: toFlowDraftText(undefined, draft.script, topic),
+      const normalizedScriptV2 = draft.scriptV2 ?? buildScriptV2FromUnifiedDraft({
+        unifiedDraft: toUnifiedScriptDraftText(undefined, draft.script, topic),
         narration: draft.script,
         topic
       });
 
-      setScriptDraft(draft.script);
+      setScriptDraft(toUnifiedScriptDraftText(normalizedScriptV2, draft.script, topic));
       setScriptV2Draft(normalizedScriptV2);
-      setFlowDraft(toFlowDraftText(normalizedScriptV2, draft.script, topic));
       setScriptAccepted(false);
       setScriptMeta({
         targetSeconds: draft.targetSeconds,
@@ -485,7 +508,7 @@ export function ReviewLiveActions() {
   };
 
   const acceptScript = () => {
-    if (!scriptDraft.trim() || !flowDraft.trim()) {
+    if (!scriptDraft.trim()) {
       setStatus('Ablauf ist leer. Bitte zuerst Ablauf generieren.');
       return;
     }
@@ -611,8 +634,8 @@ export function ReviewLiveActions() {
       const startFrameReferenceHint = uploadedStartFrame?.fileName ?? selectedStartFrameCandidate?.label;
 
       const fallbackStyle = 'storefront_hero' as const;
-      const approvedScriptV2 = buildScriptV2FromFlowDraft({
-        flowDraft,
+      const approvedScriptV2 = buildScriptV2FromUnifiedDraft({
+        unifiedDraft: scriptDraft,
         narration: scriptDraft.trim(),
         draft: scriptV2Draft,
         topic
@@ -673,7 +696,7 @@ export function ReviewLiveActions() {
                 ? `Kandidat: ${selectedStartFrameCandidate.label}`
                 : 'no-startframe'
           },
-          userEditedFlowScript: flowDraft.trim() || undefined
+          userEditedFlowScript: scriptDraft.trim() || undefined
         },
         storyboardLight: buildStoryboardFromScriptV2(approvedScriptV2, scriptDraft, topic),
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
@@ -835,7 +858,7 @@ export function ReviewLiveActions() {
       </div>
 
       <label className="auth-field" style={{ marginTop: 8 }}>
-        <span>Voiceover-Text (gesprochen, editierbar)</span>
+        <span>Ablauf / Script (eine Box, editierbar)</span>
         <textarea
           value={scriptDraft}
           onChange={(event) => {
@@ -844,21 +867,8 @@ export function ReviewLiveActions() {
             setScriptV2Draft((prev) => (prev ? { ...prev, narration: value } : prev));
             setScriptAccepted(false);
           }}
-          rows={8}
-          placeholder="Erzeuge zuerst einen Ablauf-Entwurf."
-        />
-      </label>
-
-      <label className="auth-field" style={{ marginTop: 8 }}>
-        <span>Ablauf (was sieht der Zuschauer, editierbar)</span>
-        <textarea
-          value={flowDraft}
-          onChange={(event) => {
-            setFlowDraft(event.target.value);
-            setScriptAccepted(false);
-          }}
-          rows={8}
-          placeholder="1. Hook-Shot ...\n2. Sichtbare Handlung ..."
+          rows={12}
+          placeholder="1. Die Frau sagt ...\n2. Kamera schwenkt auf ...\n3. Wir zoomen ran auf ...\n4. Schnitt auf ..."
         />
       </label>
 
