@@ -1256,11 +1256,19 @@ const generateStrictStep1SoraPrompt = async (input: {
     : input.startFrameImageUrl;
 
   const humorIntent = input.creativeIntent.effectGoals.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
+  const viralHookDirective =
+    'Pflicht-Hook: In Sekunde 0-2 muss ein klarer Pattern-Interrupt passieren (unerwartete Aktion, überraschender visueller Kontrast oder provokante Hook-Zeile), sodass nicht weitergescrollt wird. ' +
+    'Der Hook muss sofort aus dem Startbild motivisch weiterlaufen (kein Motivbruch) und direkt Spannung/Neugier erzeugen.';
+  const antiGenericOpeningDirective =
+    'Verboten sind generische Openings wie reine Außenaufnahme, langsame Intro-Fahrt ohne Ereignis, nur Logo-Shot oder "Kamera führt ins Gebäude" ohne konkrete Aktion/Person.';
   const promptText =
-    `Nehme das Startbild (${startFrameImageRef}) und nehme den Branding-Content und die weiteren Inputs und erstelle einen Sora-Prompt, indem du den Sora-Guideline zu Hilfe nimmst. ` +
-    `Und erstelle ein virales TikTok-Video zum Thema ${input.topic}. ` +
+    `Nehme das Startbild (${startFrameImageRef}) und den Branding-Content plus alle weiteren Inputs und erstelle damit einen finalen Sora-Prompt unter Nutzung der Sora-Guideline. ` +
+    `Erstelle ein virales TikTok-Video zum Thema ${input.topic}, das mit einem starken Scroll-Stop-Hook startet. ` +
     `Inputs: Energy Level=${input.creativeIntent.energyMode}, User Intent=${humorIntent}, MoodPreset=${input.moodPreset}, ` +
     `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${input.websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
+    `${viralHookDirective} ${antiGenericOpeningDirective} ` +
+    'Baue konkrete visuelle Beats mit klarer Kameraaktion, sichtbarer Handlung und emotionalem Payoff auf. ' +
+    'Formuliere den Prompt so, dass die ersten Sekunden explizit den Hook enthalten und danach die Story klar vorwärts entwickelt wird. ' +
     `Sora Guideline (excerpt): ${guidelineExcerpt}. ` +
     `Gib nur den finalen Sora-Prompt als reinen Text aus.`;
 
@@ -1413,9 +1421,12 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
     '"Kamera: ...", "Bild/Aktion: ...", "Dialog/Voiceover: ...". ' +
     'Jeder Szenenblock muss eine konkrete Kamerabewegung enthalten (z. B. Schwenk, Zoom, Push-in, Schnitt auf, POV-Wechsel) und eine sichtbare Handlung. ' +
     'Szene 1 muss direkt das Startframe-Motiv als Hook aufgreifen und die visuelle Kontinuität sichern. ' +
+    'Szene 1 muss als viraler Scroll-Stop-Hook geschrieben sein: Pattern-Interrupt in den ersten 0-2 Sekunden, überraschender Einstieg, sofortige Relevanz. ' +
+    'Keine langweiligen Intros wie reine Außenaufnahme, "Kamera fährt ins Gebäude", statischer Laden/Hotel-Einstieg ohne Aktion. ' +
     'Wenn im Motiv eine Person sichtbar ist, muss die Person konsistent weitergeführt werden (keine Motivwechsel ohne Begründung). ' +
     'Niemals "(kein VO)" schreiben. Jede Szene muss eine konkrete Zeile in "Dialog/Voiceover:" enthalten. ' +
     'Die Dialog/Voiceover-Zeile muss ein tatsächlich sprechbarer Satz sein (mindestens 6 Wörter), keine Stil-Notiz und keine leeren Anführungszeichen. ' +
+    'Dialog/Voiceover darf kein Platzhalter sein und muss pro Szene mindestens ein konkretes Element aus Bild/Aktion benennen. ' +
     'Keine Ausgaben wie "warm und humorvoll:" oder "." als Dialog. ' +
     'Tiere sprechen nicht selbst, außer es ist explizit gewünscht; nutze sonst eine natürliche Erzählerstimme. ' +
     'Keine generischen Aussagen wie "zeige etwas zum Thema", sondern präzise visuelle Beats. ' +
@@ -1438,7 +1449,23 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
   throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_EMPTY', { provider: 'openai', fatal: true });
 };
 
-const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
+const buildDialogFallbackFromScene = (input: { topic: string; action: string; sceneOrder: number }) => {
+  const normalizedAction = input.action
+    .replace(/\b(?:kamera|bild\/aktion|szene)\s*:\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const firstSentence = normalizedAction.split(/(?<=[.!?…])\s+/)[0]?.trim() ?? '';
+  const subject = inferExplicitHeroSubject(input.topic || normalizedAction);
+  if (firstSentence.length >= 24) {
+    return ensureSentenceEnding(firstSentence);
+  }
+  if (input.sceneOrder === 1) {
+    return ensureSentenceEnding(`Stopp kurz: Genau dieser Moment zeigt, worum es bei ${subject} jetzt geht.`);
+  }
+  return ensureSentenceEnding(`Hier siehst du den nächsten konkreten Schritt rund um ${subject}.`);
+};
+
+const buildScriptV2FromViewerScript = (script: string, topic: string): ScriptV2 => {
   const normalizedScript = script
     .replace(/\r/g, '')
     .replace(/\*\*/g, '')
@@ -1506,7 +1533,7 @@ const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
         action,
         lines: dialogLines.length
           ? dialogLines
-          : [{ speaker: 'Voice', text: 'Wir zeigen dir jetzt den nächsten klaren Schritt im Ablauf.' }],
+          : [{ speaker: 'Voice', text: buildDialogFallbackFromScene({ topic, action, sceneOrder: index + 1 }) }],
         onScreenText: undefined
       };
     })
@@ -2033,6 +2060,9 @@ const generateSoraPromptBlueprint = async (input: {
     `${input.brandName ? `Visible brand text/logos must use exactly this name when shown: "${input.brandName}". Never invent other bakery/company names. ` : ''}` +
     `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
     `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
+    'Pflicht: Das Video braucht einen viralen Scroll-Stop-Hook in den ersten 0-2 Sekunden (Pattern-Interrupt mit Überraschung, Relevanz und Neugier). ' +
+    'Segment 1 darf nie generisch starten (keine reine Außenansicht, kein langsamer Intro-Schwenk ohne Ereignis, kein statischer Establishing-Shot). ' +
+    'Jeder Segment-Prompt muss konkrete Kameraaktion + konkrete sichtbare Handlung + klaren Fortschritt enthalten. ' +
     'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
     'userFlowScript und userFlowBeat müssen auf Deutsch, klar und nicht-technisch sein (was sieht der Zuschauer konkret). ' +
     'Keine generischen Phrasen wie "konkreter Schritt", "zentrales Motiv", "Kamera folgt" ohne benanntes Objekt/Subjekt. ' +
@@ -2378,11 +2408,12 @@ export const generateScriptDraft = async (input: {
 
   const condensed = durationRepairAttempts > 0;
   const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
-  const scriptV2 = buildScriptV2FromViewerScript(script);
+  const scriptV2 = buildScriptV2FromViewerScript(script, input.topic);
 
   return {
     script,
     scriptV2,
+    generatedSoraPrompt: strictStep1Prompt.soraPrompt,
     moodPreset,
     creativeIntent: effectiveIntent,
     targetSeconds,

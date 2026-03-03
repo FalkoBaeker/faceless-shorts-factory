@@ -64,6 +64,7 @@ export type ScriptV2Payload = {
 export type ScriptDraftPayload = {
   script: string;
   scriptV2?: ScriptV2Payload;
+  generatedSoraPrompt?: string;
   targetSeconds: number;
   estimatedSeconds: number;
   withinTarget: boolean;

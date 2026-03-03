@@ -94,6 +94,20 @@ const stripScenePrefix = (value: string) =>
     .replace(/^\s*\d+\s*[.)-]\s*/, '')
     .trim();
 
+const SORA_PROMPT_SECTION_HEADER = 'Sora-Prompt (technisch, automatisch):';
+
+const appendSoraPromptToDraft = (draftText: string, soraPrompt?: string) => {
+  const base = draftText.trim();
+  const prompt = String(soraPrompt ?? '').trim();
+  if (!prompt) return base;
+  return `${base}\n\n---\n${SORA_PROMPT_SECTION_HEADER}\n${prompt}`;
+};
+
+const extractFlowScriptFromDraft = (value: string) =>
+  value
+    .replace(new RegExp(`\\n+\\s*---\\s*\\n\\s*${SORA_PROMPT_SECTION_HEADER.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}[\\s\\S]*$`, 'i'), '')
+    .trim();
+
 const toUnifiedScriptDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string, topic: string) => {
   const scenes: Array<{ order: number; action: string; lines?: ScriptV2Payload['scenes'][number]['lines'] }> = scriptV2?.scenes?.length
     ? scriptV2.scenes
@@ -361,7 +375,7 @@ export function ReviewLiveActions() {
     if (startFramePolicy?.decision === 'block') {
       return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
     }
-    if (!scriptAccepted || !scriptDraft.trim()) return 'Ablauf prüfen und akzeptieren.';
+    if (!scriptAccepted || !extractFlowScriptFromDraft(scriptDraft).trim()) return 'Ablauf prüfen und akzeptieren.';
     return null;
   }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, scriptAccepted, scriptDraft]);
 
@@ -487,7 +501,8 @@ export function ReviewLiveActions() {
         topic
       });
 
-      setScriptDraft(toUnifiedScriptDraftText(normalizedScriptV2, draft.script, topic));
+      const unifiedDraftText = toUnifiedScriptDraftText(normalizedScriptV2, draft.script, topic);
+      setScriptDraft(appendSoraPromptToDraft(unifiedDraftText, draft.generatedSoraPrompt));
       setScriptV2Draft(normalizedScriptV2);
       setScriptAccepted(false);
       setScriptMeta({
@@ -509,7 +524,8 @@ export function ReviewLiveActions() {
   };
 
   const acceptScript = () => {
-    if (!scriptDraft.trim()) {
+    const flowScript = extractFlowScriptFromDraft(scriptDraft);
+    if (!flowScript.trim()) {
       setStatus('Ablauf ist leer. Bitte zuerst Ablauf generieren.');
       return;
     }
@@ -635,9 +651,10 @@ export function ReviewLiveActions() {
       const startFrameReferenceHint = uploadedStartFrame?.fileName ?? selectedStartFrameCandidate?.label;
 
       const fallbackStyle = 'storefront_hero' as const;
+      const flowScript = extractFlowScriptFromDraft(scriptDraft);
       const approvedScriptV2 = buildScriptV2FromUnifiedDraft({
-        unifiedDraft: scriptDraft,
-        narration: scriptDraft.trim(),
+        unifiedDraft: flowScript,
+        narration: flowScript,
         draft: scriptV2Draft,
         topic
       });
@@ -697,11 +714,11 @@ export function ReviewLiveActions() {
                 ? `Kandidat: ${selectedStartFrameCandidate.label}`
                 : 'no-startframe'
           },
-          userEditedFlowScript: scriptDraft.trim() || undefined
+          userEditedFlowScript: flowScript || undefined
         },
-        storyboardLight: buildStoryboardFromScriptV2(approvedScriptV2, scriptDraft, topic),
+        storyboardLight: buildStoryboardFromScriptV2(approvedScriptV2, flowScript, topic),
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
-        approvedScript: scriptDraft.trim(),
+        approvedScript: flowScript,
         approvedScriptV2,
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
         startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
@@ -879,7 +896,7 @@ export function ReviewLiveActions() {
         >
           Ablauf generieren
         </button>
-        <button className="button" type="button" disabled={busy || !scriptDraft.trim()} onClick={acceptScript}>
+        <button className="button" type="button" disabled={busy || !extractFlowScriptFromDraft(scriptDraft).trim()} onClick={acceptScript}>
           Ablauf akzeptieren / bearbeiten
         </button>
       </div>
@@ -891,7 +908,7 @@ export function ReviewLiveActions() {
           onChange={(event) => {
             const value = event.target.value;
             setScriptDraft(value);
-            setScriptV2Draft((prev) => (prev ? { ...prev, narration: value } : prev));
+            setScriptV2Draft((prev) => (prev ? { ...prev, narration: extractFlowScriptFromDraft(value) } : prev));
             setScriptAccepted(false);
           }}
           rows={12}

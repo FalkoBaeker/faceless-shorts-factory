@@ -210,6 +210,7 @@ export type ScriptDraftRequest = {
 export type ScriptDraftResponse = {
   script: string;
   scriptV2?: ScriptV2;
+  generatedSoraPrompt?: string;
   targetSeconds: number;
   estimatedSeconds: number;
   withinTarget: boolean;

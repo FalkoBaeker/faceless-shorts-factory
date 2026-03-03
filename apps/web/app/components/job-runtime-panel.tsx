@@ -82,6 +82,8 @@ export function JobRuntimePanel({ initialJobId }: Props) {
   const [alertResult, setAlertResult] = useState('');
   const [downloadState, setDownloadState] = useState<'idle' | 'success' | 'error'>('idle');
   const [downloadMessage, setDownloadMessage] = useState('');
+  const [finalSoraPrompt, setFinalSoraPrompt] = useState('');
+  const [finalSoraPromptStatus, setFinalSoraPromptStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
 
   useEffect(() => {
     setJobId(initialJobId);
@@ -156,6 +158,49 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     const entries = assets?.assets ?? [];
     return entries.find((entry) => entry.kind === 'final_video') ?? null;
   }, [assets]);
+
+  const finalSoraPromptAsset = useMemo(() => {
+    const entries = assets?.assets ?? [];
+    return (
+      entries.find((entry) => entry.kind === 'sora_prompt_step2') ??
+      entries.find((entry) => entry.kind === 'sora_prompt_step1') ??
+      null
+    );
+  }, [assets]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!finalSoraPromptAsset?.signedUrl) {
+        setFinalSoraPrompt('');
+        setFinalSoraPromptStatus('idle');
+        return;
+      }
+
+      setFinalSoraPromptStatus('loading');
+      try {
+        const res = await fetch(finalSoraPromptAsset.signedUrl, { cache: 'no-store' });
+        const text = await res.text();
+        if (!res.ok) throw new Error(`PROMPT_FETCH_FAILED:${res.status}`);
+        if (!cancelled) {
+          setFinalSoraPrompt(text.trim());
+          setFinalSoraPromptStatus('ready');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setFinalSoraPrompt(`Prompt konnte nicht geladen werden: ${asApiMessage(error)}`);
+          setFinalSoraPromptStatus('error');
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [finalSoraPromptAsset]);
 
   const storyboardMeta = useMemo(() => {
     const event = [...(job?.timeline ?? [])]
@@ -436,6 +481,30 @@ export function JobRuntimePanel({ initialJobId }: Props) {
           ) : null}
           <p className="section-copy" style={{ marginTop: 0 }}>
             {finalVideo.objectPath}
+          </p>
+        </section>
+      ) : null}
+
+      {finalSoraPromptAsset ? (
+        <section className="section-card" style={{ marginTop: 4 }} aria-live="polite">
+          <h3 className="section-title" style={{ margin: 0, fontSize: '1rem' }}>
+            Final verwendeter Sora-Prompt
+          </h3>
+          <p className="section-copy">
+            Quelle: {finalSoraPromptAsset.kind === 'sora_prompt_step2' ? 'Step2 (inkl. User-Edit)' : 'Step1 (ohne Step2-Override)'}
+          </p>
+          <textarea
+            readOnly
+            value={
+              finalSoraPromptStatus === 'loading'
+                ? 'Lade Prompt ...'
+                : finalSoraPrompt || 'Kein Prompt-Inhalt verfügbar.'
+            }
+            rows={14}
+            style={{ width: '100%', fontFamily: 'monospace' }}
+          />
+          <p className="section-copy" style={{ marginTop: 0 }}>
+            {finalSoraPromptAsset.objectPath}
           </p>
         </section>
       ) : null}
