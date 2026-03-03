@@ -1415,6 +1415,9 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
     'Szene 1 muss direkt das Startframe-Motiv als Hook aufgreifen und die visuelle Kontinuität sichern. ' +
     'Wenn im Motiv eine Person sichtbar ist, muss die Person konsistent weitergeführt werden (keine Motivwechsel ohne Begründung). ' +
     'Niemals "(kein VO)" schreiben. Jede Szene muss eine konkrete Zeile in "Dialog/Voiceover:" enthalten. ' +
+    'Die Dialog/Voiceover-Zeile muss ein tatsächlich sprechbarer Satz sein (mindestens 6 Wörter), keine Stil-Notiz und keine leeren Anführungszeichen. ' +
+    'Keine Ausgaben wie "warm und humorvoll:" oder "." als Dialog. ' +
+    'Tiere sprechen nicht selbst, außer es ist explizit gewünscht; nutze sonst eine natürliche Erzählerstimme. ' +
     'Keine generischen Aussagen wie "zeige etwas zum Thema", sondern präzise visuelle Beats. ' +
     'Dialog/Voiceover soll kurz, natürlich und TikTok-tauglich sein. ' +
     `Sora-Prompt: ${input.soraPrompt}. ` +
@@ -1473,11 +1476,21 @@ const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
           continue;
         }
 
-        const dialogMatch = line.match(/^(?:dialog(?:ue)?(?:\/voiceover)?|voiceover|sprecher)\s*[:\-]\s*(.*)$/i);
+        const dialogMatch = line.match(/^(?:dialog(?:ue)?(?:\s*voice)?(?:\s*\/\s*voiceover)?|voiceover|sprecher)\s*[:\-]\s*(.*)$/i);
         if (dialogMatch) {
           const text = dialogMatch[1]?.trim();
-          if (text && !/^\(?kein\s*vo\)?$/i.test(text)) {
-            dialogLines.push({ speaker: 'Voice', text: ensureSentenceEnding(text.replace(/^"+|"+$/g, '')) });
+          const normalizedText = String(text ?? '')
+            .replace(/^"+|"+$/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const isNonSpeechMeta =
+            !normalizedText ||
+            /^\(?kein\s*vo\)?$/i.test(normalizedText) ||
+            /^["'.\s]+$/.test(normalizedText) ||
+            normalizedText.length < 16 ||
+            /\b(?:warm|humorvoll|stil|ton)\b\s*:\s*["'.\s]*$/i.test(normalizedText);
+          if (!isNonSpeechMeta) {
+            dialogLines.push({ speaker: 'Voice', text: ensureSentenceEnding(normalizedText) });
           }
           continue;
         }
@@ -1493,7 +1506,7 @@ const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
         action,
         lines: dialogLines.length
           ? dialogLines
-          : [{ speaker: 'Voice', text: 'Wir zeigen jetzt den nächsten klaren Schritt.' }],
+          : [{ speaker: 'Voice', text: 'Wir zeigen dir jetzt den nächsten klaren Schritt im Ablauf.' }],
         onScreenText: undefined
       };
     })

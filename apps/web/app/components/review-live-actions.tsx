@@ -113,7 +113,8 @@ const toUnifiedScriptDraftText = (scriptV2: ScriptV2Payload | undefined, fallbac
 
   return scenes
     .map((scene) => {
-      const core = `${scene.order}. ${scene.action}`;
+      const normalizedAction = stripScenePrefix(String(scene.action ?? ''));
+      const core = `${scene.order}. ${normalizedAction}`;
       const lines = scene.lines?.length ? scene.lines.map((entry) => `   Dialog ${entry.speaker}: "${entry.text}"`) : [];
       return [core, ...lines].join('\n');
     })
@@ -209,7 +210,7 @@ const toBase64Payload = (dataUrl: string) => dataUrl.replace(/^data:[^;]+;base64
 export function ReviewLiveActions() {
   const router = useRouter();
   const [topic, setTopic] = useState('Sommerangebot für lokale Bäckerei in Berlin');
-  const variantType = 'SHORT_15' as const;
+  const [variantType, setVariantType] = useState<'SHORT_15' | 'MASTER_30'>('MASTER_30');
   const conceptId = 'concept_web_vertical_slice';
 
   const [effectGoals, setEffectGoals] = useState<Array<CreativeIntentPayload['effectGoals'][number]['id']>>(['sell_conversion']);
@@ -740,6 +741,32 @@ export function ReviewLiveActions() {
             }}
           />
         </label>
+      </div>
+
+      <div className="action-row" style={{ marginTop: 8 }}>
+        <span className="chip chip-neutral">Videolänge</span>
+        <button
+          type="button"
+          className={`state-toggle ${variantType === 'SHORT_15' ? 'active' : ''}`}
+          onClick={() => {
+            setVariantType('SHORT_15');
+            setScriptAccepted(false);
+          }}
+          aria-pressed={variantType === 'SHORT_15'}
+        >
+          15s
+        </button>
+        <button
+          type="button"
+          className={`state-toggle ${variantType === 'MASTER_30' ? 'active' : ''}`}
+          onClick={() => {
+            setVariantType('MASTER_30');
+            setScriptAccepted(false);
+          }}
+          aria-pressed={variantType === 'MASTER_30'}
+        >
+          30s
+        </button>
       </div>
 
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
