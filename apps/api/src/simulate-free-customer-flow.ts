@@ -239,10 +239,12 @@ const run = async () => {
   const prevAuthRequired = process.env.AUTH_REQUIRED;
   const prevAutoPublish = process.env.ENABLE_AUTO_PUBLISH;
   const prevFreePlan = process.env.ENABLE_FREE_PLAN_MVP;
+  const prevSimProviderFallback = process.env.SIM_PROVIDER_FALLBACK;
 
   process.env.AUTH_REQUIRED = 'true';
   process.env.ENABLE_AUTO_PUBLISH = 'false';
   process.env.ENABLE_FREE_PLAN_MVP = 'true';
+  process.env.SIM_PROVIDER_FALLBACK = 'true';
 
   const { server, port } = await startApiServer(0);
   const base = `http://127.0.0.1:${port}`;
@@ -346,12 +348,100 @@ const run = async () => {
       throw new Error(`AUTH_NOT_ENTITLED:${String(me.body.reason ?? 'unknown')}`);
     }
 
+    const organizationId = 'org_free_customer_smoke';
+    const topic = 'Frühlingsangebot für lokale Bäckerei in Berlin';
+    const conceptId = 'concept_web_vertical_slice';
+    const moodPreset = 'commercial_cta';
+    const brandProfile = {
+      companyName: 'Bäckerei Morgenrot',
+      brandTone: 'warm, lokal, einladend',
+      valueProposition: 'Frische Backwaren jeden Morgen aus eigener Backstube'
+    };
+    const creativeIntent = {
+      effectGoals: [{ id: 'sell_conversion', weight: 1, priority: 1 }],
+      narrativeFormats: [{ id: 'commercial', weight: 1, priority: 1 }],
+      shotStyles: [{ id: 'product_macro', weight: 0.8, priority: 2 }],
+      energyMode: 'high'
+    };
+
+    const brandUpsert = await requestApi(base, `/v1/brands/${encodeURIComponent(organizationId)}`, {
+      method: 'PUT',
+      token: accessToken,
+      body: brandProfile
+    });
+
+    if (brandUpsert.status !== 200) {
+      throw new Error(`BRAND_UPSERT_FAILED:${brandUpsert.status}:${String(brandUpsert.body.error ?? '')}`);
+    }
+
+    const candidates = await requestApi(base, '/v1/startframes/candidates', {
+      method: 'POST',
+      token: accessToken,
+      body: {
+        organizationId,
+        topic,
+        conceptId,
+        moodPreset,
+        creativeIntent,
+        brandProfile,
+        limit: 3
+      }
+    });
+
+    if (candidates.status !== 200) {
+      throw new Error(`STARTFRAME_CANDIDATES_FAILED:${candidates.status}:${String(candidates.body.error ?? '')}`);
+    }
+
+    const candidateList = Array.isArray(candidates.body.candidates) ? (candidates.body.candidates as JsonObject[]) : [];
+    const selectedCandidate = candidateList[0];
+    const selectedCandidateId = String(selectedCandidate?.candidateId ?? '');
+    const selectedCandidateStyle = String(selectedCandidate?.style ?? '');
+    const selectedCandidateLabel = String(selectedCandidate?.label ?? '');
+    const selectedCandidateThumbnailUrl = String(selectedCandidate?.thumbnailUrl ?? '');
+    const selectedCandidateObjectPath = String(selectedCandidate?.thumbnailObjectPath ?? '');
+
+    if (!selectedCandidateId || !selectedCandidateStyle) {
+      throw new Error('STARTFRAME_CANDIDATE_MISSING');
+    }
+
+    if (!selectedCandidateObjectPath) {
+      throw new Error('STARTFRAME_CANDIDATE_OBJECT_PATH_MISSING');
+    }
+
+    const scriptDraft = await requestApi(base, '/v1/script/draft', {
+      method: 'POST',
+      token: accessToken,
+      body: {
+        topic,
+        variantType: 'SHORT_15',
+        organizationId,
+        moodPreset,
+        creativeIntent,
+        brandProfile,
+        startFrameStyle: selectedCandidateStyle,
+        startFrameCandidateId: selectedCandidateId,
+        startFrameReferenceHint: selectedCandidateLabel,
+        startFrameImageUrl: selectedCandidateThumbnailUrl,
+        startFrameUploadObjectPath: selectedCandidateObjectPath,
+        startFrameSummary: `Kandidat: ${selectedCandidateLabel}`
+      }
+    });
+
+    if (scriptDraft.status !== 200) {
+      throw new Error(`SCRIPT_DRAFT_FAILED:${scriptDraft.status}:${String(scriptDraft.body.error ?? '')}`);
+    }
+
+    const approvedScript = String(scriptDraft.body.script ?? '').trim();
+    if (!approvedScript) {
+      throw new Error('SCRIPT_DRAFT_EMPTY');
+    }
+
     const createProject = await requestApi(base, '/v1/projects', {
       method: 'POST',
       token: accessToken,
       body: {
-        organizationId: 'org_free_customer_smoke',
-        topic: 'Frühlingsangebot für lokale Bäckerei in Berlin',
+        organizationId,
+        topic,
         language: 'de',
         voice: 'de_female_01',
         variantType: 'SHORT_15'
@@ -371,7 +461,35 @@ const run = async () => {
       method: 'POST',
       token: accessToken,
       body: {
-        conceptId: 'concept_web_vertical_slice', moodPreset: 'commercial_cta', approvedScript: 'Kurzes, klares Skript mit Abschlusssatz und CTA.', variantType: 'SHORT_15', startFrameStyle: 'storefront_hero'
+        conceptId,
+        moodPreset,
+        approvedScript,
+        approvedScriptV2: scriptDraft.body.scriptV2,
+        variantType: 'SHORT_15',
+        creativeIntent,
+        brandProfile,
+        startFrameCandidateId: selectedCandidateId,
+        startFrameStyle: selectedCandidateStyle,
+        startFrameReferenceHint: selectedCandidateLabel,
+        startFrameUploadObjectPath: selectedCandidateObjectPath,
+        generationPayload: {
+          topic,
+          brandProfile,
+          creativeIntent: {
+            effectGoals: [{ id: 'sell_conversion', weight: 1, priority: 1 }],
+            narrativeFormats: [{ id: 'commercial', weight: 1, priority: 1 }],
+            shotStyles: [{ id: 'product_macro', weight: 0.8, priority: 2 }],
+            energyMode: 'high'
+          },
+          startFrame: {
+            style: selectedCandidateStyle,
+            candidateId: selectedCandidateId,
+            uploadObjectPath: selectedCandidateObjectPath,
+            referenceHint: selectedCandidateLabel,
+            summary: `Kandidat: ${selectedCandidateLabel}`
+          },
+          userEditedFlowScript: approvedScript
+        }
       }
     });
 
@@ -398,6 +516,21 @@ const run = async () => {
     if (final.status !== 'READY') {
       throw new Error(`JOB_NOT_READY:${final.status}`);
     }
+
+    const timeline = Array.isArray(final.body.timeline) ? (final.body.timeline as JsonObject[]) : [];
+    const storyboardSelectedRaw = timeline.find((event) => String(event.event ?? '') === 'STORYBOARD_SELECTED');
+    const selectedStartframeRaw = timeline.find((event) => String(event.event ?? '') === 'SELECTED_STARTFRAME');
+    const videoConceptRaw = timeline.find((event) => String(event.event ?? '') === 'VIDEO_CONCEPT_APPLIED');
+    const parseDetail = (value: unknown) => {
+      try {
+        return JSON.parse(String(value ?? '')) as JsonObject;
+      } catch {
+        return {} as JsonObject;
+      }
+    };
+    const storyboardSelected = parseDetail(storyboardSelectedRaw?.detail);
+    const selectedStartframe = parseDetail(selectedStartframeRaw?.detail);
+    const videoConcept = parseDetail(videoConceptRaw?.detail);
 
     const assets = await requestApi(base, `/v1/jobs/${jobId}/assets`, {
       method: 'GET',
@@ -441,10 +574,22 @@ const run = async () => {
           loginStatus: login.status,
           entitlementReason: String(me.body.reason ?? ''),
           canRunJob,
+          brandUpsertStatus: brandUpsert.status,
+          startframeCandidatesStatus: candidates.status,
+          startframeCandidateId: selectedCandidateId,
+          startframeCandidateObjectPath: selectedCandidateObjectPath,
+          scriptDraftStatus: scriptDraft.status,
+          scriptWithinTarget: Boolean(scriptDraft.body.withinTarget),
+          scriptEstimatedSeconds: Number(scriptDraft.body.estimatedSeconds ?? 0),
           projectCreateStatus: createProject.status,
           selectStatus: select.status,
           generateStatus: generate.status,
           jobStatus: final.status,
+          storyboardStartFrameMode: String(storyboardSelected.startFrameMode ?? ''),
+          storyboardReferenceObjectPath: String(storyboardSelected.startFrameReferenceObjectPath ?? ''),
+          selectedStartframeMode: String(selectedStartframe.startFrameMode ?? ''),
+          selectedStartframeReferenceObjectPath: String(selectedStartframe.referenceObjectPath ?? ''),
+          videoConceptReferenceObjectPath: String(videoConcept.startFrameReferenceObjectPath ?? ''),
           assetsStatus: assets.status,
           finalVideoObjectPath: String(finalVideo.objectPath ?? ''),
           signedUrlProbeStatus: probe.status,
@@ -471,6 +616,9 @@ const run = async () => {
 
     if (prevFreePlan === undefined) delete process.env.ENABLE_FREE_PLAN_MVP;
     else process.env.ENABLE_FREE_PLAN_MVP = prevFreePlan;
+
+    if (prevSimProviderFallback === undefined) delete process.env.SIM_PROVIDER_FALLBACK;
+    else process.env.SIM_PROVIDER_FALLBACK = prevSimProviderFallback;
   }
 
   process.exit(exitCode);

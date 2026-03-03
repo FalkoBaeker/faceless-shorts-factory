@@ -83,8 +83,10 @@ const cfg = {
   maxRpmTts: Number(process.env.MAX_RPM_TTS ?? 10),
   maxRpmVideo: Number(process.env.MAX_RPM_VIDEO ?? 3),
   openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1.5',
-  openaiImageModelFallback: process.env.OPENAI_IMAGE_MODEL_FALLBACK ?? 'gpt-image-1'
+  openaiImageModelFallback: process.env.OPENAI_IMAGE_MODEL_FALLBACK ?? 'gpt-image-1.5'
 };
+
+const simulationProviderFallbackEnabled = () => (process.env.SIM_PROVIDER_FALLBACK ?? 'false').trim().toLowerCase() === 'true';
 
 type VariantType = 'SHORT_15' | 'MASTER_30';
 
@@ -1059,21 +1061,33 @@ const extractWebsiteContextWithStrictLlm = async (input: {
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.006, 'llm-strict-step1-website-context');
 
-  const response = await openAiPostJson('/v1/responses', {
-    model: STRICT_PROMPT_ARCHITECT_MODEL,
-    input:
-      'Extrahiere aus Branding + Website-Content einen kompakten Brand-Context für einen Sora-Prompt. ' +
-      'Gib nur klaren Fließtext zurück (max 1200 Zeichen), keine Bulletpoints, kein JSON. ' +
-      `Topic: ${input.topic}. ` +
-      `Creative intent: ${JSON.stringify(input.creativeIntent)}. ` +
-      `Branding JSON: ${JSON.stringify(input.brandProfile ?? {})}. ` +
-      `Website URL: ${fetched.normalizedUrl}. ` +
-      `Website text excerpt: ${fetched.text}`,
-    max_output_tokens: 700
-  });
+  let contextText = '';
+  try {
+    const response = await openAiPostJson('/v1/responses', {
+      model: STRICT_PROMPT_ARCHITECT_MODEL,
+      input:
+        'Extrahiere aus Branding + Website-Content einen kompakten Brand-Context für einen Sora-Prompt. ' +
+        'Gib nur klaren Fließtext zurück (max 1200 Zeichen), keine Bulletpoints, kein JSON. ' +
+        `Topic: ${input.topic}. ` +
+        `Creative intent: ${JSON.stringify(input.creativeIntent)}. ` +
+        `Branding JSON: ${JSON.stringify(input.brandProfile ?? {})}. ` +
+        `Website URL: ${fetched.normalizedUrl}. ` +
+        `Website text excerpt: ${fetched.text}`,
+      max_output_tokens: 700
+    });
+    contextText = parseOpenAiResponseText(response).trim();
+  } catch (error) {
+    if (!simulationProviderFallbackEnabled()) throw error;
+    contextText = '';
+    logEvent({
+      event: 'strict_website_context_llm_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error)
+    });
+  }
 
-  const contextText = parseOpenAiResponseText(response).trim();
-  const websiteContext = contextText || fetched.text.slice(0, 1200);
+  const websiteContext = contextText || fetched.text.slice(0, 1200) || buildBrandingFallbackContext(input);
 
   if (!websiteContext.trim()) {
     throw new ProviderRuntimeError('STRICT_STEP1_WEBSITE_CONTEXT_EMPTY', { provider: 'openai', fatal: true });
@@ -1114,31 +1128,84 @@ const buildStrictStep1ImagePrompt = (input: {
   );
 };
 
+const createSimulatedStartframeImageBytes = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-sim-image-'));
+  const outputPath = join(dir, 'startframe.png');
+
+  try {
+    const run = spawnSync(
+      'ffmpeg',
+      ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=1024x1024:r=1:d=1', '-frames:v', '1', outputPath],
+      { encoding: 'utf8' }
+    );
+    if (run.status !== 0) {
+      const stderr = String(run.stderr ?? '').split(/\r?\n/).filter(Boolean).slice(-6).join(' | ').slice(0, 500);
+      throw new ProviderRuntimeError(`SIM_IMAGE_FALLBACK_FFMPEG_FAILED:${stderr || 'unknown'}`, { provider: 'ffmpeg', fatal: true });
+    }
+    return readFileSync(outputPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 const createStrictStep1Image = async (prompt: string) => {
-  reserveBudget(0.04, 'image-generation-strict-step1');
-
-  const response = await openAiPostJson('/v1/images/generations', {
-    model: 'gpt-image-1.5',
-    prompt,
-    size: '1024x1024'
-  });
-
-  const data = Array.isArray(response.data) ? (response.data[0] as Record<string, unknown> | undefined) : undefined;
-  const b64 = data?.b64_json;
-  if (typeof b64 !== 'string' || !b64.length) {
-    throw new ProviderRuntimeError('STRICT_STEP1_IMAGE_B64_MISSING', { provider: 'openai', fatal: true });
+  if (simulationProviderFallbackEnabled()) {
+    return {
+      bytes: createSimulatedStartframeImageBytes(),
+      diagnostics: {
+        configuredPrimaryModel: 'gpt-image-1.5',
+        configuredFallbackModel: null,
+        attemptedModels: ['gpt-image-1.5'],
+        modelUsed: 'sim-image-fallback',
+        fallbackUsed: true
+      }
+    };
   }
 
-  return {
-    bytes: Buffer.from(b64, 'base64'),
-    diagnostics: {
-      configuredPrimaryModel: 'gpt-image-1.5',
-      configuredFallbackModel: null,
-      attemptedModels: ['gpt-image-1.5'],
-      modelUsed: 'gpt-image-1.5',
-      fallbackUsed: false
+  reserveBudget(0.04, 'image-generation-strict-step1');
+
+  try {
+    const response = await openAiPostJson('/v1/images/generations', {
+      model: 'gpt-image-1.5',
+      prompt,
+      size: '1024x1024'
+    });
+
+    const data = Array.isArray(response.data) ? (response.data[0] as Record<string, unknown> | undefined) : undefined;
+    const b64 = data?.b64_json;
+    if (typeof b64 !== 'string' || !b64.length) {
+      throw new ProviderRuntimeError('STRICT_STEP1_IMAGE_B64_MISSING', { provider: 'openai', fatal: true });
     }
-  };
+
+    return {
+      bytes: Buffer.from(b64, 'base64'),
+      diagnostics: {
+        configuredPrimaryModel: 'gpt-image-1.5',
+        configuredFallbackModel: null,
+        attemptedModels: ['gpt-image-1.5'],
+        modelUsed: 'gpt-image-1.5',
+        fallbackUsed: false
+      }
+    };
+  } catch (error) {
+    if (!simulationProviderFallbackEnabled()) throw error;
+    logEvent({
+      event: 'strict_step1_image_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error)
+    });
+    return {
+      bytes: createSimulatedStartframeImageBytes(),
+      diagnostics: {
+        configuredPrimaryModel: 'gpt-image-1.5',
+        configuredFallbackModel: null,
+        attemptedModels: ['gpt-image-1.5'],
+        modelUsed: 'sim-image-fallback',
+        fallbackUsed: true
+      }
+    };
+  }
 };
 
 const generateStrictStep1SoraPrompt = async (input: {
@@ -1154,46 +1221,101 @@ const generateStrictStep1SoraPrompt = async (input: {
     throw new ProviderRuntimeError('STRICT_STEP1_STARTFRAME_IMAGE_MISSING', { provider: 'openai', fatal: true });
   }
 
+  if (simulationProviderFallbackEnabled()) {
+    return {
+      soraPrompt: [
+        `Create a vertical 9:16 social video about "${input.topic}".`,
+        `Start from provided reference frame and keep subject continuity.`,
+        `Mood preset: ${input.moodPreset}.`,
+        `Energy mode: ${input.creativeIntent.energyMode}.`,
+        `Brand context: ${input.websiteBundle.websiteContext.slice(0, 300)}`
+      ].join(' '),
+      model: `${STRICT_PROMPT_ARCHITECT_MODEL}_sim_fallback`,
+      websiteUrl: input.websiteBundle.websiteUrl,
+      websiteContext: input.websiteBundle.websiteContext,
+      guidelinePath: readSoraGuidelineStrict().path
+    };
+  }
+
   const guideline = readSoraGuidelineStrict();
+  const guidelineMaxChars = Math.max(
+    1500,
+    parsePositiveInt(process.env.STRICT_STEP1_SORA_GUIDELINE_MAX_CHARS ?? 6000, 6000)
+  );
+  const guidelineExcerpt = guideline.content.slice(0, guidelineMaxChars);
+  if (guidelineExcerpt.length < guideline.content.length) {
+    logEvent({
+      event: 'strict_step1_guideline_truncated',
+      level: 'WARN',
+      provider: 'config',
+      detail: `chars=${guidelineExcerpt.length}/${guideline.content.length}`
+    });
+  }
+  const startFrameImageRef = input.startFrameImageUrl.startsWith('data:')
+    ? 'embedded_input_image'
+    : input.startFrameImageUrl;
 
   const humorIntent = input.creativeIntent.effectGoals.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
   const promptText =
-    `Nehme das Startbild (${input.startFrameImageUrl}) und nehme den Branding-Content und die weiteren Inputs und erstelle einen Sora-Prompt, indem du den Sora-Guideline zu Hilfe nimmst. ` +
+    `Nehme das Startbild (${startFrameImageRef}) und nehme den Branding-Content und die weiteren Inputs und erstelle einen Sora-Prompt, indem du den Sora-Guideline zu Hilfe nimmst. ` +
     `Und erstelle ein virales TikTok-Video zum Thema ${input.topic}. ` +
     `Inputs: Energy Level=${input.creativeIntent.energyMode}, User Intent=${humorIntent}, MoodPreset=${input.moodPreset}, ` +
     `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${input.websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
-    `Sora Guideline: ${guideline.content}. ` +
+    `Sora Guideline (excerpt): ${guidelineExcerpt}. ` +
     `Gib nur den finalen Sora-Prompt als reinen Text aus.`;
 
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.012, 'llm-strict-step1-sora-prompt');
 
-  const response = await openAiPostJson('/v1/responses', {
-    model: STRICT_PROMPT_ARCHITECT_MODEL,
-    input: [
-      {
-        role: 'user',
-        content: [
-          { type: 'input_text', text: promptText },
-          { type: 'input_image', image_url: input.startFrameImageUrl }
-        ]
-      }
-    ],
-    max_output_tokens: 2400
-  });
+  try {
+    const response = await openAiPostJson('/v1/responses', {
+      model: STRICT_PROMPT_ARCHITECT_MODEL,
+      input: [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: promptText },
+            { type: 'input_image', image_url: input.startFrameImageUrl }
+          ]
+        }
+      ],
+      max_output_tokens: 2400
+    });
 
-  const soraPrompt = parseOpenAiResponseText(response).trim();
-  if (!soraPrompt) {
-    throw new ProviderRuntimeError('STRICT_STEP1_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+    const soraPrompt = parseOpenAiResponseText(response).trim();
+    if (!soraPrompt) {
+      throw new ProviderRuntimeError('STRICT_STEP1_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+    }
+
+    return {
+      soraPrompt,
+      model: STRICT_PROMPT_ARCHITECT_MODEL,
+      websiteUrl: input.websiteBundle.websiteUrl,
+      websiteContext: input.websiteBundle.websiteContext,
+      guidelinePath: guideline.path
+    };
+  } catch (error) {
+    if (!simulationProviderFallbackEnabled()) throw error;
+    logEvent({
+      event: 'strict_step1_sora_prompt_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error)
+    });
+    return {
+      soraPrompt: [
+        `Create a vertical 9:16 social video about "${input.topic}".`,
+        `Start from provided reference frame and keep subject continuity.`,
+        `Mood preset: ${input.moodPreset}.`,
+        `Energy mode: ${input.creativeIntent.energyMode}.`,
+        `Brand context: ${input.websiteBundle.websiteContext.slice(0, 300)}`
+      ].join(' '),
+      model: `${STRICT_PROMPT_ARCHITECT_MODEL}_sim_fallback`,
+      websiteUrl: input.websiteBundle.websiteUrl,
+      websiteContext: input.websiteBundle.websiteContext,
+      guidelinePath: guideline.path
+    };
   }
-
-  return {
-    soraPrompt,
-    model: STRICT_PROMPT_ARCHITECT_MODEL,
-    websiteUrl: input.websiteBundle.websiteUrl,
-    websiteContext: input.websiteBundle.websiteContext,
-    guidelinePath: guideline.path
-  };
 };
 
 const generateStrictStep2SoraPrompt = async (input: {
@@ -1205,29 +1327,50 @@ const generateStrictStep2SoraPrompt = async (input: {
     throw new ProviderRuntimeError('STRICT_STEP2_PREVIOUS_PROMPT_MISSING', { provider: 'openai', fatal: true });
   }
 
+  if (simulationProviderFallbackEnabled()) {
+    return {
+      soraPrompt: `${input.previousPrompt}\nRefinement based on user script: ${input.userScript}`,
+      model: `${STRICT_PROMPT_ARCHITECT_MODEL}_sim_fallback`
+    };
+  }
+
   checkRate('llm', cfg.maxRpmLlm);
   reserveBudget(0.008, 'llm-strict-step2-sora-prompt');
 
-  const response = await openAiPostJson('/v1/responses', {
-    model: STRICT_PROMPT_ARCHITECT_MODEL,
-    input:
-      'Nimm deinen vorigen Sora-Prompt und passe ihn anhand des neuen Skriptwunsches an. ' +
-      `Topic: ${input.topic}. ` +
-      `Voriger Sora-Prompt: ${input.previousPrompt}. ` +
-      `Gewünschtes Skript (User-Edit): ${input.userScript}. ` +
-      'Gib ausschließlich den finalen Sora-Prompt als reinen Text aus.',
-    max_output_tokens: 2200
-  });
+  try {
+    const response = await openAiPostJson('/v1/responses', {
+      model: STRICT_PROMPT_ARCHITECT_MODEL,
+      input:
+        'Nimm deinen vorigen Sora-Prompt und passe ihn anhand des neuen Skriptwunsches an. ' +
+        `Topic: ${input.topic}. ` +
+        `Voriger Sora-Prompt: ${input.previousPrompt}. ` +
+        `Gewünschtes Skript (User-Edit): ${input.userScript}. ` +
+        'Gib ausschließlich den finalen Sora-Prompt als reinen Text aus.',
+      max_output_tokens: 2200
+    });
 
-  const soraPrompt = parseOpenAiResponseText(response).trim();
-  if (!soraPrompt) {
-    throw new ProviderRuntimeError('STRICT_STEP2_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+    const soraPrompt = parseOpenAiResponseText(response).trim();
+    if (!soraPrompt) {
+      throw new ProviderRuntimeError('STRICT_STEP2_SORA_PROMPT_EMPTY', { provider: 'openai', fatal: true });
+    }
+
+    return {
+      soraPrompt,
+      model: STRICT_PROMPT_ARCHITECT_MODEL
+    };
+  } catch (error) {
+    if (!simulationProviderFallbackEnabled()) throw error;
+    logEvent({
+      event: 'strict_step2_sora_prompt_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error)
+    });
+    return {
+      soraPrompt: `${input.previousPrompt}\nRefinement based on user script: ${input.userScript}`,
+      model: `${STRICT_PROMPT_ARCHITECT_MODEL}_sim_fallback`
+    };
   }
-
-  return {
-    soraPrompt,
-    model: STRICT_PROMPT_ARCHITECT_MODEL
-  };
 };
 
 const generateViewerScriptFromStrictSoraPrompt = async (input: {
@@ -1239,26 +1382,40 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
     throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_PROMPT_EMPTY', { provider: 'openai', fatal: true });
   }
 
-  checkRate('llm', cfg.maxRpmLlm);
-  reserveBudget(0.008, 'llm-strict-viewer-script');
-
-  const response = await openAiPostJson('/v1/responses', {
-    model: STRICT_PROMPT_ARCHITECT_MODEL,
-    input:
-      'Erstelle aus diesem Sora-Prompt ein für Zuschauer geeignetes Skript. ' +
-      'Keine technischen Lens-/Kamera-Parameter, aber klar beschreiben, was nacheinander im Video passiert, inklusive Dialogen, Bewegungen und Schnitten. ' +
-      `Topic: ${input.topic}. Ziel-Länge ca. ${input.targetSeconds}s. ` +
-      `Sora-Prompt: ${input.soraPrompt}. ` +
-      'Gib nur das finale Skript als Fließtext aus.',
-    max_output_tokens: 1800
-  });
-
-  const script = parseOpenAiResponseText(response).trim();
-  if (!script) {
-    throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_EMPTY', { provider: 'openai', fatal: true });
+  if (simulationProviderFallbackEnabled()) {
+    const topic = input.topic.trim() || 'dein Thema';
+    const targetSeconds = Math.max(10, Math.min(90, Math.round(input.targetSeconds)));
+    const cta = `Jetzt informieren und den naechsten Schritt mit ${topic} starten.`;
+    return [
+      `Hook: Stop scrolling - ${topic} in ${targetSeconds} Sekunden klar erklaert.`,
+      `Zeige zuerst den klaren Einstieg ins Motiv, dann den wichtigsten Nutzen fuer die Zielgruppe.`,
+      `Danach ein konkretes Vorher-Nachher oder einen sichtbaren Beweis in einer neuen Szene.`,
+      `Zum Schluss klare Handlungsaufforderung: ${cta}`
+    ].join(' ');
   }
 
-  return script;
+  checkRate('llm', cfg.maxRpmLlm);
+  reserveBudget(0.008, 'llm-strict-viewer-script');
+  const viewerScriptInput =
+    'Erstelle aus diesem Sora-Prompt ein für Zuschauer geeignetes Skript. ' +
+    'Keine technischen Lens-/Kamera-Parameter, aber klar beschreiben, was nacheinander im Video passiert, inklusive Dialogen, Bewegungen und Schnitten. ' +
+    `Topic: ${input.topic}. Ziel-Länge ca. ${input.targetSeconds}s. ` +
+    `Sora-Prompt: ${input.soraPrompt}. ` +
+    'Gib nur das finale Skript als Fließtext aus.';
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const response = await openAiPostJson('/v1/responses', {
+      model: STRICT_PROMPT_ARCHITECT_MODEL,
+      input: viewerScriptInput,
+      max_output_tokens: 1800
+    });
+
+    const script = parseOpenAiResponseText(response).trim();
+    if (script) return script;
+    if (attempt < 2) await sleep(250);
+  }
+
+  throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_EMPTY', { provider: 'openai', fatal: true });
 };
 
 const buildScriptV2FromViewerScript = (script: string): ScriptV2 => {
@@ -2028,6 +2185,7 @@ export const generateScriptDraft = async (input: {
   creativeIntent?: CreativeIntentMatrix;
   brandProfile?: BrandProfile;
   startFrameHint?: string;
+  startFrameImageUrl?: string;
   startFrameReferenceObjectPath?: string;
   regenerate?: boolean;
 }) => {
@@ -2052,15 +2210,38 @@ export const generateScriptDraft = async (input: {
     websiteContext: strictWebsiteBundle.websiteContext
   });
 
-  const strictImage = await createStrictStep1Image(strictImagePromptText);
-  const strictImageDataUrl = `data:image/png;base64,${strictImage.bytes.toString('base64')}`;
+  let strictStartFrameImageUrl = '';
+  if (input.startFrameReferenceObjectPath) {
+    try {
+      strictStartFrameImageUrl = await supabaseSignedUrl(input.startFrameReferenceObjectPath);
+    } catch (error) {
+      logEvent({
+        event: 'draft_startframe_reference_url_failed',
+        level: 'WARN',
+        provider: 'supabase',
+        detail: String((error as Error)?.message ?? error).slice(0, 220)
+      });
+    }
+  }
+  if (!strictStartFrameImageUrl) {
+    const candidateImageUrl = String(input.startFrameImageUrl ?? '').trim();
+    const isHttp = /^https?:\/\//i.test(candidateImageUrl);
+    const isDataImage = /^data:image\/(png|jpe?g|webp);/i.test(candidateImageUrl);
+    if (isHttp || isDataImage) {
+      strictStartFrameImageUrl = candidateImageUrl;
+    }
+  }
+  if (!strictStartFrameImageUrl) {
+    const strictImage = await createStrictStep1Image(strictImagePromptText);
+    strictStartFrameImageUrl = `data:image/png;base64,${strictImage.bytes.toString('base64')}`;
+  }
 
   const strictStep1Prompt = await generateStrictStep1SoraPrompt({
     topic: input.topic,
     brandProfile: input.brandProfile,
     creativeIntent: effectiveIntent,
     moodPreset,
-    startFrameImageUrl: strictImageDataUrl,
+    startFrameImageUrl: strictStartFrameImageUrl,
     startFrameHint: input.startFrameHint,
     websiteBundle: strictWebsiteBundle
   });
@@ -2315,6 +2496,41 @@ const createImage = async (prompt: string) => {
   throw lastError instanceof Error ? lastError : new ProviderRuntimeError('IMAGE_GENERATION_FAILED', { provider: 'openai', fatal: true });
 };
 
+const createSimulatedVideoBytes = (input: {
+  seconds: number;
+  inputReference?: { bytes: Buffer; fileName: string; mimeType?: string };
+}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-sim-video-'));
+  const outputPath = join(dir, 'simulated.mp4');
+
+  try {
+    const args = [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      `testsrc2=size=720x1280:rate=30:duration=${input.seconds}`,
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+      outputPath
+    ];
+
+    const run = spawnSync('ffmpeg', args, { encoding: 'utf8' });
+    if (run.status !== 0) {
+      const stderr = String(run.stderr ?? '').split(/\r?\n/).filter(Boolean).slice(-6).join(' | ').slice(0, 500);
+      throw new ProviderRuntimeError(`SIM_VIDEO_FALLBACK_FFMPEG_FAILED:${stderr || 'unknown'}`, { provider: 'ffmpeg', fatal: true });
+    }
+
+    return readFileSync(outputPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 const createVideo = async (
   prompt: string,
   input: {
@@ -2328,35 +2544,67 @@ const createVideo = async (
   const effectiveSeconds = Math.min(12, Math.max(4, Math.round(input.secondsOverride ?? sourceSeconds)));
   const seconds = String(effectiveSeconds);
   const model = 'sora-2';
+  const simulationFallback = simulationProviderFallbackEnabled();
   const estimated = effectiveSeconds * 0.1;
   reserveBudget(estimated, `video-${model}`);
 
-  const created = await openAiPostMultipart(
-    '/v1/videos',
-    {
-      prompt,
-      model,
-      seconds,
-      size: '720x1280'
-    },
-    input.inputReference
-      ? {
-          fieldName: 'input_reference',
-          bytes: input.inputReference.bytes,
-          fileName: input.inputReference.fileName,
-          mimeType: input.inputReference.mimeType ?? 'image/png'
-        }
-      : undefined
-  );
+  const simulationResult = (reason: string) => {
+    logEvent({
+      event: 'video_simulation_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: reason.slice(0, 220)
+    });
+    return {
+      bytes: createSimulatedVideoBytes({ seconds: effectiveSeconds, inputReference: input.inputReference }),
+      videoId: `sim_${randomUUID().slice(0, 8)}`,
+      model: `${model}_sim_fallback`,
+      seconds
+    };
+  };
+
+  if (simulationFallback) {
+    return simulationResult('simulation_mode_enabled');
+  }
+
+  let created: Record<string, unknown>;
+  try {
+    created = await openAiPostMultipart(
+      '/v1/videos',
+      {
+        prompt,
+        model,
+        seconds,
+        size: '720x1280'
+      },
+      input.inputReference
+        ? {
+            fieldName: 'input_reference',
+            bytes: input.inputReference.bytes,
+            fileName: input.inputReference.fileName,
+            mimeType: input.inputReference.mimeType ?? 'image/png'
+          }
+        : undefined
+    );
+  } catch (error) {
+    if (simulationFallback) {
+      return simulationResult(`create_error:${String((error as Error)?.message ?? error)}`);
+    }
+    throw error;
+  }
 
   const videoId = String(created.id ?? '');
   if (!videoId) throw new ProviderRuntimeError('VIDEO_ID_MISSING', { provider: 'openai', fatal: true });
 
-  const pollSleepMs = Math.max(2_000, Number(process.env.VIDEO_POLL_SLEEP_MS ?? 4_000));
-  const maxWaitMs = Math.max(240_000, Number(process.env.VIDEO_POLL_TIMEOUT_MS ?? 900_000));
+  const defaultPollSleepMs = simulationFallback ? 1_000 : 4_000;
+  const pollSleepMs = Math.max(1_000, Number(process.env.VIDEO_POLL_SLEEP_MS ?? defaultPollSleepMs));
+  const defaultPollTimeoutMs = simulationFallback ? 20_000 : 900_000;
+  const minPollTimeoutMs = simulationFallback ? 20_000 : 240_000;
+  const maxWaitMs = Math.max(minPollTimeoutMs, Number(process.env.VIDEO_POLL_TIMEOUT_MS ?? defaultPollTimeoutMs));
   const attemptsFromTimeout = Math.ceil(maxWaitMs / pollSleepMs);
-  const attemptsOverride = Number(process.env.VIDEO_POLL_ATTEMPTS_MAX ?? 270);
-  const maxAttempts = Math.max(30, attemptsFromTimeout, attemptsOverride);
+  const attemptsOverride = Number(process.env.VIDEO_POLL_ATTEMPTS_MAX ?? (simulationFallback ? 20 : 270));
+  const minAttempts = simulationFallback ? 5 : 30;
+  const maxAttempts = Math.max(minAttempts, attemptsFromTimeout, attemptsOverride);
 
   let status = String(created.status ?? 'queued');
   let attempts = 0;
@@ -2366,6 +2614,9 @@ const createVideo = async (
     const polled = await openAiGet(`/v1/videos/${videoId}`);
     status = String(polled.status ?? status);
     if (status === 'failed' || status === 'canceled') {
+      if (simulationFallback) {
+        return simulationResult(`status_${status}:${videoId}`);
+      }
       throw new ProviderRuntimeError(`VIDEO_GENERATION_${status.toUpperCase()}:${videoId}`, { provider: 'openai', fatal: true });
     }
     if (status === 'completed') break;
@@ -2373,13 +2624,24 @@ const createVideo = async (
 
   if (status !== 'completed') {
     const maxWaitSec = Math.floor((maxAttempts * pollSleepMs) / 1000);
+    if (simulationFallback) {
+      return simulationResult(`poll_timeout:${videoId}:${status}:max_wait_sec=${maxWaitSec}`);
+    }
     throw new ProviderRuntimeError(
       `VIDEO_GENERATION_TIMEOUT:${videoId}:${status}:attempts=${attempts}/${maxAttempts}:max_wait_sec=${maxWaitSec}`,
       { provider: 'openai', fatal: true }
     );
   }
 
-  const bytes = await openAiGetBinary(`/v1/videos/${videoId}/content`);
+  let bytes: Buffer;
+  try {
+    bytes = await openAiGetBinary(`/v1/videos/${videoId}/content`);
+  } catch (error) {
+    if (simulationFallback) {
+      return simulationResult(`content_error:${videoId}:${String((error as Error)?.message ?? error)}`);
+    }
+    throw error;
+  }
   return { bytes, videoId, model, seconds };
 };
 
@@ -2391,6 +2653,46 @@ const createOpenAiTts = async (text: string) => {
     voice: 'alloy',
     input: text
   });
+};
+
+const createSimulatedTtsBytes = (text: string) => {
+  const dir = mkdtempSync(join(tmpdir(), 'fsf-sim-tts-'));
+  const outputPath = join(dir, 'voice.mp3');
+  const wordCount = Math.max(1, text.trim().split(/\s+/).filter(Boolean).length);
+  const durationSeconds = Math.max(3, Math.min(22, Math.ceil(wordCount / 2.6)));
+
+  try {
+    const run = spawnSync(
+      'ffmpeg',
+      [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `sine=frequency=190:sample_rate=44100:duration=${durationSeconds}`,
+        '-ac',
+        '2',
+        '-ar',
+        '44100',
+        '-b:a',
+        '128k',
+        outputPath
+      ],
+      { encoding: 'utf8' }
+    );
+
+    if (run.status !== 0) {
+      const stderr = String(run.stderr ?? '').split(/\r?\n/).filter(Boolean).slice(-6).join(' | ').slice(0, 500);
+      throw new ProviderRuntimeError(`SIM_TTS_FALLBACK_FFMPEG_FAILED:${stderr || 'unknown'}`, {
+        provider: 'ffmpeg',
+        fatal: true
+      });
+    }
+
+    return readFileSync(outputPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 };
 
 const createElevenTts = async (text: string) => {
@@ -2414,6 +2716,10 @@ const createElevenTts = async (text: string) => {
 };
 
 const createTts = async (text: string) => {
+  if (simulationProviderFallbackEnabled()) {
+    return { bytes: createSimulatedTtsBytes(text), provider: 'simulated-tts' };
+  }
+
   if (cfg.ttsProvider === 'elevenlabs') {
     try {
       return { bytes: await createElevenTts(text), provider: 'elevenlabs' };
@@ -2487,6 +2793,10 @@ const extensionForMime = (mimeType: string) => {
 };
 
 const thumbnailCache = new Map<string, StoredAsset>();
+const simulatedStartframeThumbnailPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i9xQAAAAASUVORK5CYII=',
+  'base64'
+);
 
 const buildStartFrameThumbnailSignature = (input: {
   candidateId: string;
@@ -2494,16 +2804,38 @@ const buildStartFrameThumbnailSignature = (input: {
   style: StartFrameStyle;
   label: string;
   description: string;
+  prompt?: string;
   moodPreset: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
   contextSignature?: string;
 }) => {
+  const brandSignature = JSON.stringify({
+    companyName: input.brandProfile?.companyName ?? '',
+    websiteUrl: input.brandProfile?.websiteUrl ?? '',
+    brandTone: input.brandProfile?.brandTone ?? '',
+    audienceHint: input.brandProfile?.audienceHint ?? '',
+    valueProposition: input.brandProfile?.valueProposition ?? ''
+  })
+    .trim()
+    .toLowerCase();
+  const intentSignature = JSON.stringify({
+    energyMode: input.creativeIntent?.energyMode ?? 'auto',
+    effectGoals: (input.creativeIntent?.effectGoals ?? []).map((entry) => `${entry.id}:${entry.weight ?? ''}:${entry.priority ?? ''}`),
+    narrativeFormats: (input.creativeIntent?.narrativeFormats ?? []).map((entry) => `${entry.id}:${entry.weight ?? ''}:${entry.priority ?? ''}`)
+  })
+    .trim()
+    .toLowerCase();
   const canonical = [
     input.candidateId.trim().toLowerCase(),
     input.topic.trim().toLowerCase(),
     input.style,
     input.label.trim().toLowerCase(),
     input.description.trim().toLowerCase(),
+    String(input.prompt ?? '').trim().toLowerCase(),
     input.moodPreset,
+    brandSignature,
+    intentSignature,
     String(input.contextSignature ?? '').trim().toLowerCase()
   ].join('|');
   return createHash('sha1').update(canonical).digest('hex').slice(0, 12);
@@ -2552,10 +2884,13 @@ export const generateStartFrameThumbnail = async (input: {
   style: StartFrameStyle;
   label: string;
   description: string;
+  prompt?: string;
   moodPreset: MoodPreset;
+  creativeIntent?: CreativeIntentMatrix;
+  brandProfile?: BrandProfile;
   contextSignature?: string;
 }) => {
-  if (!cfg.openaiApiKey || cfg.storageProvider !== 'supabase') {
+  if (cfg.storageProvider !== 'supabase') {
     return null;
   }
 
@@ -2565,19 +2900,43 @@ export const generateStartFrameThumbnail = async (input: {
   if (cached) {
     return cached;
   }
+  const objectPath = `catalog/startframe-thumbnails/${sanitizeSegment(input.candidateId, 'candidate')}-${promptSignature}.png`;
+
+  if (simulationProviderFallbackEnabled()) {
+    try {
+      const simulatedAsset = await uploadAsset(
+        'catalog-startframe',
+        objectPath,
+        simulatedStartframeThumbnailPng,
+        'image/png',
+        'simulated-image-thumbnail'
+      );
+      thumbnailCache.set(cacheKey, simulatedAsset);
+      return simulatedAsset;
+    } catch {
+      return null;
+    }
+  }
+
+  if (!cfg.openaiApiKey) {
+    return null;
+  }
 
   const thumbPrompt = [
     `Create a high-quality 9:16 startframe thumbnail for a short social video.`,
-    `Topic: ${input.topic}.`,
+    `Topic (hard lock): ${input.topic}.`,
+    `If the topic names a specific subtype, breed, model, or product, show exactly that entity and do not substitute it with adjacent or generic alternatives.`,
     `Startframe style: ${input.label}.`,
     `Mood: ${moodPromptMap[input.moodPreset]}`,
+    `Candidate prompt guidance: ${input.prompt ?? input.description}.`,
+    `Brand profile: ${JSON.stringify(input.brandProfile ?? {})}.`,
+    `Creative intent: ${JSON.stringify(input.creativeIntent ?? {})}.`,
     `Description: ${input.description}`,
-    `Output should look like a realistic keyframe still (no collage, no text overlays).`
+    `Output should look like a realistic keyframe still (no collage, no text overlays). Keep it category-accurate and topic-faithful.`
   ].join(' ');
 
   try {
     const imageResult = await createImage(thumbPrompt);
-    const objectPath = `catalog/startframe-thumbnails/${sanitizeSegment(input.candidateId, 'candidate')}-${promptSignature}.png`;
     const asset = await uploadAsset('catalog-startframe', objectPath, imageResult.bytes, 'image/png', 'openai-image-thumbnail');
     thumbnailCache.set(cacheKey, asset);
     return asset;
@@ -2700,6 +3059,25 @@ const createVideoWithMotionEnforcement = async (input: {
   const baseStaticTolerance = parseRangeFloat(process.env.MOTION_STATIC_TOLERANCE_SECONDS ?? 0.15, 0.15, 0, 1.2);
   const staticTolerance = input.calmMode ? Math.min(1.8, baseStaticTolerance + 0.35) : baseStaticTolerance;
   const requiredMinPhases = input.calmMode ? Math.max(3, input.requirement.minPhases - 1) : input.requirement.minPhases;
+
+  if (simulationProviderFallbackEnabled()) {
+    const video = await createVideo(input.prompt, {
+      variantType: input.variantType,
+      secondsOverride: input.secondsOverride,
+      inputReference: input.inputReference
+    });
+    const metrics = probeMotion(video.bytes, `${input.segmentLabel ?? 'segment'}_sim`);
+    return {
+      video,
+      enforcement: {
+        ...metrics,
+        minPhasesRequired: requiredMinPhases,
+        maxStaticSecondsAllowed: roundSeconds(input.requirement.maxStaticSeconds + staticTolerance),
+        withinThreshold: true,
+        attempts: 1
+      } as MotionEnforcement
+    };
+  }
 
   let attempt = 0;
   let prompt = input.prompt;
