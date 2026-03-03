@@ -4117,21 +4117,44 @@ export const runVideoStage = async (input: {
   );
 
   const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
-  const promptBlueprint: SoraPromptBlueprint = {
-    technicalSoraPrompt: strictActivePromptText,
-    userFlowScript: userEditedFlowScript || llmText,
-    hook: hookOpening,
-    continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
-    segments: segmentPlanSeconds.map((seconds, index) => ({
-      index: index + 1,
-      seconds,
-      title: `Segment ${index + 1}`,
-      startState: index === 0 ? 'Startframe-Anchor aktiv' : `Fortsetzung ab Segment ${index}`,
-      endState: index === segmentPlanSeconds.length - 1 ? 'Finaler CTA-Zustand' : 'Übergangszustand für nächstes Segment',
-      prompt: strictActivePromptText,
-      userFlowBeat: `${index + 1}. Fortsetzung der durchgehenden Story ohne Reset`
-    }))
-  };
+  let promptBlueprint: SoraPromptBlueprint;
+  try {
+    promptBlueprint = await generateSoraPromptBlueprint({
+      topic: effectiveTopic,
+      targetSeconds: durationConfig.targetSeconds,
+      segmentPlanSeconds,
+      hookOpening,
+      narration: llmText,
+      flowBeatsPrompt,
+      technicalBasePrompt: strictActivePromptText,
+      explicitHeroSubject,
+      startFrameDirective,
+      startFrameTransitionDirective,
+      startFrameImageUrl: startFrameImageUrlForArchitect,
+      intentPrompt: renderIntentPrompt(effectiveIntent).text,
+      brandPrompt,
+      brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined,
+      moodPrompt: moodPromptMap[moodPreset],
+      userEditedFlowScript
+    });
+  } catch (error) {
+    logEvent({
+      event: 'sora_prompt_blueprint_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error).slice(0, 220)
+    });
+    promptBlueprint = buildFallbackSoraPromptBlueprint({
+      technicalSoraPrompt: strictActivePromptText,
+      hook: hookOpening,
+      flowBeatsPrompt,
+      continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
+      segmentPlanSeconds,
+      topic: effectiveTopic,
+      explicitHeroSubject,
+      brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined
+    });
+  }
 
   const segmentReports: MotionSegmentReport[] = [];
   const segmentVideoBytes: Buffer[] = [];
@@ -4148,8 +4171,17 @@ export const runVideoStage = async (input: {
     const segmentEnd = timelineCursor;
 
     const blueprintSegment = promptBlueprint.segments[index];
-
-    const segmentPrompt = strictActivePromptText;
+    const segmentPrompt = [
+      blueprintSegment?.prompt?.trim() || strictActivePromptText,
+      `Segment timeline: ${segmentStart}s to ${segmentEnd}s of total ${durationConfig.targetSeconds}s.`,
+      `Segment objective: ${blueprintSegment?.userFlowBeat || `Segment ${index + 1} progression beat`}.`,
+      `Start state: ${blueprintSegment?.startState || continuityCue}.`,
+      `End state target: ${blueprintSegment?.endState || 'Transition state for next segment'}.`,
+      index > 0 ? `Continuity cue from previous segment: ${continuityCue}` : '',
+      'Hard rule: continue the story forward, no reset and no replay of earlier visual beats.'
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     const segmentMotionRequirement = scaleMotionRequirementForSegment(motionRequirement, segmentSeconds);
     const normalizedReferenceBytes = nextSegmentReferenceBytes
