@@ -336,6 +336,20 @@ export const validateCreativeConsistency = (input: CreativeConsistencyInput): Cr
   const intent = normalizeCreativeIntent(input.creativeIntent, input.moodPreset, input.conceptId);
   const controls = normalizeUserControlProfile(input.userControls);
 
+  const scriptLines = script
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const structuredScript = scriptLines.some((line) =>
+    /^(?:\d+[.)]\s*)?(?:kamera|bild\/aktion|dialog(?:\s*voice)?|dialog\/voiceover|voiceover|sprecher)\s*:/i.test(line)
+  );
+  const firstDialogLikeLine = scriptLines.find((line) =>
+    /^(?:\d+[.)]\s*)?(?:dialog(?:\s*voice)?|dialog\/voiceover|voiceover|sprecher)\s*:/i.test(line)
+  );
+  const firstDialogText = firstDialogLikeLine
+    ? firstDialogLikeLine.replace(/^(?:\d+[.)]\s*)?(?:dialog(?:\s*voice)?|dialog\/voiceover|voiceover|sprecher)\s*[:\-]\s*/i, '').trim()
+    : '';
+
   const checks: CreativeConsistencyResult['checks'] = [];
 
   checks.push({
@@ -346,7 +360,7 @@ export const validateCreativeConsistency = (input: CreativeConsistencyInput): Cr
 
   checks.push({
     id: 'SCRIPT_ENDS_WITH_SENTENCE',
-    ok: /[.!?…]$/.test(script),
+    ok: /[.!?…]["')\]]*\s*$/.test(script),
     detail: 'script must end with punctuation'
   });
 
@@ -356,7 +370,8 @@ export const validateCreativeConsistency = (input: CreativeConsistencyInput): Cr
     detail: `concept=${conceptId} style=${input.startFrameStyle}`
   });
 
-  const firstSentence = script.split(/[.!?…]/)[0]?.trim() ?? '';
+  const firstSentenceRaw = script.split(/[.!?…]/)[0]?.trim() ?? '';
+  const firstSentence = structuredScript && firstDialogText ? firstDialogText : firstSentenceRaw;
   const firstSentenceWords = firstSentence.split(/\s+/).filter(Boolean).length;
   const explicitIntentProvided =
     Boolean(input.creativeIntent?.effectGoals?.length) ||
