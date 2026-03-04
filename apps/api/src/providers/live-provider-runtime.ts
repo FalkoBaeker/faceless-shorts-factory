@@ -1489,8 +1489,13 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
     `Sora-Prompt: ${input.soraPrompt}. ` +
     'Gib nur das finale Szenen-Skript aus, ohne Einleitung und ohne Markdown.';
 
+  const maxViewerScriptAttempts = Math.max(
+    1,
+    Math.min(2, parsePositiveInt(process.env.STRICT_VIEWER_SCRIPT_ATTEMPTS ?? 1, 1))
+  );
+
   try {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (let attempt = 1; attempt <= maxViewerScriptAttempts; attempt += 1) {
       const response = await openAiPostJson('/v1/responses', {
         model: STRICT_PROMPT_ARCHITECT_MODEL,
         input: viewerScriptInput,
@@ -1499,7 +1504,7 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
 
       const script = parseOpenAiResponseText(response).trim();
       if (script) return script;
-      if (attempt < 2) await sleep(250);
+      if (attempt < maxViewerScriptAttempts) await sleep(250);
     }
   } catch (error) {
     logEvent({

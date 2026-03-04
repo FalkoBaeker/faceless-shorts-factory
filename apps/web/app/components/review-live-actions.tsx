@@ -525,6 +525,8 @@ export function ReviewLiveActions() {
     return null;
   }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, approvedPromptBlueprint, scriptAccepted, scriptDraft]);
 
+  const isPreparingScript = busy && status.startsWith('Erzeuge Ablauf');
+
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
     setSelectedStartFrameCandidateId('');
@@ -1052,12 +1054,17 @@ export function ReviewLiveActions() {
           onClick={prepareScript}
           title={activeStartframeSummary ? 'Ablauf aus gewähltem Startbild erzeugen' : 'Erst Startframe wählen/hochladen'}
         >
-          Ablauf generieren
+          {isPreparingScript ? 'Ablauf wird generiert ...' : 'Ablauf generieren'}
         </button>
         <button className="button" type="button" disabled={busy || !extractFlowScriptFromDraft(scriptDraft).trim()} onClick={acceptScript}>
           Ablauf akzeptieren / bearbeiten
         </button>
       </div>
+      {isPreparingScript ? (
+        <p className="section-copy" style={{ marginTop: 0 }}>
+          Ablauf wird erstellt. Im Real-Mode kann das 1-3 Minuten dauern.
+        </p>
+      ) : null}
 
       <label className="auth-field" style={{ marginTop: 8 }}>
         <span>Ablauf / Script (eine Box, editierbar)</span>
