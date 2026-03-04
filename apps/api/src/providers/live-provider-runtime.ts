@@ -457,6 +457,14 @@ const parsePositiveInt = (value: unknown, fallback: number) => {
   return Math.round(parsed);
 };
 
+const envFlagEnabled = (value: string | undefined, fallback = false) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return fallback;
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+};
+
 const providerHttpTimeoutMs = parsePositiveInt(process.env.PROVIDER_HTTP_TIMEOUT_MS ?? 45000, 45000);
 const openAiHttpTimeoutMs = parsePositiveInt(process.env.OPENAI_HTTP_TIMEOUT_MS ?? providerHttpTimeoutMs, providerHttpTimeoutMs);
 const supabaseHttpTimeoutMs = parsePositiveInt(process.env.SUPABASE_HTTP_TIMEOUT_MS ?? providerHttpTimeoutMs, providerHttpTimeoutMs);
@@ -1268,9 +1276,7 @@ const generateStrictStep1SoraPrompt = async (input: {
   startFrameHint?: string;
   websiteBundle: StrictWebsiteContextBundle;
 }) => {
-  if (!input.startFrameImageUrl) {
-    throw new ProviderRuntimeError('STRICT_STEP1_STARTFRAME_IMAGE_MISSING', { provider: 'openai', fatal: true });
-  }
+  const hasStartFrameImage = Boolean(String(input.startFrameImageUrl ?? '').trim());
 
   if (simulationProviderFallbackEnabled()) {
     return {
@@ -1302,9 +1308,11 @@ const generateStrictStep1SoraPrompt = async (input: {
       detail: `chars=${guidelineExcerpt.length}/${guideline.content.length}`
     });
   }
-  const startFrameImageRef = input.startFrameImageUrl.startsWith('data:')
-    ? 'embedded_input_image'
-    : input.startFrameImageUrl;
+  const startFrameImageRef = hasStartFrameImage
+    ? input.startFrameImageUrl.startsWith('data:')
+      ? 'embedded_input_image'
+      : input.startFrameImageUrl
+    : 'not_provided';
 
   const humorIntent = input.creativeIntent.effectGoals.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
   const viralHookDirective =
@@ -1312,8 +1320,11 @@ const generateStrictStep1SoraPrompt = async (input: {
     'Der Hook muss sofort aus dem Startbild motivisch weiterlaufen (kein Motivbruch) und direkt Spannung/Neugier erzeugen.';
   const antiGenericOpeningDirective =
     'Verboten sind generische Openings wie reine Außenaufnahme, langsame Intro-Fahrt ohne Ereignis, nur Logo-Shot oder "Kamera führt ins Gebäude" ohne konkrete Aktion/Person.';
+  const startFrameDirective = hasStartFrameImage
+    ? `Nehme das Startbild (${startFrameImageRef}) als visuellen Anker für Shot 1.`
+    : 'Es liegt kein Startbild vor; nutze StartframeHint/Branding als Anker und halte ein konsistentes Hauptmotiv.';
   const promptText =
-    `Nehme das Startbild (${startFrameImageRef}) und den Branding-Content plus alle weiteren Inputs und erstelle damit einen finalen Sora-Prompt unter Nutzung der Sora-Guideline. ` +
+    `${startFrameDirective} Nutze Branding-Content plus alle weiteren Inputs und erstelle damit einen finalen Sora-Prompt unter Nutzung der Sora-Guideline. ` +
     `Erstelle ein virales TikTok-Video zum Thema ${input.topic}, das mit einem starken Scroll-Stop-Hook startet. ` +
     `Inputs: Energy Level=${input.creativeIntent.energyMode}, User Intent=${humorIntent}, MoodPreset=${input.moodPreset}, ` +
     `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${input.websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
@@ -1327,15 +1338,17 @@ const generateStrictStep1SoraPrompt = async (input: {
   reserveBudget(0.012, 'llm-strict-step1-sora-prompt');
 
   try {
+    const userContent: Array<Record<string, unknown>> = [{ type: 'input_text', text: promptText }];
+    if (hasStartFrameImage) {
+      userContent.push({ type: 'input_image', image_url: input.startFrameImageUrl });
+    }
+
     const response = await openAiPostJson('/v1/responses', {
       model: STRICT_PROMPT_ARCHITECT_MODEL,
       input: [
         {
           role: 'user',
-          content: [
-            { type: 'input_text', text: promptText },
-            { type: 'input_image', image_url: input.startFrameImageUrl }
-          ]
+          content: userContent
         }
       ],
       max_output_tokens: 2400
@@ -2431,12 +2444,114 @@ export const generateScriptDraft = async (input: {
   startFrameReferenceObjectPath?: string;
   regenerate?: boolean;
 }) => {
-  await runProviderHealthchecks();
-
   const moodPreset = resolveMoodPreset(input.moodPreset);
   const effectiveIntent = resolveEffectiveIntent(input.creativeIntent, moodPreset, 'concept_web_vertical_slice');
   const { targetSeconds } = resolveVariantDurations(input.variantType);
   const targetWords = Math.round(targetSeconds * 2.35);
+  const useStrictDraftPipeline = envFlagEnabled(process.env.SCRIPT_DRAFT_USE_STRICT_PIPELINE, false);
+
+  if (!useStrictDraftPipeline) {
+    const explicitHeroSubject = inferExplicitHeroSubject(input.topic);
+    const brandName = String(input.brandProfile?.companyName ?? '').trim() || 'deiner Marke';
+    const websiteLabel = String(input.brandProfile?.websiteUrl ?? '')
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/g, '');
+    const websiteCue = websiteLabel ? ` unter ${websiteLabel}` : '';
+    const valueCue = String(input.brandProfile?.valueProposition ?? '').trim() || input.topic;
+    const startframeAnchor = String(input.startFrameHint ?? '').trim() || explicitHeroSubject;
+
+    const fastScenes = [
+      {
+        order: 1,
+        camera: `Sehr enger 9:16-Start auf ${startframeAnchor}, schneller Push-in in Sekunde 0-1.`,
+        action: `Sofortige sichtbare Aktion am Hauptmotiv; das Kernangebot "${valueCue}" wird direkt lesbar ins Bild gebracht.`,
+        dialog: `Stopp kurz: Genau dieser erste Moment zeigt, warum ${brandName} sofort auffällt.`
+      },
+      {
+        order: 2,
+        camera: 'Kurzer Schnitt auf den Counter, danach ruhiger Halbbogen um Produkt und Handbewegung.',
+        action: `Konkreter Nutzenbeweis im echten Einsatz; ${valueCue} bleibt im Fokus ohne Motivbruch.`,
+        dialog: `Hier siehst du live, wie ${valueCue} im Alltag wirklich überzeugt.`
+      },
+      {
+        order: 3,
+        camera: 'Abschlussshot mit leichter Vorwärtsbewegung und klar lesbarem Angebot im Vordergrund.',
+        action: 'Produkt wird final übergeben, dann klarer Blick zur Kamera als CTA-Moment.',
+        dialog: `Hol dir jetzt dein Ergebnis bei ${brandName}${websiteCue}.`
+      }
+    ];
+
+    const script = applyBrandTermLock(
+      fastScenes
+        .map((scene) =>
+          [
+            `${scene.order}. Szene ${scene.order}`,
+            `Kamera: ${scene.camera}`,
+            `Bild/Aktion: ${scene.action}`,
+            `Dialog/Voiceover: ${scene.dialog}`
+          ].join('\n')
+        )
+        .join('\n\n'),
+      input.brandProfile
+    );
+
+    const narration = fastScenes.map((scene) => scene.dialog).join(' ');
+    const scriptV2: ScriptV2 = {
+      language: 'de',
+      openingHook: ensureSentenceEnding(fastScenes[0]?.dialog ?? `Stop scrolling: ${input.topic}.`),
+      narration,
+      scenes: fastScenes.map((scene) => ({
+        order: scene.order,
+        action: ensureSentenceEnding(`Kamera: ${scene.camera} Bild/Aktion: ${scene.action}`),
+        lines: [{ speaker: 'Voice', text: ensureSentenceEnding(scene.dialog) }]
+      }))
+    };
+
+    const estimatedSeconds = estimateSpeechSeconds(narration);
+    const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
+    const hookOpening = ensureSentenceEnding(scriptV2.openingHook || script.split(/[.!?…]/)[0]?.trim() || `Stop scrolling: ${input.topic}.`);
+    const flowBeatsPrompt = scriptV2.scenes
+      .slice(0, 8)
+      .sort((a, b) => a.order - b.order)
+      .map((scene, index) => `${index + 1}) ${scene.action}`)
+      .join(' | ');
+    const continuityAnchors = [explicitHeroSubject, `Startframe hint: ${startframeAnchor}`, renderBrandProfilePrompt(input.brandProfile)].filter(Boolean);
+    const generatedSoraPrompt = [
+      'Output format: vertical 9:16 (720x1280).',
+      `Topic: ${input.topic}.`,
+      `Start from selected startframe anchor: ${startframeAnchor}.`,
+      `Brand details: ${renderBrandProfilePrompt(input.brandProfile)}.`,
+      `Energy mode: ${effectiveIntent.energyMode}.`,
+      'Mandatory: hook in first 0-2s, no motif break, then clear proof and CTA.'
+    ].join(' ');
+    const promptBlueprint = buildFallbackSoraPromptBlueprint({
+      technicalSoraPrompt: generatedSoraPrompt,
+      hook: hookOpening,
+      flowBeatsPrompt: flowBeatsPrompt || `1) ${script}`,
+      continuityAnchors,
+      segmentPlanSeconds: buildSegmentPlanSeconds(targetSeconds),
+      topic: input.topic,
+      explicitHeroSubject,
+      brandName: String(input.brandProfile?.companyName ?? '').trim() || undefined
+    });
+
+    return {
+      script,
+      scriptV2,
+      generatedSoraPrompt,
+      promptBlueprint,
+      moodPreset,
+      creativeIntent: effectiveIntent,
+      targetSeconds,
+      suggestedWords: targetWords,
+      estimatedSeconds,
+      withinTarget,
+      condensed: false
+    };
+  }
+
+  await runProviderHealthchecks();
 
   const strictWebsiteBundle = await extractWebsiteContextWithStrictLlm({
     topic: input.topic,
@@ -2474,8 +2589,18 @@ export const generateScriptDraft = async (input: {
     }
   }
   if (!strictStartFrameImageUrl) {
-    const strictImage = await createStrictStep1Image(strictImagePromptText);
-    strictStartFrameImageUrl = `data:image/png;base64,${strictImage.bytes.toString('base64')}`;
+    const shouldGenerateStartFrameImage = envFlagEnabled(process.env.SCRIPT_DRAFT_GENERATE_STARTFRAME_IMAGE, false);
+    if (shouldGenerateStartFrameImage) {
+      const strictImage = await createStrictStep1Image(strictImagePromptText);
+      strictStartFrameImageUrl = `data:image/png;base64,${strictImage.bytes.toString('base64')}`;
+    } else {
+      logEvent({
+        event: 'draft_startframe_image_generation_skipped',
+        level: 'INFO',
+        provider: 'openai',
+        detail: 'SCRIPT_DRAFT_GENERATE_STARTFRAME_IMAGE=false'
+      });
+    }
   }
 
   const strictStep1Prompt = await generateStrictStep1SoraPrompt({
