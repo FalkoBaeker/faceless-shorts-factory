@@ -600,7 +600,11 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
         storyboardLight
       });
 
-  const retryableConsistencyReasonSet = new Set(['HOOK_FIRST_SECOND_QUALITY', 'INTENT_SCRIPT_ALIGNMENT_SCORE_MIN']);
+  const retryableConsistencyReasonSet = new Set([
+    'HOOK_FIRST_SECOND_QUALITY',
+    'INTENT_SCRIPT_ALIGNMENT_SCORE_MIN',
+    'SCRIPT_ENDS_WITH_SENTENCE'
+  ]);
   const consistencyDeferredForAutoRepair =
     !consistency.ok &&
     consistency.reasons.length > 0 &&

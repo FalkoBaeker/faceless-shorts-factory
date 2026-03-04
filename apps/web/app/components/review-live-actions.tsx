@@ -104,10 +104,40 @@ const appendSoraPromptToDraft = (draftText: string, soraPrompt?: string) => {
   return `${base}\n\n---\n${SORA_PROMPT_SECTION_HEADER}\n${prompt}`;
 };
 
-const extractFlowScriptFromDraft = (value: string) =>
-  value
-    .replace(new RegExp(`\\n+\\s*---\\s*\\n\\s*${SORA_PROMPT_SECTION_HEADER.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}[\\s\\S]*$`, 'i'), '')
+const stripTechnicalPromptTail = (value: string) => {
+  const escapedHeader = SORA_PROMPT_SECTION_HEADER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return value
+    .replace(new RegExp(`(?:\\n+\\s*---\\s*\\n\\s*${escapedHeader}|---\\s*${escapedHeader}|${escapedHeader})[\\s\\S]*$`, 'i'), '')
     .trim();
+};
+
+const extractFlowScriptFromDraft = (value: string) => stripTechnicalPromptTail(value);
+
+const normalizeApprovedFlowScript = (value: string, topic: string) => {
+  const source = stripTechnicalPromptTail(value);
+  const blockedLine = /^(?:---\s*)?sora-prompt\s*\(technisch,\s*automatisch\)|^output format:|^mandatory:|^brand details:|^prompt:|^start:|^ende:|^segment\s+\d+\s*\(/i;
+  const filtered = source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !blockedLine.test(line));
+
+  let script = filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (!script) return '';
+
+  const firstSentence = script.split(/[.!?…]/)[0]?.trim() ?? '';
+  const firstSentenceWords = firstSentence.split(/\s+/).filter(Boolean).length;
+  const hookPattern = /(achtung|stop|stopp|stell dir vor|du kennst das|endlich|warum|in nur|sofort|hier ist)/i;
+  if (!hookPattern.test(firstSentence) || firstSentenceWords > 18 || firstSentence.length < 12) {
+    script = `Stopp kurz: ${topic} jetzt in einer klaren Szene.` + '\n' + script;
+  }
+
+  if (!/[.!?…]["')\]]*\s*$/.test(script)) {
+    script = `${script}.`;
+  }
+
+  return script;
+};
 
 const toUnifiedScriptDraftText = (scriptV2: ScriptV2Payload | undefined, fallbackScript: string, topic: string) => {
   const scenes: Array<{ order: number; action: string; lines?: ScriptV2Payload['scenes'][number]['lines'] }> = scriptV2?.scenes?.length
@@ -256,6 +286,16 @@ const extractDraftFlowBeats = (flowScript: string) => {
     .filter(Boolean);
 };
 
+const sanitizeFlowBeatCandidate = (value: string) => {
+  const text = stripScenePrefix(value.replace(/\s+/g, ' ').trim());
+  if (!text) return '';
+  if (text.length > 280) return '';
+  if (/(sora-prompt|output format:|mandatory:|brand details:|shot\s+\d+\s*\(|segment\s+\d+\s*\()/i.test(text)) {
+    return '';
+  }
+  return text;
+};
+
 const alignPromptBlueprintToFlow = (
   input: SoraPromptBlueprintPayload | undefined,
   flowScript: string
@@ -268,7 +308,7 @@ const alignPromptBlueprintToFlow = (
 
   const segments = blueprint.segments.map((segment, index) => ({
     ...segment,
-    userFlowBeat: beats[index] ?? segment.userFlowBeat
+    userFlowBeat: sanitizeFlowBeatCandidate(beats[index] ?? '') || segment.userFlowBeat
   }));
 
   return {
@@ -633,7 +673,7 @@ export function ReviewLiveActions() {
   };
 
   const acceptScript = () => {
-    const flowScript = extractFlowScriptFromDraft(scriptDraft);
+    const flowScript = normalizeApprovedFlowScript(scriptDraft, topic);
     if (!flowScript.trim()) {
       setStatus('Ablauf ist leer. Bitte zuerst Ablauf generieren.');
       return;
@@ -766,7 +806,7 @@ export function ReviewLiveActions() {
       const startFrameReferenceHint = uploadedStartFrame?.fileName ?? selectedStartFrameCandidate?.label;
 
       const fallbackStyle = 'storefront_hero' as const;
-      const flowScript = extractFlowScriptFromDraft(scriptDraft);
+      const flowScript = normalizeApprovedFlowScript(scriptDraft, topic);
       const approvedScriptV2 = buildScriptV2FromUnifiedDraft({
         unifiedDraft: flowScript,
         narration: flowScript,
