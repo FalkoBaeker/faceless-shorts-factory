@@ -17,6 +17,7 @@ import {
   type BrandProfilePayload,
   type CreativeIntentPayload,
   type MoodPreset,
+  type SoraPromptBlueprintPayload,
   type StartFrameCandidatePayload,
   type StartFramePreflightPayload,
   type StoryboardLightPayload,
@@ -200,6 +201,83 @@ const buildStoryboardFromScriptV2 = (
   };
 };
 
+const normalizePromptBlueprint = (input: SoraPromptBlueprintPayload | undefined): SoraPromptBlueprintPayload | undefined => {
+  if (!input || !Array.isArray(input.segments)) return undefined;
+  const technicalSoraPrompt = String(input.technicalSoraPrompt ?? '').trim();
+  if (!technicalSoraPrompt) return undefined;
+
+  const segments: SoraPromptBlueprintPayload['segments'] = [];
+  input.segments.forEach((segment, index) => {
+    const prompt = String(segment.prompt ?? '').trim();
+    const startState = String(segment.startState ?? '').trim();
+    const endState = String(segment.endState ?? '').trim();
+    const userFlowBeat = String(segment.userFlowBeat ?? '').trim();
+    if (!prompt || !startState || !endState || !userFlowBeat) return;
+
+    segments.push({
+      index: Number.isFinite(segment.index) ? Math.max(1, Math.floor(segment.index)) : index + 1,
+      seconds: Math.max(4, Math.min(12, Math.round(Number(segment.seconds) || 0) || 8)),
+      title: String(segment.title ?? '').trim() || undefined,
+      startState,
+      endState,
+      prompt,
+      userFlowBeat
+    });
+  });
+
+  const normalizedSegments = segments
+    .sort((a, b) => a.index - b.index)
+    .map((segment, index) => ({ ...segment, index: index + 1 }));
+
+  if (!normalizedSegments.length) return undefined;
+
+  return {
+    technicalSoraPrompt,
+    userFlowScript: String(input.userFlowScript ?? '').trim(),
+    hook: String(input.hook ?? '').trim(),
+    continuityAnchors: Array.isArray(input.continuityAnchors)
+      ? input.continuityAnchors.map((value) => String(value).trim()).filter(Boolean).slice(0, 16)
+      : [],
+    segments: normalizedSegments
+  };
+};
+
+const extractDraftFlowBeats = (flowScript: string) => {
+  const blocks = flowScript
+    .split(/\n\s*\n+/)
+    .map((value) => stripScenePrefix(value.replace(/\n+/g, ' ').trim()))
+    .filter(Boolean);
+
+  if (blocks.length) return blocks;
+
+  return flowScript
+    .split(/\n+/)
+    .map((value) => stripScenePrefix(value.trim()))
+    .filter(Boolean);
+};
+
+const alignPromptBlueprintToFlow = (
+  input: SoraPromptBlueprintPayload | undefined,
+  flowScript: string
+): SoraPromptBlueprintPayload | undefined => {
+  const blueprint = normalizePromptBlueprint(input);
+  if (!blueprint) return undefined;
+
+  const beats = extractDraftFlowBeats(flowScript);
+  if (!beats.length) return blueprint;
+
+  const segments = blueprint.segments.map((segment, index) => ({
+    ...segment,
+    userFlowBeat: beats[index] ?? segment.userFlowBeat
+  }));
+
+  return {
+    ...blueprint,
+    userFlowScript: segments.map((segment) => `${segment.index}. ${segment.userFlowBeat}`).join('\n'),
+    segments
+  };
+};
+
 const asApiMessage = (error: unknown) => {
   const api = error as Partial<ApiError>;
   return api?.message ?? String(error);
@@ -252,6 +330,7 @@ export function ReviewLiveActions() {
 
   const [scriptDraft, setScriptDraft] = useState('');
   const [scriptV2Draft, setScriptV2Draft] = useState<ScriptV2Payload | undefined>(undefined);
+  const [scriptPromptBlueprintDraft, setScriptPromptBlueprintDraft] = useState<SoraPromptBlueprintPayload | undefined>(undefined);
   const [scriptAccepted, setScriptAccepted] = useState(false);
   const [scriptMeta, setScriptMeta] = useState<{ targetSeconds: number; estimatedSeconds: number; suggestedWords: number } | null>(null);
 
@@ -368,6 +447,17 @@ export function ReviewLiveActions() {
     return null;
   }, [uploadedStartFrame, selectedStartFrameCandidate]);
 
+  const approvedPromptBlueprint = useMemo(
+    () => alignPromptBlueprintToFlow(scriptPromptBlueprintDraft, extractFlowScriptFromDraft(scriptDraft)),
+    [scriptPromptBlueprintDraft, scriptDraft]
+  );
+
+  const approvedPromptBlueprintTotalSeconds = useMemo(
+    () => (approvedPromptBlueprint?.segments ?? []).reduce((sum, segment) => sum + segment.seconds, 0),
+    [approvedPromptBlueprint]
+  );
+  const approvedPromptTrimTargetSeconds = scriptMeta?.targetSeconds ?? null;
+
   const generationBlocker = useMemo(() => {
     if (!brandProfile.companyName?.trim()) return 'Bitte Brand Onboarding mit Firmenname speichern.';
     if (!effectGoals.length) return 'Bitte mindestens ein Creative-Intent-Ziel wählen.';
@@ -375,19 +465,22 @@ export function ReviewLiveActions() {
     if (startFramePolicy?.decision === 'block') {
       return `${startFramePolicy.userMessage} (${startFramePolicy.reasonCode})`;
     }
+    if (!approvedPromptBlueprint?.segments?.length) return 'Ablauf-Blueprint fehlt. Bitte Ablauf neu generieren.';
     if (!scriptAccepted || !extractFlowScriptFromDraft(scriptDraft).trim()) return 'Ablauf prüfen und akzeptieren.';
     return null;
-  }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, scriptAccepted, scriptDraft]);
+  }, [brandProfile.companyName, effectGoals.length, selectedStartFrameCandidate, uploadedStartFrame, startFramePolicy, approvedPromptBlueprint, scriptAccepted, scriptDraft]);
 
   const resetStartFrameCandidates = () => {
     setStartFrameCandidates([]);
     setSelectedStartFrameCandidateId('');
     setStartFramePolicy(null);
+    setScriptPromptBlueprintDraft(undefined);
   };
 
   const resetUploadedReference = () => {
     setUploadedStartFrame(null);
     setStartFramePolicy(null);
+    setScriptPromptBlueprintDraft(undefined);
   };
 
   const toggleFromList = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
@@ -504,6 +597,7 @@ export function ReviewLiveActions() {
       const unifiedDraftText = toUnifiedScriptDraftText(normalizedScriptV2, draft.script, topic);
       setScriptDraft(appendSoraPromptToDraft(unifiedDraftText, draft.generatedSoraPrompt));
       setScriptV2Draft(normalizedScriptV2);
+      setScriptPromptBlueprintDraft(normalizePromptBlueprint(draft.promptBlueprint));
       setScriptAccepted(false);
       setScriptMeta({
         targetSeconds: draft.targetSeconds,
@@ -527,6 +621,10 @@ export function ReviewLiveActions() {
     const flowScript = extractFlowScriptFromDraft(scriptDraft);
     if (!flowScript.trim()) {
       setStatus('Ablauf ist leer. Bitte zuerst Ablauf generieren.');
+      return;
+    }
+    if (!approvedPromptBlueprint?.segments?.length) {
+      setStatus('30s-Blueprint fehlt. Bitte Ablauf neu generieren, damit der Render-Plan sichtbar und fixiert ist.');
       return;
     }
 
@@ -558,6 +656,7 @@ export function ReviewLiveActions() {
       setSelectedStartFrameCandidateId('');
       setUploadedStartFrame(null);
       setStartFramePolicy(null);
+      setScriptPromptBlueprintDraft(undefined);
       setScriptAccepted(false);
       setStatus('Startframe-Kandidaten bereit. Bitte visuell auswählen oder eigenes Bild nutzen. Danach Ablauf generieren.');
     } catch (error) {
@@ -612,6 +711,7 @@ export function ReviewLiveActions() {
         mimeType: uploaded.mimeType
       });
       setSelectedStartFrameCandidateId('');
+      setScriptPromptBlueprintDraft(undefined);
       setScriptAccepted(false);
 
       await runStartFramePolicyPreflight({
@@ -720,6 +820,7 @@ export function ReviewLiveActions() {
         brandProfile: brandProfile.companyName?.trim() ? brandProfile : undefined,
         approvedScript: flowScript,
         approvedScriptV2,
+        approvedPromptBlueprint,
         startFrameCandidateId: selectedStartFrameCandidate?.candidateId,
         startFrameStyle: selectedStartFrameCandidate?.style ?? fallbackStyle,
         startFrameCustomLabel: uploadedStartFrame ? `Eigenes Bild (${uploadedStartFrame.fileName})` : undefined,
@@ -767,6 +868,7 @@ export function ReviewLiveActions() {
           className={`state-toggle ${variantType === 'SHORT_15' ? 'active' : ''}`}
           onClick={() => {
             setVariantType('SHORT_15');
+            setScriptPromptBlueprintDraft(undefined);
             setScriptAccepted(false);
           }}
           aria-pressed={variantType === 'SHORT_15'}
@@ -778,6 +880,7 @@ export function ReviewLiveActions() {
           className={`state-toggle ${variantType === 'MASTER_30' ? 'active' : ''}`}
           onClick={() => {
             setVariantType('MASTER_30');
+            setScriptPromptBlueprintDraft(undefined);
             setScriptAccepted(false);
           }}
           aria-pressed={variantType === 'MASTER_30'}
@@ -927,6 +1030,53 @@ export function ReviewLiveActions() {
         </div>
       ) : null}
 
+      {approvedPromptBlueprint ? (
+        <section className="section-card" style={{ marginTop: 8 }}>
+          <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
+            Finaler 30s-Blueprint vor Render
+          </h3>
+          <p className="section-copy" style={{ marginTop: 0 }}>
+            Genau dieser Segment-Plan wird bei Freigabe eingefroren und für den Render verwendet.
+          </p>
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-neutral">Segmente: {approvedPromptBlueprint.segments.length}</span>
+            <span className="chip chip-neutral">Gesamtdauer: {approvedPromptBlueprintTotalSeconds}s</span>
+            {approvedPromptTrimTargetSeconds ? (
+              <span className="chip chip-neutral">Export: {approvedPromptTrimTargetSeconds}s (Trim)</span>
+            ) : null}
+            {approvedPromptBlueprint.hook ? <span className="chip chip-neutral">Hook: {approvedPromptBlueprint.hook}</span> : null}
+          </div>
+          {approvedPromptTrimTargetSeconds ? (
+            <p className="section-copy" style={{ marginTop: 0 }}>
+              Segmentplan liefert {approvedPromptBlueprintTotalSeconds}s Rohmaterial; finaler Export wird auf {approvedPromptTrimTargetSeconds}s getrimmt.
+            </p>
+          ) : null}
+
+          <ul className="list-clean" aria-label="Prompt Blueprint Segmente">
+            {approvedPromptBlueprint.segments.map((segment) => (
+              <li className="step-item" key={`blueprint-segment-${segment.index}`}>
+                <div>
+                  <p className="step-name">
+                    Segment {segment.index} · {segment.seconds}s {segment.title ? `· ${segment.title}` : ''}
+                  </p>
+                  <p className="step-sub">{segment.userFlowBeat}</p>
+                  <p className="section-copy" style={{ marginTop: 0, marginBottom: 0 }}>
+                    Prompt: {segment.prompt.slice(0, 220)}
+                    {segment.prompt.length > 220 ? ' ...' : ''}
+                  </p>
+                </div>
+                <span className="badge">{segment.seconds}s</span>
+              </li>
+            ))}
+          </ul>
+
+          <details style={{ marginTop: 8 }}>
+            <summary className="section-copy" style={{ cursor: 'pointer' }}>Technischer Basis-Prompt anzeigen</summary>
+            <textarea readOnly rows={10} style={{ width: '100%', fontFamily: 'monospace' }} value={approvedPromptBlueprint.technicalSoraPrompt} />
+          </details>
+        </section>
+      ) : null}
+
       <h3 className="section-title" style={{ fontSize: '1rem', marginBottom: 0 }}>
         Startframe-Auswahl (Pflicht)
       </h3>
@@ -964,6 +1114,7 @@ export function ReviewLiveActions() {
                 onClick={() => {
                   setSelectedStartFrameCandidateId(candidate.candidateId);
                   setUploadedStartFrame(null);
+                  setScriptPromptBlueprintDraft(undefined);
                   setScriptAccepted(false);
                   void runStartFramePolicyPreflight({
                     candidateId: candidate.candidateId,

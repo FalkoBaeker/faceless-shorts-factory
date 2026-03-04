@@ -2476,11 +2476,34 @@ export const generateScriptDraft = async (input: {
   const condensed = durationRepairAttempts > 0;
   const withinTarget = estimatedSeconds <= targetSeconds * 1.08;
   const scriptV2 = buildScriptV2FromViewerScript(script, input.topic);
+  const explicitHeroSubject = inferExplicitHeroSubject(input.topic);
+  const hookOpening = ensureSentenceEnding(scriptV2.openingHook || script.split(/[.!?…]/)[0]?.trim() || `Stop scrolling: ${input.topic}.`);
+  const flowBeatsPrompt = scriptV2.scenes
+    .slice(0, 8)
+    .sort((a, b) => a.order - b.order)
+    .map((scene, index) => `${index + 1}) ${scene.action}`)
+    .join(' | ');
+  const continuityAnchors = [
+    explicitHeroSubject,
+    input.startFrameHint ? `Startframe hint: ${input.startFrameHint}` : '',
+    renderBrandProfilePrompt(input.brandProfile)
+  ].filter(Boolean);
+  const promptBlueprint = buildFallbackSoraPromptBlueprint({
+    technicalSoraPrompt: strictStep1Prompt.soraPrompt.trim(),
+    hook: hookOpening,
+    flowBeatsPrompt: flowBeatsPrompt || `1) ${script}`,
+    continuityAnchors,
+    segmentPlanSeconds: buildSegmentPlanSeconds(targetSeconds),
+    topic: input.topic,
+    explicitHeroSubject,
+    brandName: String(input.brandProfile?.companyName ?? '').trim() || undefined
+  });
 
   return {
     script,
     scriptV2,
     generatedSoraPrompt: strictStep1Prompt.soraPrompt,
+    promptBlueprint,
     moodPreset,
     creativeIntent: effectiveIntent,
     targetSeconds,
@@ -3774,6 +3797,7 @@ export const runVideoStage = async (input: {
   generationPayload?: GenerationPayloadV1;
   videoPlanV1?: VideoPlanV1;
   approvedScript?: string;
+  approvedPromptBlueprint?: SoraPromptBlueprint;
   approvedScriptV2?: {
     language?: string;
     openingHook?: string;
@@ -4172,11 +4196,21 @@ export const runVideoStage = async (input: {
   );
 
   const userEditedFlowScript = String(input.generationPayload?.userEditedFlowScript ?? '').trim();
+  const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
+  const approvedPromptBlueprint = normalizeSoraPromptBlueprint(input.approvedPromptBlueprint, segmentPlanSeconds, {
+    topic: effectiveTopic,
+    explicitHeroSubject,
+    brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined
+  });
+
   let strictActivePromptText = strictStep1PromptText;
-  let strictPromptSource: 'step1' | 'step2' = 'step1';
+  let strictPromptSource: 'step1' | 'step2' | 'approved_blueprint' = 'step1';
   let strictStep2PromptAsset: StoredAsset | null = null;
 
-  if (userEditedFlowScript) {
+  if (approvedPromptBlueprint?.technicalSoraPrompt) {
+    strictActivePromptText = approvedPromptBlueprint.technicalSoraPrompt;
+    strictPromptSource = 'approved_blueprint';
+  } else if (userEditedFlowScript) {
     const strictStep2Prompt = await generateStrictStep2SoraPrompt({
       previousPrompt: strictStep1PromptText,
       userScript: userEditedFlowScript,
@@ -4218,44 +4252,47 @@ export const runVideoStage = async (input: {
     'openai-llm'
   );
 
-  const segmentPlanSeconds = buildSegmentPlanSeconds(durationConfig.targetSeconds);
   let promptBlueprint: SoraPromptBlueprint;
-  try {
-    promptBlueprint = await generateSoraPromptBlueprint({
-      topic: effectiveTopic,
-      targetSeconds: durationConfig.targetSeconds,
-      segmentPlanSeconds,
-      hookOpening,
-      narration: llmText,
-      flowBeatsPrompt,
-      technicalBasePrompt: strictActivePromptText,
-      explicitHeroSubject,
-      startFrameDirective,
-      startFrameTransitionDirective,
-      startFrameImageUrl: startFrameImageUrlForArchitect,
-      intentPrompt: renderIntentPrompt(effectiveIntent).text,
-      brandPrompt,
-      brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined,
-      moodPrompt: moodPromptMap[moodPreset],
-      userEditedFlowScript
-    });
-  } catch (error) {
-    logEvent({
-      event: 'sora_prompt_blueprint_fallback',
-      level: 'WARN',
-      provider: 'openai',
-      detail: String((error as Error)?.message ?? error).slice(0, 220)
-    });
-    promptBlueprint = buildFallbackSoraPromptBlueprint({
-      technicalSoraPrompt: strictActivePromptText,
-      hook: hookOpening,
-      flowBeatsPrompt,
-      continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
-      segmentPlanSeconds,
-      topic: effectiveTopic,
-      explicitHeroSubject,
-      brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined
-    });
+  if (approvedPromptBlueprint) {
+    promptBlueprint = approvedPromptBlueprint;
+  } else {
+    try {
+      promptBlueprint = await generateSoraPromptBlueprint({
+        topic: effectiveTopic,
+        targetSeconds: durationConfig.targetSeconds,
+        segmentPlanSeconds,
+        hookOpening,
+        narration: llmText,
+        flowBeatsPrompt,
+        technicalBasePrompt: strictActivePromptText,
+        explicitHeroSubject,
+        startFrameDirective,
+        startFrameTransitionDirective,
+        startFrameImageUrl: startFrameImageUrlForArchitect,
+        intentPrompt: renderIntentPrompt(effectiveIntent).text,
+        brandPrompt,
+        brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined,
+        moodPrompt: moodPromptMap[moodPreset],
+        userEditedFlowScript
+      });
+    } catch (error) {
+      logEvent({
+        event: 'sora_prompt_blueprint_fallback',
+        level: 'WARN',
+        provider: 'openai',
+        detail: String((error as Error)?.message ?? error).slice(0, 220)
+      });
+      promptBlueprint = buildFallbackSoraPromptBlueprint({
+        technicalSoraPrompt: strictActivePromptText,
+        hook: hookOpening,
+        flowBeatsPrompt,
+        continuityAnchors: [explicitHeroSubject, startFrameTransitionDirective, brandPrompt].filter(Boolean),
+        segmentPlanSeconds,
+        topic: effectiveTopic,
+        explicitHeroSubject,
+        brandName: String(effectiveBrandProfile?.companyName ?? '').trim() || undefined
+      });
+    }
   }
 
   const segmentReports: MotionSegmentReport[] = [];

@@ -61,10 +61,29 @@ export type ScriptV2Payload = {
   }>;
 };
 
+export type SoraPromptBlueprintSegmentPayload = {
+  index: number;
+  seconds: number;
+  title?: string;
+  startState: string;
+  endState: string;
+  prompt: string;
+  userFlowBeat: string;
+};
+
+export type SoraPromptBlueprintPayload = {
+  technicalSoraPrompt: string;
+  userFlowScript: string;
+  hook: string;
+  continuityAnchors: string[];
+  segments: SoraPromptBlueprintSegmentPayload[];
+};
+
 export type ScriptDraftPayload = {
   script: string;
   scriptV2?: ScriptV2Payload;
   generatedSoraPrompt?: string;
+  promptBlueprint?: SoraPromptBlueprintPayload;
   targetSeconds: number;
   estimatedSeconds: number;
   withinTarget: boolean;
@@ -469,6 +488,7 @@ export const selectConcept = (
     brandProfile?: BrandProfilePayload;
     approvedScript: string;
     approvedScriptV2?: ScriptV2Payload;
+    approvedPromptBlueprint?: SoraPromptBlueprintPayload;
     startFrameCandidateId?: string;
     startFrameStyle?:
       | 'storefront_hero'
@@ -496,6 +516,7 @@ export const selectConcept = (
       brandProfile: payload.brandProfile,
       approvedScript: payload.approvedScript,
       approvedScriptV2: payload.approvedScriptV2,
+      approvedPromptBlueprint: payload.approvedPromptBlueprint,
       startFrameCandidateId: payload.startFrameCandidateId,
       startFrameStyle: payload.startFrameStyle,
       startFrameCustomLabel: payload.startFrameCustomLabel,

@@ -5,6 +5,7 @@ import type {
   SelectConceptRequest,
   SelectConceptResponse,
   ScriptV2,
+  SoraPromptBlueprint,
   ScriptDraftRequest,
   ScriptDraftResponse,
   StartFrameUploadRequest,
@@ -123,6 +124,53 @@ const normalizeScriptV2 = (input: ScriptV2 | undefined): ScriptV2 | undefined =>
     openingHook: String(input.openingHook ?? '').trim().slice(0, 180) || undefined,
     narration: String(input.narration ?? '').trim().slice(0, 2000) || undefined,
     scenes
+  };
+};
+
+const normalizePromptBlueprint = (input: SoraPromptBlueprint | undefined): SoraPromptBlueprint | undefined => {
+  if (!input || !Array.isArray(input.segments)) return undefined;
+
+  const technicalSoraPrompt = String(input.technicalSoraPrompt ?? '').trim().slice(0, 8000);
+  if (!technicalSoraPrompt) return undefined;
+
+  const segments = input.segments
+    .slice(0, 12)
+    .map((segment, idx) => {
+      const prompt = String(segment?.prompt ?? '').trim().slice(0, 3000);
+      const startState = String(segment?.startState ?? '').trim().slice(0, 800);
+      const endState = String(segment?.endState ?? '').trim().slice(0, 800);
+      const userFlowBeat = String(segment?.userFlowBeat ?? '').trim().slice(0, 320);
+      if (!prompt || !startState || !endState || !userFlowBeat) return null;
+
+      const seconds = Math.max(4, Math.min(12, Math.round(Number(segment?.seconds) || 0) || 8));
+
+      return {
+        index: Math.max(1, Math.floor(Number(segment?.index) || idx + 1)),
+        seconds,
+        title: String(segment?.title ?? '').trim().slice(0, 120) || undefined,
+        startState,
+        endState,
+        prompt,
+        userFlowBeat
+      };
+    })
+    .filter((segment): segment is NonNullable<SoraPromptBlueprint['segments'][number]> => Boolean(segment))
+    .sort((a, b) => a.index - b.index)
+    .map((segment, idx) => ({
+      ...segment,
+      index: idx + 1
+    }));
+
+  if (!segments.length) return undefined;
+
+  return {
+    technicalSoraPrompt,
+    userFlowScript: String(input.userFlowScript ?? '').trim().slice(0, 4000),
+    hook: String(input.hook ?? '').trim().slice(0, 280),
+    continuityAnchors: Array.isArray(input.continuityAnchors)
+      ? input.continuityAnchors.map((value) => String(value).trim()).filter(Boolean).slice(0, 16)
+      : [],
+    segments
   };
 };
 
@@ -458,6 +506,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
   const storyboardLight = normalizeStoryboardLight(payload.storyboardLight);
 
   const approvedScriptV2 = normalizeScriptV2(payload.approvedScriptV2);
+  const approvedPromptBlueprint = normalizePromptBlueprint(payload.approvedPromptBlueprint);
   const approvedScriptLegacy = String(payload.approvedScript ?? '').trim();
   const userEditedFlowScript = String(generationPayload?.userEditedFlowScript ?? '').trim();
   const approvedScript = approvedScriptLegacy || buildScriptFromV2(approvedScriptV2) || userEditedFlowScript;
@@ -598,6 +647,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
       moodPreset,
       approvedScript,
       approvedScriptV2,
+      approvedPromptBlueprint,
       startFrameCandidateId: effectiveStartFrame.candidateId,
       startFrameStyle: effectiveStartFrame.style,
       startFrameLabel: effectiveStartFrame.label,
@@ -776,6 +826,18 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     detail: scriptAcceptanceDetail
   });
 
+  if (approvedPromptBlueprint) {
+    appendTimelineEvent(job.id, {
+      at: new Date().toISOString(),
+      event: 'SORA_PROMPT_BLUEPRINT_APPROVED',
+      detail: JSON.stringify({
+        hook: approvedPromptBlueprint.hook,
+        segmentCount: approvedPromptBlueprint.segments.length,
+        segmentSeconds: approvedPromptBlueprint.segments.map((segment) => segment.seconds)
+      })
+    });
+  }
+
   appendTimelineEvent(job.id, {
     at: new Date().toISOString(),
     event: 'SELECTED_MOOD',
@@ -825,6 +887,7 @@ export const createScriptDraftHandler = async (payload: ScriptDraftRequest): Pro
     script: draft.script,
     scriptV2: normalizeScriptV2((draft as { scriptV2?: ScriptV2 }).scriptV2),
     generatedSoraPrompt: (draft as { generatedSoraPrompt?: string }).generatedSoraPrompt,
+    promptBlueprint: normalizePromptBlueprint((draft as { promptBlueprint?: SoraPromptBlueprint }).promptBlueprint),
     targetSeconds: draft.targetSeconds,
     estimatedSeconds: draft.estimatedSeconds,
     withinTarget: draft.withinTarget,

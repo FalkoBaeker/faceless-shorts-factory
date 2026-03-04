@@ -235,6 +235,118 @@ export function JobRuntimePanel({ initialJobId }: Props) {
     }
   }, [job]);
 
+  const approvedBlueprintMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'STORYBOARD_SELECTED' && entry.detail);
+    if (!event?.detail) return null;
+
+    try {
+      const parsed = JSON.parse(event.detail) as {
+        approvedPromptBlueprint?: {
+          hook?: string;
+          continuityAnchors?: string[];
+          segments?: Array<{
+            index?: number;
+            seconds?: number;
+            title?: string;
+            userFlowBeat?: string;
+            prompt?: string;
+          }>;
+        };
+      };
+
+      const blueprint = parsed.approvedPromptBlueprint;
+      if (!blueprint || !Array.isArray(blueprint.segments) || !blueprint.segments.length) return null;
+
+      const segments = blueprint.segments
+        .map((segment, index) => ({
+          index: Number.isFinite(segment.index) ? Math.max(1, Math.floor(segment.index ?? 0)) : index + 1,
+          seconds: Math.max(1, Math.floor(Number(segment.seconds) || 0)),
+          title: String(segment.title ?? '').trim() || undefined,
+          userFlowBeat: String(segment.userFlowBeat ?? '').trim(),
+          promptSnippet: String(segment.prompt ?? '').trim().slice(0, 280)
+        }))
+        .sort((a, b) => a.index - b.index);
+
+      return {
+        source: 'approved' as const,
+        hook: String(blueprint.hook ?? '').trim() || null,
+        continuityAnchors: Array.isArray(blueprint.continuityAnchors)
+          ? blueprint.continuityAnchors.map((value) => String(value).trim()).filter(Boolean).slice(0, 12)
+          : [],
+        segments
+      };
+    } catch {
+      return null;
+    }
+  }, [job]);
+
+  const appliedBlueprintMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'SORA_PROMPT_BLUEPRINT_APPLIED' && entry.detail);
+    if (!event?.detail) return null;
+
+    try {
+      const parsed = JSON.parse(event.detail) as {
+        hook?: string;
+        continuityAnchors?: string[];
+        segments?: Array<{
+          index?: number;
+          seconds?: number;
+          title?: string | null;
+          userFlowBeat?: string;
+          promptSnippet?: string;
+        }>;
+      };
+
+      const segments = Array.isArray(parsed.segments)
+        ? parsed.segments
+            .map((segment, index) => ({
+              index: Number.isFinite(segment.index) ? Math.max(1, Math.floor(segment.index ?? 0)) : index + 1,
+              seconds: Math.max(1, Math.floor(Number(segment.seconds) || 0)),
+              title: String(segment.title ?? '').trim() || undefined,
+              userFlowBeat: String(segment.userFlowBeat ?? '').trim(),
+              promptSnippet: String(segment.promptSnippet ?? '').trim()
+            }))
+            .sort((a, b) => a.index - b.index)
+        : [];
+
+      if (!segments.length) return null;
+
+      return {
+        source: 'applied' as const,
+        hook: String(parsed.hook ?? '').trim() || null,
+        continuityAnchors: Array.isArray(parsed.continuityAnchors)
+          ? parsed.continuityAnchors.map((value) => String(value).trim()).filter(Boolean).slice(0, 12)
+          : [],
+        segments
+      };
+    } catch {
+      return null;
+    }
+  }, [job]);
+
+  const displayBlueprintMeta = appliedBlueprintMeta ?? approvedBlueprintMeta;
+
+  const runPlanMeta = useMemo(() => {
+    const event = [...(job?.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.event === 'JOB_CREATED' && entry.detail);
+    if (!event?.detail) return null;
+
+    const target = event.detail.match(/target=(\d+)s/i);
+    const trim = event.detail.match(/trim=(\d+)s/i);
+    const segments = event.detail.match(/segments=([0-9+]+)/i);
+
+    return {
+      targetSeconds: target ? Number(target[1]) : null,
+      trimToSeconds: trim ? Number(trim[1]) : null,
+      segmentsPlan: segments ? segments[1] : null
+    };
+  }, [job]);
+
   const motionMeta = useMemo(() => {
     const enforced = [...(job?.timeline ?? [])]
       .reverse()
@@ -506,6 +618,49 @@ export function JobRuntimePanel({ initialJobId }: Props) {
           <p className="section-copy" style={{ marginTop: 0 }}>
             {finalSoraPromptAsset.objectPath}
           </p>
+        </section>
+      ) : null}
+
+      {displayBlueprintMeta ? (
+        <section className="section-card" style={{ marginTop: 4 }} aria-live="polite">
+          <h3 className="section-title" style={{ margin: 0, fontSize: '1rem' }}>
+            Final verwendeter Blueprint
+          </h3>
+          <p className="section-copy">
+            Quelle: {displayBlueprintMeta.source === 'applied' ? 'Render-Lauf (angewendet)' : 'Freigabe (eingefroren vor Render)'}
+          </p>
+          <div className="action-row" style={{ marginTop: 0 }}>
+            <span className="chip chip-neutral">Segmente: {displayBlueprintMeta.segments.length}</span>
+            <span className="chip chip-neutral">
+              Dauer: {displayBlueprintMeta.segments.reduce((sum, segment) => sum + segment.seconds, 0)}s
+            </span>
+            {runPlanMeta?.trimToSeconds ? <span className="chip chip-neutral">Export: {runPlanMeta.trimToSeconds}s (Trim)</span> : null}
+            {displayBlueprintMeta.hook ? <span className="chip chip-neutral">Hook: {displayBlueprintMeta.hook}</span> : null}
+          </div>
+          {runPlanMeta?.trimToSeconds ? (
+            <p className="section-copy" style={{ marginTop: 0 }}>
+              Segmentplan-Rohdauer wird im finalen Export auf {runPlanMeta.trimToSeconds}s getrimmt
+              {runPlanMeta.segmentsPlan ? ` (Plan: ${runPlanMeta.segmentsPlan})` : ''}.
+            </p>
+          ) : null}
+          <ul className="list-clean" aria-label="Finale Blueprint-Segmente">
+            {displayBlueprintMeta.segments.map((segment) => (
+              <li className="step-item" key={`runtime-blueprint-${segment.index}`}>
+                <div>
+                  <p className="step-name">
+                    Segment {segment.index} · {segment.seconds}s {segment.title ? `· ${segment.title}` : ''}
+                  </p>
+                  {segment.userFlowBeat ? <p className="step-sub">{segment.userFlowBeat}</p> : null}
+                  {segment.promptSnippet ? (
+                    <p className="section-copy" style={{ marginTop: 0, marginBottom: 0 }}>
+                      Prompt: {segment.promptSnippet}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="badge">{segment.seconds}s</span>
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 

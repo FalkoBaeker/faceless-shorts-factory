@@ -74,6 +74,24 @@ type ScriptV2 = {
   }>;
 };
 
+type SoraPromptBlueprintSegment = {
+  index: number;
+  seconds: number;
+  title?: string;
+  startState: string;
+  endState: string;
+  prompt: string;
+  userFlowBeat: string;
+};
+
+type SoraPromptBlueprint = {
+  technicalSoraPrompt: string;
+  userFlowScript: string;
+  hook: string;
+  continuityAnchors: string[];
+  segments: SoraPromptBlueprintSegment[];
+};
+
 type GenerationPayloadV1 = {
   topic: string;
   brandProfile: {
@@ -140,6 +158,7 @@ type StoryboardSelection = {
   videoPlanV1?: VideoPlanV1;
   approvedScript?: string;
   approvedScriptV2?: ScriptV2;
+  approvedPromptBlueprint?: SoraPromptBlueprint;
   audioMode?: 'voiceover' | 'scene' | 'hybrid';
   startFrameCandidateId?: string;
   startFrameLabel?: string;
@@ -705,6 +724,59 @@ const parseVideoPlanV1 = (raw: unknown): VideoPlanV1 | undefined => {
   };
 };
 
+const parsePromptBlueprint = (raw: unknown): SoraPromptBlueprint | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+
+  const technicalSoraPrompt = String(input.technicalSoraPrompt ?? '').trim().slice(0, 8000);
+  if (!technicalSoraPrompt) return undefined;
+
+  const segmentsRaw = Array.isArray(input.segments) ? input.segments : [];
+  const segments = segmentsRaw
+    .slice(0, 12)
+    .map((segment, index) => (segment && typeof segment === 'object' ? ({ ...(segment as Record<string, unknown>), index } as Record<string, unknown>) : null))
+    .filter((segment): segment is Record<string, unknown> => Boolean(segment))
+    .map((segment) => {
+      const prompt = String(segment.prompt ?? '').trim().slice(0, 3000);
+      const startState = String(segment.startState ?? '').trim().slice(0, 800);
+      const endState = String(segment.endState ?? '').trim().slice(0, 800);
+      const userFlowBeat = String(segment.userFlowBeat ?? '').trim().slice(0, 320);
+      if (!prompt || !startState || !endState || !userFlowBeat) return null;
+
+      const seconds = Math.max(4, Math.min(12, Math.round(Number(segment.seconds) || 0) || 8));
+      const rawIndex = Number(segment.index);
+      const normalizedIndex = Number.isFinite(rawIndex) ? Math.max(1, Math.floor(rawIndex)) : Number(segment.index) + 1;
+
+      return {
+        index: normalizedIndex,
+        seconds,
+        title: String(segment.title ?? '').trim().slice(0, 120) || undefined,
+        startState,
+        endState,
+        prompt,
+        userFlowBeat
+      };
+    })
+    .filter((segment): segment is SoraPromptBlueprintSegment => Boolean(segment))
+    .sort((a, b) => a.index - b.index)
+    .map((segment, index) => ({
+      ...segment,
+      index: index + 1
+    }));
+
+  if (!segments.length) return undefined;
+
+  return {
+    technicalSoraPrompt,
+    userFlowScript: String(input.userFlowScript ?? '').trim().slice(0, 4000),
+    hook: String(input.hook ?? '').trim().slice(0, 280),
+    continuityAnchors: Array.isArray(input.continuityAnchors)
+      ? input.continuityAnchors.map((value) => String(value).trim()).filter(Boolean).slice(0, 16)
+      : [],
+    segments
+  };
+};
+
 const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
   const fallback: StoryboardSelection = {
     conceptId: 'concept_web_vertical_slice',
@@ -714,6 +786,7 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
     videoPlanV1: undefined,
     approvedScript: undefined,
     approvedScriptV2: undefined,
+    approvedPromptBlueprint: undefined,
     audioMode: 'voiceover',
     startFrameCandidateId: undefined,
     startFrameLabel: undefined,
@@ -814,6 +887,7 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
       videoPlanV1: parseVideoPlanV1(parsed.videoPlanV1),
       approvedScript: typeof parsed.approvedScript === 'string' ? parsed.approvedScript : undefined,
       approvedScriptV2: parseScriptV2((parsed as { approvedScriptV2?: unknown }).approvedScriptV2),
+      approvedPromptBlueprint: parsePromptBlueprint((parsed as { approvedPromptBlueprint?: unknown }).approvedPromptBlueprint),
       audioMode:
         typeof parsed.audioMode === 'string' && ['voiceover', 'scene', 'hybrid'].includes(parsed.audioMode)
           ? (parsed.audioMode as 'voiceover' | 'scene' | 'hybrid')
@@ -1143,6 +1217,7 @@ const processVideo = async (job: Job<StagePayload>) => {
         videoPlanV1: storyboard.videoPlanV1,
         approvedScript: storyboard.approvedScript,
         approvedScriptV2: storyboard.approvedScriptV2,
+        approvedPromptBlueprint: storyboard.approvedPromptBlueprint,
         startFrameStyle: storyboard.startFrameStyle,
         startFrameCandidateId: storyboard.startFrameCandidateId,
         startFramePromptOverride: storyboard.startFramePrompt,
@@ -1322,7 +1397,14 @@ const processVideo = async (job: Job<StagePayload>) => {
           hook: result.promptBlueprint.hook,
           continuityAnchors: result.promptBlueprint.continuityAnchors,
           segmentCount: result.promptBlueprint.segments.length,
-          segmentSeconds: result.promptBlueprint.segments.map((segment: { seconds: number }) => segment.seconds)
+          segmentSeconds: result.promptBlueprint.segments.map((segment: { seconds: number }) => segment.seconds),
+          segments: result.promptBlueprint.segments.map((segment: { index: number; seconds: number; title?: string; userFlowBeat: string; prompt: string }) => ({
+            index: segment.index,
+            seconds: segment.seconds,
+            title: segment.title ?? null,
+            userFlowBeat: segment.userFlowBeat,
+            promptSnippet: segment.prompt.slice(0, 280)
+          }))
         })
       );
     }

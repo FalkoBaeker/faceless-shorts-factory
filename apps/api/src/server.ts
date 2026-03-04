@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { URL } from 'node:url';
+import type { SelectConceptRequest } from './contracts.ts';
 import {
   createProjectHandler,
   createScriptDraftHandler,
@@ -683,6 +684,10 @@ export const buildApiServer = () =>
           generationPayload,
           approvedScript: String(body.approvedScript ?? ''),
           approvedScriptV2: parseScriptV2(body.approvedScriptV2),
+          approvedPromptBlueprint:
+            body.approvedPromptBlueprint && typeof body.approvedPromptBlueprint === 'object'
+              ? (body.approvedPromptBlueprint as SelectConceptRequest['approvedPromptBlueprint'])
+              : undefined,
           startFrameCandidateId: String(body.startFrameCandidateId ?? '').trim() || generationPayload?.startFrame?.candidateId,
           startFrameStyle: String(body.startFrameStyle ?? '').trim()
             ? (String(body.startFrameStyle) as

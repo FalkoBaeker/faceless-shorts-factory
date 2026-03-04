@@ -79,6 +79,24 @@ export type ScriptV2 = {
   scenes: ScriptSceneBlock[];
 };
 
+export type SoraPromptBlueprintSegment = {
+  index: number;
+  seconds: number;
+  title?: string;
+  startState: string;
+  endState: string;
+  prompt: string;
+  userFlowBeat: string;
+};
+
+export type SoraPromptBlueprint = {
+  technicalSoraPrompt: string;
+  userFlowScript: string;
+  hook: string;
+  continuityAnchors: string[];
+  segments: SoraPromptBlueprintSegment[];
+};
+
 /** @deprecated legacy controls; replaced by creativeIntent + storyboardLight */
 export type UserControlProfile = {
   ctaStrength?: 'soft' | 'balanced' | 'strong';
@@ -169,6 +187,7 @@ export type SelectConceptRequest = {
   generationPayload?: GenerationPayloadV1;
   approvedScript?: string;
   approvedScriptV2?: ScriptV2;
+  approvedPromptBlueprint?: SoraPromptBlueprint;
   startFrameCandidateId?: string;
   startFrameStyle?:
     | 'storefront_hero'
@@ -211,6 +230,7 @@ export type ScriptDraftResponse = {
   script: string;
   scriptV2?: ScriptV2;
   generatedSoraPrompt?: string;
+  promptBlueprint?: SoraPromptBlueprint;
   targetSeconds: number;
   estimatedSeconds: number;
   withinTarget: boolean;
