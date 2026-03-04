@@ -2230,6 +2230,15 @@ const probeStorageProvider = async () => {
 export const runProviderHealthchecks = async () => {
   if (now() - healthCheckedAt < healthCacheMs) return;
 
+  if (simulationProviderFallbackEnabled()) {
+    health.sora = 'yellow';
+    health.tts = 'yellow';
+    await probeWithRetry('storage', probeStorageProvider);
+    health.render = 'green';
+    healthCheckedAt = now();
+    return;
+  }
+
   await probeWithRetry('openai-llm', async () => {
     await openAiGet('/v1/models/gpt-4o-mini');
   });
