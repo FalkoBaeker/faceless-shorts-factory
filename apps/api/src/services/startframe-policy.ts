@@ -36,19 +36,24 @@ export type StartFramePolicyPreflightResult = {
 };
 
 export const startFrameLabelByStyle: Record<StartFrameStyle, string> = {
-  storefront_hero: 'Storefront Hero',
-  product_macro: 'Produkt-Makro',
-  owner_portrait: 'Owner Portrait',
-  hands_at_work: 'Hands at Work',
-  before_after_split: 'Before/After Split'
+  storefront_hero: 'Action Reveal',
+  product_macro: 'Impact Macro',
+  owner_portrait: 'Reaction POV',
+  hands_at_work: 'Fast Process Move',
+  before_after_split: 'Transformation Snap'
 };
 
 export const startFramePromptByStyle: Record<StartFrameStyle, string> = {
-  storefront_hero: 'Startframe: Hero-Aufnahme der Ladenfront/Marke, gut ausgeleuchtet, ruhiger Hintergrund.',
-  product_macro: 'Startframe: Produkt-Makroaufnahme mit hoher Detailtiefe und klarer Trennung vom Hintergrund.',
-  owner_portrait: 'Startframe: freundliches Owner-Portrait, Blick zur Kamera, professionell aber authentisch.',
-  hands_at_work: 'Startframe: Hände bei der Arbeit/Herstellung, dynamisch und handwerklich nah.',
-  before_after_split: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
+  storefront_hero:
+    'Startframe: Action-Reveal im realen Umfeld mit sichtbarer Handlung; kein statischer Exterior-/Logo-Only-Start.',
+  product_macro:
+    'Startframe: Impact-Makro im Moment einer Aktion am Objekt (ziehen, drücken, drehen); kein statisches Stillleben.',
+  owner_portrait:
+    'Startframe: Reaction-POV mit Person in laufender Handlung; kein klassisches Frontportrait ohne Aktion.',
+  hands_at_work:
+    'Startframe: Fast-Process-Move mit Händen/Tools mitten in der Tätigkeit; klarer Bewegungsimpuls im Frame.',
+  before_after_split:
+    'Startframe: Transformation-Snap mit direkter sichtbarer Vorher/Nachher-Wende im selben Moment.'
 };
 
 const minorRiskPattern = /(child|minor|kid|teen|baby|school\s*child|minderj[aä]hrig|kind|jugendlich)/i;
@@ -104,7 +109,7 @@ export const evaluateStartframePolicyPreflight = (
       decision: 'block',
       reasonCode: 'MINOR_RISK',
       userMessage: 'Der gewählte Startframe enthält Hinweise auf Minderjährige und wurde blockiert.',
-      remediation: 'Nutze stattdessen ein neutrales Produkt-/Storefront-Motiv ohne minderjährige Personen.',
+      remediation: 'Nutze stattdessen ein nicht-personenbasiertes Action-Motiv ohne Minderjährige.',
       matchedSignals
     };
   }
@@ -115,7 +120,7 @@ export const evaluateStartframePolicyPreflight = (
       decision: 'block',
       reasonCode: 'SEXUAL_CONTENT_RISK',
       userMessage: 'Der gewählte Startframe wurde wegen sexualisiertem/NSFW-Risiko blockiert.',
-      remediation: 'Nutze ein sicheres, markenkonformes Motiv (Produkt, Ladenfront, Hände bei der Arbeit).',
+      remediation: 'Nutze ein sicheres, markenkonformes Action-Motiv mit klarer Produkt-/Nutzungshandlung.',
       matchedSignals
     };
   }
@@ -141,9 +146,9 @@ export const evaluateStartframePolicyPreflight = (
       reasonCode: 'HUMAN_REFERENCE_NEEDS_FALLBACK',
       userMessage: 'Personenbezug im Upload erkannt ohne klaren Rights-Hinweis. Sicherer Fallback wird verwendet.',
       remediation: 'Optional: Rights/Einwilligung im Hinweis angeben oder nicht-personenbasierten Startframe verwenden.',
-      effectiveStartFrameStyle: 'hands_at_work',
-      effectiveStartFrameLabel: startFrameLabelByStyle.hands_at_work,
-      effectiveStartFramePrompt: startFramePromptByStyle.hands_at_work,
+      effectiveStartFrameStyle: 'product_macro',
+      effectiveStartFrameLabel: startFrameLabelByStyle.product_macro,
+      effectiveStartFramePrompt: startFramePromptByStyle.product_macro,
       matchedSignals
     };
   }

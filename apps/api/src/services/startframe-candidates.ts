@@ -45,52 +45,57 @@ const styleCatalog: Record<
   }
 > = {
   storefront_hero: {
-    label: 'Storefront Hero',
-    description: 'Klare Hero-Einstellung der Marke/Ladenfront als vertrauensvoller Einstieg.',
-    prompt: 'Startframe: Hero-Aufnahme der Ladenfront/Marke, gut ausgeleuchtet, ruhiger Hintergrund.'
+    label: 'Action Reveal',
+    description: 'Dynamischer Einstieg direkt im realen Ort mit sichtbarer Handlung statt statischer Außenansicht.',
+    prompt:
+      'Startframe: Mid-action Reveal im realen Umfeld, klare Interaktion mit Produkt/Objekt, kein statischer Exterior- oder Logo-Only-Shot.'
   },
   product_macro: {
-    label: 'Produkt-Makro',
-    description: 'Nahaufnahme des Kernprodukts für sofortigen visuellen Fokus.',
-    prompt: 'Startframe: Produkt-Makroaufnahme mit hoher Detailtiefe und klarer Trennung vom Hintergrund.'
+    label: 'Impact Macro',
+    description: 'Makro-Einstieg mit sichtbarer Aktion am Objekt für sofortigen Scroll-Stop.',
+    prompt:
+      'Startframe: extreme Produkt-Makroaufnahme im Moment einer Handlung (ziehen, drehen, drücken, aufreißen), hohe Detailtiefe, keine statische Produktablage.'
   },
   owner_portrait: {
-    label: 'Owner Portrait',
-    description: 'Menschlicher Einstieg mit glaubwürdigem Gesichts-/Vertrauenssignal.',
-    prompt: 'Startframe: freundliches Owner-Portrait, Blick zur Kamera, professionell aber authentisch.'
+    label: 'Reaction POV',
+    description: 'Menschlicher Einstieg als Reaktionsmoment in Aktion statt klassischem Portrait.',
+    prompt:
+      'Startframe: Person im Reaktionsmoment auf eine sichtbare Aktion (POV-nah, Hände/Objekt in Bewegung), kein statisches Portrait mit Frontblick.'
   },
   hands_at_work: {
-    label: 'Hands at Work',
-    description: 'Aktiver Start über den Arbeitsprozess bzw. das Handwerk.',
-    prompt: 'Startframe: Hände bei der Arbeit/Herstellung, dynamisch und handwerklich nah.'
+    label: 'Fast Process Move',
+    description: 'Schneller Prozessmoment mit klarer Tätigkeit, kinetisch und tiktok-tauglich.',
+    prompt:
+      'Startframe: Hände/Tools mitten in einer klaren Prozessbewegung (kein Warten, kein Posieren), kurze Motion-Cue im Bildaufbau.'
   },
   before_after_split: {
-    label: 'Before/After Split',
-    description: 'Vorher/Nachher-Visual direkt in Frame 1 für starke Wirkung.',
-    prompt: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
+    label: 'Transformation Snap',
+    description: 'Vorher/Nachher als unmittelbarer Veränderungsmoment mit klarer visueller Wende.',
+    prompt:
+      'Startframe: Transformation in Aktion (vorher->nachher sichtbar im selben Moment), hoher Kontrast, keine statische Vergleichstafel.'
   }
 };
 
 const styleVisual: Record<StartFrameStyle, { emoji: string; gradientA: string; gradientB: string }> = {
-  storefront_hero: { emoji: '🏪', gradientA: '#6A85FF', gradientB: '#5FD1FF' },
-  product_macro: { emoji: '📦', gradientA: '#8B5CF6', gradientB: '#C084FC' },
-  owner_portrait: { emoji: '🙂', gradientA: '#3B82F6', gradientB: '#22D3EE' },
-  hands_at_work: { emoji: '🛠️', gradientA: '#10B981', gradientB: '#34D399' },
-  before_after_split: { emoji: '↔️', gradientA: '#F59E0B', gradientB: '#FB7185' }
+  storefront_hero: { emoji: '⚡', gradientA: '#D35400', gradientB: '#F39C12' },
+  product_macro: { emoji: '🔎', gradientA: '#C0392B', gradientB: '#F1C40F' },
+  owner_portrait: { emoji: '🎯', gradientA: '#E67E22', gradientB: '#F4D03F' },
+  hands_at_work: { emoji: '🚀', gradientA: '#D35400', gradientB: '#F7B733' },
+  before_after_split: { emoji: '💥', gradientA: '#E74C3C', gradientB: '#F39C12' }
 };
 
 const moodToStylePriority: Record<MoodPreset, StartFrameStyle[]> = {
-  commercial_cta: ['storefront_hero', 'product_macro', 'hands_at_work', 'owner_portrait', 'before_after_split'],
-  problem_solution: ['before_after_split', 'hands_at_work', 'product_macro', 'storefront_hero', 'owner_portrait'],
-  testimonial: ['owner_portrait', 'storefront_hero', 'hands_at_work', 'product_macro', 'before_after_split'],
-  humor_light: ['hands_at_work', 'owner_portrait', 'storefront_hero', 'before_after_split', 'product_macro']
+  commercial_cta: ['product_macro', 'hands_at_work', 'before_after_split', 'storefront_hero', 'owner_portrait'],
+  problem_solution: ['before_after_split', 'product_macro', 'hands_at_work', 'storefront_hero', 'owner_portrait'],
+  testimonial: ['hands_at_work', 'product_macro', 'owner_portrait', 'before_after_split', 'storefront_hero'],
+  humor_light: ['hands_at_work', 'before_after_split', 'product_macro', 'owner_portrait', 'storefront_hero']
 };
 
 const conceptBoost: Array<{ key: string; style: StartFrameStyle }> = [
   { key: 'offer', style: 'product_macro' },
   { key: 'problem', style: 'before_after_split' },
   { key: 'before_after', style: 'before_after_split' },
-  { key: 'testimonial', style: 'owner_portrait' }
+  { key: 'testimonial', style: 'hands_at_work' }
 ];
 
 const normalizeMood = (value?: string): MoodPreset => {
@@ -149,6 +154,13 @@ const buildEntityLockRule = (topic: string) =>
     `Topic-Lock (verbindlich): "${compact(topic, 240)}".`,
     'Wenn das Topic eine konkrete Unterkategorie nennt (z. B. Rasse, Produkttyp, Modell, Material), muss genau diese Unterkategorie gezeigt werden.',
     'Keine Ersetzung durch generische oder benachbarte Kategorien.'
+  ].join(' ');
+
+const buildActionFirstHookRule = () =>
+  [
+    'Action-First-Regel: Frame 1 muss eine sichtbare Handlung im Moment des Geschehens zeigen (mid-action).',
+    'Verboten: statische Außenansicht, neutrales Portrait, stilles Produkt-Stillleben ohne Bewegung.',
+    'Pattern-Interrupt verpflichtend als Formprinzip (nicht wörtlich kopieren): abruptes Materialereignis, starke überraschende Geste, oder eine direkte "3 Dinge..."-Listendynamik im Bild.'
   ].join(' ');
 
 const rankStyles = (input: { topic: string; conceptId?: string; moodPreset: MoodPreset; creativeIntent?: CreativeIntent }) => {
@@ -241,6 +253,7 @@ export const buildStartFrameCandidates = (input: {
     const brandFocus = buildBrandFocusText(input.brandProfile);
     const intentFocus = buildIntentFocusText(input.creativeIntent);
     const entityLockRule = buildEntityLockRule(topic);
+    const actionFirstHookRule = buildActionFirstHookRule();
     const description = [
       entry.description,
       `Fokus: ${compact(topic, 120)}.`,
@@ -253,7 +266,8 @@ export const buildStartFrameCandidates = (input: {
       `Topic-Fokus: ${compact(topic, 240)}.`,
       brandFocus,
       intentFocus,
-      entityLockRule
+      entityLockRule,
+      actionFirstHookRule
     ]
       .filter(Boolean)
       .join(' ');

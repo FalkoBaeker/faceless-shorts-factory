@@ -434,7 +434,7 @@ export const createStartFramePreflightHandler = (payload: StartFramePreflightReq
 
   const selectedStartFrame = hasUploadedReference || hasCustomPrompt
     ? {
-        style: (payload.startFrameStyle ?? 'owner_portrait') as
+        style: (payload.startFrameStyle ?? 'product_macro') as
           | 'storefront_hero'
           | 'product_macro'
           | 'owner_portrait'
@@ -531,7 +531,7 @@ export const selectConceptHandler = (payload: SelectConceptRequest): SelectConce
     customPrompt.length > 0 || hasUploadedReference
       ? {
           candidateId: `sfc_custom_${Date.now()}`,
-          style: payload.startFrameStyle ?? generationPayload?.startFrame?.style ?? 'owner_portrait',
+          style: payload.startFrameStyle ?? generationPayload?.startFrame?.style ?? 'product_macro',
           label: customLabel,
           description: 'Nutzerdefinierter Startframe aus Upload-Referenz',
           prompt:

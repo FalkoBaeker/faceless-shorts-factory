@@ -303,19 +303,24 @@ const storyboardConcepts: Record<StoryboardConceptId, StoryboardConcept> = {
 };
 
 const startFramePrompts: Record<StartFrameStyle, string> = {
-  storefront_hero: 'Startframe: Hero-Aufnahme der Ladenfront/Marke, gut ausgeleuchtet, ruhiger Hintergrund.',
-  product_macro: 'Startframe: Produkt-Makroaufnahme mit hoher Detailtiefe und klarer Trennung vom Hintergrund.',
-  owner_portrait: 'Startframe: freundliches Owner-Portrait, Blick zur Kamera, professionell aber authentisch.',
-  hands_at_work: 'Startframe: Hände bei der Arbeit/Herstellung, dynamisch und handwerklich nah.',
-  before_after_split: 'Startframe: Vorher/Nachher-Split mit klaren visuellen Unterschieden.'
+  storefront_hero:
+    'Startframe: Action-Reveal im realen Umfeld mit sichtbarer Handlung; kein statischer Exterior-/Logo-Only-Start.',
+  product_macro:
+    'Startframe: Impact-Makro im Moment einer Aktion am Objekt (ziehen, drücken, drehen); kein statisches Stillleben.',
+  owner_portrait:
+    'Startframe: Reaction-POV mit Person in laufender Handlung; kein klassisches Frontportrait ohne Aktion.',
+  hands_at_work:
+    'Startframe: Fast-Process-Move mit Händen/Tools mitten in der Tätigkeit; klarer Bewegungsimpuls im Frame.',
+  before_after_split:
+    'Startframe: Transformation-Snap mit direkter sichtbarer Vorher/Nachher-Wende im selben Moment.'
 };
 
 const startFrameLabels: Record<StartFrameStyle, string> = {
-  storefront_hero: 'Storefront Hero',
-  product_macro: 'Produkt-Makro',
-  owner_portrait: 'Owner Portrait',
-  hands_at_work: 'Hands at Work',
-  before_after_split: 'Before/After Split'
+  storefront_hero: 'Action Reveal',
+  product_macro: 'Impact Macro',
+  owner_portrait: 'Reaction POV',
+  hands_at_work: 'Fast Process Move',
+  before_after_split: 'Transformation Snap'
 };
 
 const moodPromptMap: Record<MoodPreset, string> = {
@@ -554,9 +559,9 @@ const resolveStoryboardConcept = (conceptId?: string): StoryboardConcept => {
 };
 
 const resolveStartFrameStyle = (style?: string): StartFrameStyle => {
-  if (!style) return 'storefront_hero';
+  if (!style) return 'product_macro';
   if (style in startFramePrompts) return style as StartFrameStyle;
-  return 'storefront_hero';
+  return 'product_macro';
 };
 
 const resolveMoodPreset = (mood?: string): MoodPreset => {
@@ -731,6 +736,7 @@ const compilePromptV3 = (input: {
   const sections = [
     `Scene/Intent: ${input.sceneIntent}. ${intentPrompt.text}`,
     `Hook (0-2s): ${input.hookOpening}`,
+    'Pattern-Interrupt Pflicht in 0-2s: sofort sichtbare Überraschungsaktion mit Relevanz; Beispiele als Formprinzip (nicht wörtlich): "Etwas explodiert", "Du wirst nicht glauben...", "3 Dinge die...".',
     `Flow-beats: ${input.flowBeats}`,
     input.lightingAnchors ? `Lighting/visual anchors: ${input.lightingAnchors}` : '',
     input.subjectConstraints.length ? `Subject constraints: ${input.subjectConstraints.join(' | ')}` : '',
@@ -1183,6 +1189,9 @@ const buildStrictStep1ImagePrompt = (input: {
     `Energy Level: ${input.creativeIntent.energyMode}. ` +
     `User Intent (Humor): ${humorIntent}. ` +
     `MoodPreset: ${input.moodPreset}. ` +
+    'Pflicht: Das Startframe muss bereits einen klaren Pattern-Interrupt als laufende Aktion zeigen (Mid-Action, kein statischer Hero-Shot). ' +
+    'Verboten: statische Ladenfront, neutrales Portrait, ruhiges Produkt-Stillleben ohne Bewegung. ' +
+    'Pattern-Interrupt-Beispiele als Formprinzip (nicht wörtlich übernehmen): Etwas explodiert visuell, "Du wirst nicht glauben..."-Moment, "3 Dinge die..."-Listendynamik im Bild. ' +
     'Gib nur eine präzise Bildbeschreibung für das Startframe aus.'
   );
 };
@@ -1317,9 +1326,12 @@ const generateStrictStep1SoraPrompt = async (input: {
   const humorIntent = input.creativeIntent.effectGoals.some((entry) => entry.id === 'funny') ? 'humorvoll' : 'nicht-humorvoll';
   const viralHookDirective =
     'Pflicht-Hook: In Sekunde 0-2 muss ein klarer Pattern-Interrupt passieren (unerwartete Aktion, überraschender visueller Kontrast oder provokante Hook-Zeile), sodass nicht weitergescrollt wird. ' +
-    'Der Hook muss sofort aus dem Startbild motivisch weiterlaufen (kein Motivbruch) und direkt Spannung/Neugier erzeugen.';
+    'Der Hook muss sofort aus dem Startbild motivisch weiterlaufen (kein Motivbruch) und direkt Spannung/Neugier erzeugen. ' +
+    'Pattern-Interrupt-Beispiele als Formprinzip (nicht wörtlich kopieren): etwas explodiert visuell, "Du wirst nicht glauben..."-Moment, "3 Dinge die..."-Struktur mit schneller visueller Demonstration.';
   const antiGenericOpeningDirective =
     'Verboten sind generische Openings wie reine Außenaufnahme, langsame Intro-Fahrt ohne Ereignis, nur Logo-Shot oder "Kamera führt ins Gebäude" ohne konkrete Aktion/Person.';
+  const actionFirstDirective =
+    'Action-First: Jeder Shot muss ein klares Verb im Bild haben (ziehen, drücken, aufreißen, drehen, zeigen, reagieren) und darf nicht als statisches Mood-Standbild formuliert sein.';
   const startFrameDirective = hasStartFrameImage
     ? `Nehme das Startbild (${startFrameImageRef}) als visuellen Anker für Shot 1.`
     : 'Es liegt kein Startbild vor; nutze StartframeHint/Branding als Anker und halte ein konsistentes Hauptmotiv.';
@@ -1328,7 +1340,7 @@ const generateStrictStep1SoraPrompt = async (input: {
     `Erstelle ein virales TikTok-Video zum Thema ${input.topic}, das mit einem starken Scroll-Stop-Hook startet. ` +
     `Inputs: Energy Level=${input.creativeIntent.energyMode}, User Intent=${humorIntent}, MoodPreset=${input.moodPreset}, ` +
     `Branding=${JSON.stringify(input.brandProfile ?? {})}, WebsiteContext=${input.websiteBundle.websiteContext}, StartframeHint=${input.startFrameHint ?? ''}. ` +
-    `${viralHookDirective} ${antiGenericOpeningDirective} ` +
+    `${viralHookDirective} ${antiGenericOpeningDirective} ${actionFirstDirective} ` +
     'Baue konkrete visuelle Beats mit klarer Kameraaktion, sichtbarer Handlung und emotionalem Payoff auf. ' +
     'Formuliere den Prompt so, dass die ersten Sekunden explizit den Hook enthalten und danach die Story klar vorwärts entwickelt wird. ' +
     `Sora Guideline (excerpt): ${guidelineExcerpt}. ` +
@@ -2162,7 +2174,9 @@ const generateSoraPromptBlueprint = async (input: {
     `${input.userEditedFlowScript ? `User gewünschter Ablauf (priorisieren): ${input.userEditedFlowScript}. ` : ''}` +
     `Technischer Basis-Prompt (weiterentwickeln, nicht stumpf kopieren): ${input.technicalBasePrompt}. ` +
     'Pflicht: Das Video braucht einen viralen Scroll-Stop-Hook in den ersten 0-2 Sekunden (Pattern-Interrupt mit Überraschung, Relevanz und Neugier). ' +
+    'Pattern-Interrupt Beispiele als Formprinzip (nicht wörtlich): "Etwas explodiert", "Du wirst nicht glauben...", "3 Dinge die...". ' +
     'Segment 1 darf nie generisch starten (keine reine Außenansicht, kein langsamer Intro-Schwenk ohne Ereignis, kein statischer Establishing-Shot). ' +
+    'Action-first gilt für alle Segmente: jedes Segment braucht ein klares Verb im Bild (ziehen, drücken, drehen, aufreißen, reagieren, zeigen). ' +
     'Jeder Segment-Prompt muss konkrete Kameraaktion + konkrete sichtbare Handlung + klaren Fortschritt enthalten. ' +
     'Wichtig: kein Loop-Content, keine Reset-Shots, jedes Segment muss visuell vorwärts entwickeln. ' +
     'userFlowScript und userFlowBeat müssen auf Deutsch, klar und nicht-technisch sein (was sieht der Zuschauer konkret). ' +
@@ -3371,6 +3385,10 @@ export const generateStartFrameThumbnail = async (input: {
     `Brand profile: ${JSON.stringify(input.brandProfile ?? {})}.`,
     `Creative intent: ${JSON.stringify(input.creativeIntent ?? {})}.`,
     `Description: ${input.description}`,
+    `Action-first hard rule: the frame must capture a visible action in progress (mid-action), never a static pose.`,
+    `Pattern-interrupt hard rule for first frame: create an immediate scroll-stop moment using a surprising visual action.`,
+    `Pattern-interrupt examples as structure only (do not copy literally): "Etwas explodiert", "Du wirst nicht glauben...", "3 Dinge die...".`,
+    `Forbidden: static storefront facade, neutral portrait pose, product lying still without interaction.`,
     `Output should look like a realistic keyframe still (no collage, no text overlays). Keep it category-accurate and topic-faithful.`
   ].join(' ');
 
@@ -4268,8 +4286,12 @@ export const runVideoStage = async (input: {
     `9:16 vertical output, cinematic but readable for mobile.`,
     `Keep on-screen text inside title-safe area (${safeMarginPercent}% margin).`,
     'No caption text should touch the frame border.',
+    'Pattern-interrupt is mandatory in 0-2s (surprising action with immediate relevance).',
+    'Pattern-interrupt examples as structure only (do not copy literally): "Etwas explodiert", "Du wirst nicht glauben...", "3 Dinge die...".',
     'TikTok pace: immediate hook, visibly changing shots, no slow static drift.',
     'No looping/recycling of the same crop or 4-shot pattern; progression must stay forward.',
+    'Action-first rule: every shot must contain a visible action verb in-frame; static mood stills are invalid.',
+    'Forbidden openings: static storefront, neutral portrait pose, slow logo-only intro without event.',
     'Never use abstract labels like "central motif"; always name the exact subject/object shown in the shot.',
     brandTextConstraint
   ].filter(Boolean);

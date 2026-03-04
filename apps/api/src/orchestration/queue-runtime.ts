@@ -797,7 +797,7 @@ const parseStoryboardSelection = (jobId: string): StoryboardSelection => {
     startFramePolicy: undefined,
     startFrameReferenceObjectPath: undefined,
     userControls: undefined,
-    startFrameStyle: 'storefront_hero'
+    startFrameStyle: 'product_macro'
   };
 
   const record = getJob(jobId);
