@@ -457,6 +457,21 @@ export function ReviewLiveActions() {
     [approvedPromptBlueprint]
   );
   const approvedPromptTrimTargetSeconds = scriptMeta?.targetSeconds ?? null;
+  const approvedPromptBlueprintScriptView = useMemo(() => {
+    if (!approvedPromptBlueprint?.segments?.length) return '';
+    return approvedPromptBlueprint.segments
+      .map((segment) => {
+        const title = segment.title ? ` · ${segment.title}` : '';
+        return [
+          `Segment ${segment.index} (${segment.seconds}s)${title}`,
+          `Beat: ${segment.userFlowBeat}`,
+          `Start: ${segment.startState}`,
+          `Ende: ${segment.endState}`,
+          `Prompt: ${segment.prompt}`
+        ].join('\n');
+      })
+      .join('\n\n');
+  }, [approvedPromptBlueprint]);
 
   const generationBlocker = useMemo(() => {
     if (!brandProfile.companyName?.trim()) return 'Bitte Brand Onboarding mit Firmenname speichern.';
@@ -1018,6 +1033,15 @@ export function ReviewLiveActions() {
           placeholder="1. Die Frau sagt ...\n2. Kamera schwenkt auf ...\n3. Wir zoomen ran auf ...\n4. Schnitt auf ..."
         />
       </label>
+
+      {approvedPromptBlueprint ? (
+        <label className="auth-field" style={{ marginTop: 8 }}>
+          <span>
+            Ablaufscript ({approvedPromptTrimTargetSeconds ?? approvedPromptBlueprintTotalSeconds}s Segmentplan, final für Render)
+          </span>
+          <textarea readOnly rows={12} value={approvedPromptBlueprintScriptView} style={{ fontFamily: 'monospace' }} />
+        </label>
+      ) : null}
 
       {scriptMeta ? (
         <div className="action-row" style={{ marginTop: 0 }}>
