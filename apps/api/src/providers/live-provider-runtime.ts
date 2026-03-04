@@ -1432,6 +1432,27 @@ const generateStrictStep2SoraPrompt = async (input: {
   }
 };
 
+const buildViewerScriptFallback = (topicInput: string) => {
+  const topic = topicInput.trim() || 'dein Thema';
+  const cta = `Jetzt informieren und den nächsten Schritt mit ${topic} starten.`;
+  return [
+    '1. Szene 1',
+    'Kamera: Nahstart auf das gewählte Startbildmotiv, dann langsamer Push-in.',
+    `Bild/Aktion: Die Hauptfigur eröffnet mit einer klaren Hook zum Thema "${topic}".`,
+    'Dialog/Voiceover: "Stopp kurz - das musst du sehen."',
+    '',
+    '2. Szene 2',
+    'Kamera: Schwenk nach rechts auf das Kernprodukt bzw. den zentralen Nutzen.',
+    'Bild/Aktion: Sichtbare Anwendung im realen Kontext, kein statischer Stand.',
+    'Dialog/Voiceover: "Genau hier liegt der Unterschied im Alltag."',
+    '',
+    '3. Szene 3',
+    'Kamera: Schnitt auf Detailaufnahme, dann kurzer Pullback für Kontext.',
+    'Bild/Aktion: Konkreter Beweis/Resultat im Bild, klare Veränderung sichtbar.',
+    `Dialog/Voiceover: "${cta}"`
+  ].join('\n');
+};
+
 const generateViewerScriptFromStrictSoraPrompt = async (input: {
   soraPrompt: string;
   topic: string;
@@ -1442,24 +1463,7 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
   }
 
   if (simulationProviderFallbackEnabled()) {
-    const topic = input.topic.trim() || 'dein Thema';
-    const cta = `Jetzt informieren und den nächsten Schritt mit ${topic} starten.`;
-    return [
-      '1. Szene 1',
-      'Kamera: Nahstart auf das gewählte Startbildmotiv, dann langsamer Push-in.',
-      `Bild/Aktion: Die Hauptfigur eröffnet mit einer klaren Hook zum Thema "${topic}".`,
-      'Dialog/Voiceover: "Stopp kurz - das musst du sehen."',
-      '',
-      '2. Szene 2',
-      'Kamera: Schwenk nach rechts auf das Kernprodukt bzw. den zentralen Nutzen.',
-      'Bild/Aktion: Sichtbare Anwendung im realen Kontext, kein statischer Stand.',
-      'Dialog/Voiceover: "Genau hier liegt der Unterschied im Alltag."',
-      '',
-      '3. Szene 3',
-      'Kamera: Schnitt auf Detailaufnahme, dann kurzer Pullback für Kontext.',
-      'Bild/Aktion: Konkreter Beweis/Resultat im Bild, klare Veränderung sichtbar.',
-      `Dialog/Voiceover: "${cta}"`
-    ].join('\n');
+    return buildViewerScriptFallback(input.topic);
   }
 
   checkRate('llm', cfg.maxRpmLlm);
@@ -1485,19 +1489,35 @@ const generateViewerScriptFromStrictSoraPrompt = async (input: {
     `Sora-Prompt: ${input.soraPrompt}. ` +
     'Gib nur das finale Szenen-Skript aus, ohne Einleitung und ohne Markdown.';
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const response = await openAiPostJson('/v1/responses', {
-      model: STRICT_PROMPT_ARCHITECT_MODEL,
-      input: viewerScriptInput,
-      max_output_tokens: 1800
-    });
+  try {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const response = await openAiPostJson('/v1/responses', {
+        model: STRICT_PROMPT_ARCHITECT_MODEL,
+        input: viewerScriptInput,
+        max_output_tokens: 1800
+      });
 
-    const script = parseOpenAiResponseText(response).trim();
-    if (script) return script;
-    if (attempt < 2) await sleep(250);
+      const script = parseOpenAiResponseText(response).trim();
+      if (script) return script;
+      if (attempt < 2) await sleep(250);
+    }
+  } catch (error) {
+    logEvent({
+      event: 'strict_viewer_script_fallback',
+      level: 'WARN',
+      provider: 'openai',
+      detail: String((error as Error)?.message ?? error).slice(0, 220)
+    });
+    return buildViewerScriptFallback(input.topic);
   }
 
-  throw new ProviderRuntimeError('STRICT_VIEWER_SCRIPT_EMPTY', { provider: 'openai', fatal: true });
+  logEvent({
+    event: 'strict_viewer_script_fallback',
+    level: 'WARN',
+    provider: 'openai',
+    detail: 'STRICT_VIEWER_SCRIPT_EMPTY'
+  });
+  return buildViewerScriptFallback(input.topic);
 };
 
 const buildDialogFallbackFromScene = (input: { topic: string; action: string; sceneOrder: number }) => {
