@@ -457,6 +457,14 @@ const parsePositiveInt = (value: unknown, fallback: number) => {
   return Math.round(parsed);
 };
 
+const providerHttpTimeoutMs = parsePositiveInt(process.env.PROVIDER_HTTP_TIMEOUT_MS ?? 45000, 45000);
+const openAiHttpTimeoutMs = parsePositiveInt(process.env.OPENAI_HTTP_TIMEOUT_MS ?? providerHttpTimeoutMs, providerHttpTimeoutMs);
+const supabaseHttpTimeoutMs = parsePositiveInt(process.env.SUPABASE_HTTP_TIMEOUT_MS ?? providerHttpTimeoutMs, providerHttpTimeoutMs);
+const elevenlabsHttpTimeoutMs = parsePositiveInt(
+  process.env.ELEVENLABS_HTTP_TIMEOUT_MS ?? providerHttpTimeoutMs,
+  providerHttpTimeoutMs
+);
+
 const parseRangeFloat = (value: unknown, fallback: number, min: number, max: number) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -843,33 +851,68 @@ const openAiHeaders = () => ({
   'Content-Type': 'application/json'
 });
 
+const fetchWithProviderTimeout = async (input: string, init: RequestInit, options: { timeoutMs: number; provider: string; timeoutCode: string }) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') {
+      throw new ProviderRuntimeError(`${options.timeoutCode}:${options.timeoutMs}ms`, {
+        provider: options.provider,
+        fatal: true,
+        status: 504
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 const openAiGet = async (path: string) => {
-  const res = await fetch(`https://api.openai.com${path}`, {
-    method: 'GET',
-    headers: openAiAuthHeaders()
-  });
+  const res = await fetchWithProviderTimeout(
+    `https://api.openai.com${path}`,
+    {
+      method: 'GET',
+      headers: openAiAuthHeaders()
+    },
+    { timeoutMs: openAiHttpTimeoutMs, provider: 'openai', timeoutCode: 'OPENAI_HTTP_TIMEOUT' }
+  );
   const body = await res.text();
   if (!res.ok) throwProviderError('openai', res.status, body);
   return parseJsonSafe(body) ?? {};
 };
 
 const openAiPostJson = async (path: string, payload: Record<string, unknown>) => {
-  const res = await fetch(`https://api.openai.com${path}`, {
-    method: 'POST',
-    headers: openAiHeaders(),
-    body: JSON.stringify(payload)
-  });
+  const res = await fetchWithProviderTimeout(
+    `https://api.openai.com${path}`,
+    {
+      method: 'POST',
+      headers: openAiHeaders(),
+      body: JSON.stringify(payload)
+    },
+    { timeoutMs: openAiHttpTimeoutMs, provider: 'openai', timeoutCode: 'OPENAI_HTTP_TIMEOUT' }
+  );
   const body = await res.text();
   if (!res.ok) throwProviderError('openai', res.status, body);
   return parseJsonSafe(body) ?? {};
 };
 
 const openAiPostBinary = async (path: string, payload: Record<string, unknown>) => {
-  const res = await fetch(`https://api.openai.com${path}`, {
-    method: 'POST',
-    headers: openAiHeaders(),
-    body: JSON.stringify(payload)
-  });
+  const res = await fetchWithProviderTimeout(
+    `https://api.openai.com${path}`,
+    {
+      method: 'POST',
+      headers: openAiHeaders(),
+      body: JSON.stringify(payload)
+    },
+    { timeoutMs: openAiHttpTimeoutMs, provider: 'openai', timeoutCode: 'OPENAI_HTTP_TIMEOUT' }
+  );
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!res.ok) {
     throwProviderError('openai', res.status, buffer.toString('utf8'));
@@ -893,11 +936,15 @@ const openAiPostMultipart = async (
     form.append(file.fieldName, new Blob([file.bytes], { type: file.mimeType ?? 'application/octet-stream' }), file.fileName);
   }
 
-  const res = await fetch(`https://api.openai.com${path}`, {
-    method: 'POST',
-    headers: openAiAuthHeaders(),
-    body: form
-  });
+  const res = await fetchWithProviderTimeout(
+    `https://api.openai.com${path}`,
+    {
+      method: 'POST',
+      headers: openAiAuthHeaders(),
+      body: form
+    },
+    { timeoutMs: openAiHttpTimeoutMs, provider: 'openai', timeoutCode: 'OPENAI_HTTP_TIMEOUT' }
+  );
 
   const body = await res.text();
   if (!res.ok) throwProviderError('openai', res.status, body);
@@ -905,10 +952,14 @@ const openAiPostMultipart = async (
 };
 
 const openAiGetBinary = async (path: string) => {
-  const res = await fetch(`https://api.openai.com${path}`, {
-    method: 'GET',
-    headers: openAiAuthHeaders()
-  });
+  const res = await fetchWithProviderTimeout(
+    `https://api.openai.com${path}`,
+    {
+      method: 'GET',
+      headers: openAiAuthHeaders()
+    },
+    { timeoutMs: openAiHttpTimeoutMs, provider: 'openai', timeoutCode: 'OPENAI_HTTP_TIMEOUT' }
+  );
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!res.ok) {
     throwProviderError('openai', res.status, buffer.toString('utf8'));
@@ -1584,13 +1635,17 @@ const supabaseHeaders = (contentType?: string) => {
 };
 
 const supabaseJson = async (path: string, init?: RequestInit) => {
-  const res = await fetch(`${cfg.supabaseUrl}${path}`, {
-    ...init,
-    headers: {
-      ...supabaseHeaders('application/json'),
-      ...(init?.headers ?? {})
-    }
-  });
+  const res = await fetchWithProviderTimeout(
+    `${cfg.supabaseUrl}${path}`,
+    {
+      ...init,
+      headers: {
+        ...supabaseHeaders('application/json'),
+        ...(init?.headers ?? {})
+      }
+    },
+    { timeoutMs: supabaseHttpTimeoutMs, provider: 'supabase', timeoutCode: 'SUPABASE_HTTP_TIMEOUT' }
+  );
   const body = await res.text();
   if (!res.ok) {
     throwProviderError('supabase', res.status, body);
@@ -1604,14 +1659,18 @@ const supabaseUpload = async (objectPath: string, bytes: Buffer, contentType: st
     .map((part) => encodeURIComponent(part))
     .join('/');
 
-  const res = await fetch(`${cfg.supabaseUrl}/storage/v1/object/${cfg.supabaseBucket}/${path}`, {
-    method: 'POST',
-    headers: {
-      ...supabaseHeaders(contentType),
-      'x-upsert': 'true'
+  const res = await fetchWithProviderTimeout(
+    `${cfg.supabaseUrl}/storage/v1/object/${cfg.supabaseBucket}/${path}`,
+    {
+      method: 'POST',
+      headers: {
+        ...supabaseHeaders(contentType),
+        'x-upsert': 'true'
+      },
+      body: bytes
     },
-    body: bytes
-  });
+    { timeoutMs: supabaseHttpTimeoutMs, provider: 'supabase', timeoutCode: 'SUPABASE_HTTP_TIMEOUT' }
+  );
 
   const body = await res.text();
   if (!res.ok) throwProviderError('supabase', res.status, body);
@@ -1622,10 +1681,14 @@ const supabaseDownload = async (objectPath: string) => {
     .split('/')
     .map((part) => encodeURIComponent(part))
     .join('/');
-  const res = await fetch(`${cfg.supabaseUrl}/storage/v1/object/${cfg.supabaseBucket}/${path}`, {
-    method: 'GET',
-    headers: supabaseHeaders()
-  });
+  const res = await fetchWithProviderTimeout(
+    `${cfg.supabaseUrl}/storage/v1/object/${cfg.supabaseBucket}/${path}`,
+    {
+      method: 'GET',
+      headers: supabaseHeaders()
+    },
+    { timeoutMs: supabaseHttpTimeoutMs, provider: 'supabase', timeoutCode: 'SUPABASE_HTTP_TIMEOUT' }
+  );
   const bytes = Buffer.from(await res.arrayBuffer());
   if (!res.ok) throwProviderError('supabase', res.status, bytes.toString('utf8'));
   return bytes;
@@ -2129,12 +2192,16 @@ const probeTtsProvider = async () => {
   }
 
   ensureEnv('ELEVENLABS_API_KEY', cfg.elevenApiKey);
-  const res = await fetch('https://api.elevenlabs.io/v1/models', {
-    method: 'GET',
-    headers: {
-      'xi-api-key': cfg.elevenApiKey
-    }
-  });
+  const res = await fetchWithProviderTimeout(
+    'https://api.elevenlabs.io/v1/models',
+    {
+      method: 'GET',
+      headers: {
+        'xi-api-key': cfg.elevenApiKey
+      }
+    },
+    { timeoutMs: elevenlabsHttpTimeoutMs, provider: 'elevenlabs', timeoutCode: 'ELEVENLABS_HTTP_TIMEOUT' }
+  );
   const body = await res.text();
   if (!res.ok) throwProviderError('elevenlabs', res.status, body);
 };
@@ -2843,14 +2910,18 @@ const createElevenTts = async (text: string) => {
   reserveBudget(0.02, 'elevenlabs-tts');
 
   const voiceId = process.env.ELEVENLABS_VOICE_ID ?? 'JBFqnCBsd6RMkjVDRZzb';
-  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': cfg.elevenApiKey,
-      'Content-Type': 'application/json'
+  const res = await fetchWithProviderTimeout(
+    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+    {
+      method: 'POST',
+      headers: {
+        'xi-api-key': cfg.elevenApiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' })
     },
-    body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' })
-  });
+    { timeoutMs: elevenlabsHttpTimeoutMs, provider: 'elevenlabs', timeoutCode: 'ELEVENLABS_HTTP_TIMEOUT' }
+  );
 
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!res.ok) throwProviderError('elevenlabs', res.status, buffer.toString('utf8'));

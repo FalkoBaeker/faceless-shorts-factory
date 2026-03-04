@@ -284,6 +284,7 @@ export type ApiError = {
 };
 
 const apiBase = () => (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+const apiTimeoutMs = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS ?? 120000);
 
 const parseApiError = async (res: Response): Promise<ApiError> => {
   const text = await res.text();
@@ -305,15 +306,29 @@ const requestJson = async <T>(
     token?: string | null;
   }
 ): Promise<T> => {
-  const res = await fetch(`${apiBase()}${path}`, {
-    method: options?.method ?? 'GET',
-    headers: {
-      'content-type': 'application/json',
-      ...(options?.token ? { authorization: `Bearer ${options.token}` } : {})
-    },
-    body: options?.body ? JSON.stringify(options.body) : undefined,
-    cache: 'no-store'
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), apiTimeoutMs);
+  let res: Response;
+
+  try {
+    res = await fetch(`${apiBase()}${path}`, {
+      method: options?.method ?? 'GET',
+      headers: {
+        'content-type': 'application/json',
+        ...(options?.token ? { authorization: `Bearer ${options.token}` } : {})
+      },
+      body: options?.body ? JSON.stringify(options.body) : undefined,
+      cache: 'no-store',
+      signal: controller.signal
+    });
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') {
+      throw { status: 504, message: `API_TIMEOUT:${apiTimeoutMs}ms:${path}` } as ApiError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     throw await parseApiError(res);
